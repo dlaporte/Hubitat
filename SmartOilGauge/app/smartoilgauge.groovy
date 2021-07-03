@@ -387,6 +387,7 @@ void pollChildren(Boolean updateData=true){
 			def events = [
 				['level': level],
 				['energy': level],
+                ['humidity': level],
 				['capacity': capacity],
 				['lastreading': lastReadTime],
                 ['battery': battery]
