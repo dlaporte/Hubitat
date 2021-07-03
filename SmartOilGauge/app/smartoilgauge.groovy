@@ -32,7 +32,7 @@ definition(
 	oauth:true
 )
 
-static String appVersion() { "0.0.1" }
+static String appVersion() { "0.0.2" }
 
 preferences {
 	page(name: "settings", title: "Settings", content: "settingsPage", install:true)
@@ -373,7 +373,17 @@ void pollChildren(Boolean updateData=true){
 			def level = ((devData.gallons.toFloat()/devData.tank_volume.toFloat())*100).round(2)
 			def lastReadTime = devData.last_read
 			def capacity = devData.tank_volume
-            def battery = devData.battery
+//            def battery = devData.battery
+            def battery
+            if (devData.battery == "Good") {
+                battery = 100
+            } else if (devData.battery == "Fair") {
+                battery = 50
+            } else if (devData.battery == "Poor") {
+                battery = 1
+            } else {
+                battery = 0
+            }
 			def events = [
 				['level': level],
 				['energy': level],
@@ -1013,14 +1023,10 @@ def getStartTime(tbl1, tbl2=null){
 }
 
 String getEDeviceTile(Integer devNum=null, dev){
-	//def obs = getApiXUData(dev)
-//	try {
+
 		if (state."TEnergyTbl${dev.id}"?.size() <= 0){
-			return hideChartHtml() // hideWeatherHtml()
+			return hideChartHtml()
 		}
-//Logger("W1")
-		String updateAvail = !state.updateAvailable ? "" : """<div class="greenAlertBanner">Device Update Available!</div>"""
-		String clientBl = state.clientBl ? """<div class="brightRedAlertBanner">Your Manager client has been blacklisted!\nPlease contact the Nest Manager developer to get the issue resolved!!!</div>""" : ""
 
 		def level
 		String lastReadTime
@@ -1043,8 +1049,6 @@ String getEDeviceTile(Integer devNum=null, dev){
                 gallons = devData.gallons.toFloat()
 			}
 		}
-
-//Logger("W2")
 
         Date curConn = lastReadTime ? Date.parse("yyyy-MM-dd HH:mm:ss", lastReadTime) : null //"Not Available"
 
@@ -1198,4 +1202,3 @@ void Logger(String msg, String type=null, String logSrc=null, Boolean noLog=fals
 		} else { log.error "${labelstr}Logger Error - type: ${type} | msg: ${msg} | logSrc: ${logSrc}" }
 	}
 }
-
