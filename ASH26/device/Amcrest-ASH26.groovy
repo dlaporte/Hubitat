@@ -181,8 +181,8 @@ def on() {
 }
 
 def off() {
-    set_camera_setting("Lighting_V2[0][0][1].Mode", "Off")
     set_camera_setting("AlarmLighting[0][0].Enable", "true")
+    set_camera_setting("Lighting_V2[0][0][1].Mode", "Off")
 }
 	
 def initialize() {
