@@ -22,13 +22,13 @@ metadata {
 		capability "Sensor"
 		capability "Power Meter"
 		capability "Battery"
-        capability "Relative Humidity Measurement"
+		capability "Relative Humidity Measurement"
 
 		attribute "lastreading", "date"
 		attribute "capacity", "number"
 		attribute "level", "number"
-        attribute "gallons", "number"
-        attribute "humidity", "number"
+		attribute "gallons", "number"
+		attribute "humidity", "number"
 	}
 }
     

@@ -32,7 +32,7 @@ definition(
 	oauth:true
 )
 
-static String appVersion() { "0.0.2" }
+static String appVersion() { "0.0.3" }
 
 preferences {
 	page(name: "settings", title: "Settings", content: "settingsPage", install:true)
@@ -369,7 +369,7 @@ void pollChildren(Boolean updateData=true){
 				LogAction("pollChildren: no device data available $d.label", "warn", true)
 				return false
 			}
-            def gallons = devData.gallons
+			def gallons = devData.gallons
 			def level = ((devData.gallons.toFloat()/devData.tank_volume.toFloat())*100).round(2)
 			def lastReadTime = devData.last_read
 			def capacity = devData.tank_volume
@@ -387,10 +387,11 @@ void pollChildren(Boolean updateData=true){
 			def events = [
 				['level': level],
 				['energy': level],
-                ['humidity': level],
+				['humidity': level],
 				['capacity': capacity],
+				['gallons': gallons],
 				['lastreading': lastReadTime],
-                ['battery': battery]
+				['battery': battery]
 			]
 			LogAction("pollChidren: Sending events: ${events}", "info", false)
 			events.each {
@@ -1058,7 +1059,7 @@ String getEDeviceTile(Integer devNum=null, dev){
 		if(getTimeZone()){ tf.setTimeZone(getTimeZone()) }
 		String curConnFmt = curConn!=null ? tf.format(curConn) : "Not Available"
 
-        def gal = gallons
+		def gal = gallons
 		def t0 = state."TEnergyTbl${dev.id}"
 		def t1 = t0?.size() > 2 && (t0[-2])[1].toFloat().round(2) == (t0[-1])[1].toFloat().round(2) ? t0[-3] : null
 		t1 = (!t1 && t0?.size() > 1) ? t0[-2] : t1
