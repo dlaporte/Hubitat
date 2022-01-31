@@ -88,7 +88,7 @@ metadata {
     section("Query Inputs") {
       input "acurite_username", "text", required: true, title: "AcuRite Username"
       input "acurite_password", "text", required: true, title: "AcuRite Password"
-      input "device_id", "text", required: true, title: "Device ID"
+      input "device_id", "text", required: true, title: "Device ID", description: "Your Device ID can be found looking for 'hubs' in the Network section of Chrome's Developer Tools while loading the MyAcurite dashboard"
     }
   }
 }
