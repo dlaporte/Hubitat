@@ -157,5 +157,6 @@ def initialize() {
     return
   }
   def poll_interval_cmd = (settings?.poll_interval ?: "5 Minutes").replace(" ", "")
+  "runEvery${poll_interval_cmd}"(poll_schedule)
   if (debug) log.debug "AcuRite: scheduling as runEvery" + poll_interval_cmd
 }
