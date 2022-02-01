@@ -148,6 +148,7 @@ def poll_schedule() {
   poll()
 }
 
+
 def initialize() {
   unschedule()
   log.info "AcuRite: initialize() called"
