@@ -17,6 +17,7 @@
  *  Last Update 01/31/2022
  *
  *
+ *  v0.0.3 - fixed typo
  *  v0.0.2 - adding polling interval, removed assumptions about sensor counts
  *  v0.0.1 - initial release
  *
@@ -151,6 +152,6 @@ def initialize() {
     log.warn "AcuRite required fields not completed.  Please complete for proper operation."
     return
   }
-  def poll_interval_cmd = (settings?.pollInterval ? : "5 Minutes").replace(" ", "")
+  def poll_interval_cmd = (settings?.pollInterval ?: "5 Minutes").replace(" ", "")
   "runEvery${pollIntervalCmd}"(pollSchedule)
 }
