@@ -14,9 +14,9 @@
  *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
  *  for the specific language governing permissions and limitations under the License.
  *
- *  Last Update 01/31/2022
+ *  Last Update 02/01/2022
  *
- *
+ *  v0.0.4 - fixed scheduler (thanks chad.andrews)
  *  v0.0.3 - fixed typo
  *  v0.0.2 - adding polling interval, removed assumptions about sensor counts
  *  v0.0.1 - initial release
@@ -144,6 +144,10 @@ def get_acurite_data() {
   }
 }
 
+def poll_schedule {
+  poll()
+}
+
 def initialize() {
   unschedule()
   log.info "AcuRite: initialize() called"
@@ -153,5 +157,5 @@ def initialize() {
     return
   }
   def poll_interval_cmd = (settings?.pollInterval ?: "5 Minutes").replace(" ", "")
-  "runEvery${pollIntervalCmd}"(pollSchedule)
+  "runEvery${pollIntervalCmd}"(poll_schedule)
 }
