@@ -16,6 +16,7 @@
  *
  *  Last Update 02/01/2022
  *
+ *  v0.0.5 - added debug option
  *  v0.0.4 - fixed scheduler (thanks chad.andrews)
  *  v0.0.3 - fixed typo
  *  v0.0.2 - adding polling interval, removed assumptions about sensor counts
@@ -34,10 +35,6 @@ metadata {
     capability "Initialize"
     capability "Polling"
     capability "Battery"
-
-    attribute "account_id", "number"
-    attribute "device_id", "number"
-    attribute "poll_interval", "enum"
   }
 
   preferences() {
@@ -46,12 +43,13 @@ metadata {
       input "acurite_password", "password", required: true, title: "AcuRite Password"
       input "device_id", "text", required: true, title: "Device ID", description: "Your Device ID can be found looking for 'hubs' in the Network section of Chrome's Developer Tools while loading the MyAcurite dashboard"
       input "poll_interval", "enum", title: "Poll Interval:", required: false, defaultValue: "5 Minutes", options: ["5 Minutes", "10 Minutes", "15 Minutes", "30 Minutes", "1 Hour", "3 Hours"]
+      input "debug", "bool", required: true, defaultValue: false, title: "Debug Logging"
     }
   }
 }
 
 def poll() {
-  log.info "AcuRite: poll() called"
+  if (debug) log.info "AcuRite: poll() called"
   get_acurite_data()
 }
 
@@ -65,7 +63,7 @@ def get_acurite_data() {
       "password": "${acurite_password}"
     ]
   ]
-  log.debug(login_params)
+  if (debug) log.debug "AcuRite: login_params: " + login_params
 
   try {
     httpPostJson(login_params) {
@@ -82,13 +80,15 @@ def get_acurite_data() {
         ]
       ]
 
-      log.debug(data_params)
+      if (debug) log.debug "AcuRite: data_params: " + data_params
 
       try {
         httpGet(data_params) {
           data_resp ->
-            log.debug "AcuRite: data response status: ${data_resp.status}"
-          //log.debug "data: ${data_resp.data}"
+            if (debug) {
+              log.debug "AcuRite: data response status: ${data_resp.status}"
+              log.debug "AcuRite: data response: ${data_resp.data}"
+            }
 
           def data = data_resp.data
 
@@ -148,15 +148,14 @@ def poll_schedule() {
   poll()
 }
 
-
 def initialize() {
   unschedule()
-  log.info "AcuRite: initialize() called"
+  if (debug) log.debug "AcuRite: initialize() called"
 
   if (!acurite_username || !acurite_password || !device_id) {
-    log.warn "AcuRite required fields not completed.  Please complete for proper operation."
+    log.error "AcuRite required fields not completed.  Please complete for proper operation."
     return
   }
   def poll_interval_cmd = (settings?.poll_interval ?: "5 Minutes").replace(" ", "")
-  "runEvery${poll_interval_cmd}"(poll_schedule)
+  if (debug) log.debug "AcuRite, scheduling as " + poll_interval_cmd "runEvery${poll_interval_cmd}"(poll_schedule)
 }
