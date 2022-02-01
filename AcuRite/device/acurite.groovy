@@ -153,9 +153,9 @@ def initialize() {
   if (debug) log.debug "AcuRite: initialize() called"
 
   if (!acurite_username || !acurite_password || !device_id) {
-    log.error "AcuRite required fields not completed.  Please complete for proper operation."
+    log.error "AcuRite: required fields not completed.  Please complete for proper operation."
     return
   }
   def poll_interval_cmd = (settings?.poll_interval ?: "5 Minutes").replace(" ", "")
-  if (debug) log.debug "AcuRite, scheduling as " + poll_interval_cmd "runEvery${poll_interval_cmd}"(poll_schedule)
+  if (debug) log.debug "AcuRite: scheduling as runEvery" + poll_interval_cmd
 }
