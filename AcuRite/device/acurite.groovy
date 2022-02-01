@@ -144,7 +144,7 @@ def get_acurite_data() {
   }
 }
 
-def poll_schedule {
+def poll_schedule() {
   poll()
 }
 
@@ -156,6 +156,6 @@ def initialize() {
     log.warn "AcuRite required fields not completed.  Please complete for proper operation."
     return
   }
-  def poll_interval_cmd = (settings?.pollInterval ?: "5 Minutes").replace(" ", "")
-  "runEvery${pollIntervalCmd}"(poll_schedule)
+  def poll_interval_cmd = (settings?.poll_interval ?: "5 Minutes").replace(" ", "")
+  "runEvery${poll_interval_cmd}"(poll_schedule)
 }
