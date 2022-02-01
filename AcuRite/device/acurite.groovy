@@ -17,6 +17,7 @@
  *  Last Update 01/31/2022
  *
  *
+ *  v0.0.2 - adding polling interval, removed assumptions about sensor counts
  *  v0.0.1 - initial release
  *
  */
@@ -35,53 +36,7 @@ metadata {
 
     attribute "account_id", "number"
     attribute "device_id", "number"
-    attribute "device_latitude", "decimal"
-    attribute "device_longitude", "decimal"
-    attribute "device_elevation", "decimal"
-    attribute "device_timezone", "string"
-    attribute "device_country", "string"
-    attribute "device_name", "string"
-    attribute "device_model", "string"
-    attribute "device_status", "string"
-    attribute "device_battery_level", "string"
-    attribute "device_signal_strength", "number"
-    attribute "device_last_checkin", "string"
-
-    attribute "daily_temperature_high", "decimal"
-    attribute "daily_temperature_high_time", "date"
-    attribute "daily_temperature_low", "decimal"
-    attribute "daily_temperature_low_time", "date"
-    attribute "daily_lightning_strikes", "number"
-    attribute "daily_measured_light", "number"
-
-    attribute "temperature", "decimal"
-    attribute "humidity", "decimal"
-    attribute "wind_speed", "decimal"
-    attribute "wind_degree", "decimal"
-    attribute "wind_direction", "string"
-    attribute "dew_point", "decimal"
-
-    attribute "wind_chill", "decimal"
-
-    attribute "pressure", "decimal"
-    attribute "pressure_unit", "string"
-
-    attribute "rainfall", "decimal"
-
-    attribute "wind_speed_average", "decimal"
-    attribute "wind_speed_average_unit", "string"
-
-    attribute "uv_index", "decimal"
-
-    attribute "light_intensity", "decimal"
-    attribute "light_intensity_unit", "string"
-
-    attribute "measured_light", "decimal"
-    attribute "measured_light_unit", "string"
-
-    attribute "lightning_count", "number"
-    attribute "lightning_closest_distance", "decimal"
-    attribute "lightning_last_distance", "decimal"
+    attribute "poll_interval", "enum"
   }
 
   preferences() {
@@ -89,6 +44,7 @@ metadata {
       input "acurite_username", "text", required: true, title: "AcuRite Username"
       input "acurite_password", "text", required: true, title: "AcuRite Password"
       input "device_id", "text", required: true, title: "Device ID", description: "Your Device ID can be found looking for 'hubs' in the Network section of Chrome's Developer Tools while loading the MyAcurite dashboard"
+      input "poll_interval", "enum", title: "Poll Interval:", required: false, defaultValue: "5 Minutes", options: ["5 Minutes", "10 Minutes", "15 Minutes", "30 Minutes", "1 Hour", "3 Hours"]
     }
   }
 }
@@ -131,7 +87,7 @@ def get_acurite_data() {
         httpGet(data_params) {
           data_resp ->
             log.debug "AcuRite: data response status: ${data_resp.status}"
-          log.debug "data: ${data_resp.data}"
+          //log.debug "data: ${data_resp.data}"
 
           def data = data_resp.data
 
@@ -158,30 +114,24 @@ def get_acurite_data() {
           sendEvent(name: "device_signal_strength", value: data.devices[0].signal_strength)
           sendEvent(name: "device_last_checkin", value: data.devices[0].last_check_in_at)
 
-          sendEvent(name: "daily_temperature_high", value: data.devices[0].temp_high_value, unit: data.devices[0].sensors[0].chart_unit)
-          sendEvent(name: "daily_temperature_high_time", value: data.devices[0].temp_high_at)
-          sendEvent(name: "daily_temperature_low", value: data.devices[0].temp_low_value, unit: data.devices[0].sensors[0].chart_unit)
-          sendEvent(name: "daily_temperature_low_time", value: data.devices[0].temp_low_at)
-          sendEvent(name: "daily_lightning_strikes", value: data.devices[0].daily_cumulative_strikes)
-          sendEvent(name: "daily_measured_light", value: data.devices[0].daily_cumulative_measured_light)
-          sendEvent(name: "temperature", value: data.devices[0].sensors[0].last_reading_value, unit: data.devices[0].sensors[0].chart_unit)
-          sendEvent(name: "humidity", value: data.devices[0].sensors[1].last_reading_value, unit: data.devices[0].sensors[1].chart_unit)
-          sendEvent(name: "wind_speed", value: data.devices[0].sensors[2].last_reading_value, unit: data.devices[0].sensors[2].chart_unit)
-          sendEvent(name: "wind_degree", value: data.devices[0].sensors[3].last_reading_value)
-          sendEvent(name: "wind_direction", value: data.devices[0].sensors[3].wind_direction.abbreviation)
-          sendEvent(name: "dew_point", value: data.devices[0].sensors[4].last_reading_value, unit: data.devices[0].sensors[4].chart_unit)
-          sendEvent(name: "wind_chill", value: data.devices[0].sensors[5].last_reading_value, unit: data.devices[0].sensors[5].chart_unit)
-          sendEvent(name: "pressure", value: data.devices[0].sensors[6].last_reading_value, unit: data.devices[0].sensors[6].chart_unit)
-          sendEvent(name: "rainfall", value: data.devices[0].sensors[7].last_reading_value, unit: data.devices[0].sensors[7].chart_unit)
-          sendEvent(name: "wind_speed_average", value: data.devices[0].sensors[8].last_reading_value, unit: data.devices[0].sensors[8].chart_unit)
-          sendEvent(name: "uv_index", value: data.devices[0].sensors[9].last_reading_value)
-          sendEvent(name: "illuminance", value: data.devices[0].sensors[10].last_reading_value, unit: data.devices[0].sensors[10].chart_unit)
-          sendEvent(name: "measured_light", value: data.devices[0].sensors[11].last_reading_value, unit: data.devices[0].sensors[11].chart_unit)
-
-          sendEvent(name: "lightning_count", value: data.devices[0].wired_sensors[0].last_reading_value)
-          sendEvent(name: "lightning_closest_distance", value: data.devices[0].wired_sensors[1].last_reading_value, unit: data.devices[0].wired_sensors[1].chart_unit)
-          sendEvent(name: "lightning_last_distance", value: data.devices[0].wired_sensors[2].last_reading_value, unit: data.devices[0].wired_sensors[2].chart_unit)
-
+          for (sensor in [data.devices[0].sensors, data.devices[0].wired_sensors].flatten()) {
+            def sensor_name = sensor.sensor_name.replaceAll(" ", "_").toLowerCase()
+            def sensor_value = sensor.last_reading_value
+            def sensor_unit = sensor.chart_unit
+            if (sensor_unit) {
+              sensor_unit = sensor.chart_unit
+              sendEvent(name: "${sensor_name}", value: "${sensor_value}", unit: "${sensor_unit}")
+            } else {
+              sendEvent(name: "${sensor_name}", value: "${sensor_value}")
+            }
+            if (sensor_name == "wind_direction") {
+              sendEvent(name: "wind_direction_abbreviation", value: "${sensor.wind_direction.abbreviation}")
+              sendEvent(name: "wind_direction_point", value: "${sensor.wind_direction.point}")
+            }
+            if (sensor_name == "light_intensity") {
+              sendEvent(name: "illuminance", value: "${sensor_value}", unit: "${sensor_unit}")
+            }
+          }
         }
       } catch (groovyx.net.http.HttpResponseException e2) {
         log.error "AcuRite: data failed: " + e2.response.status + ": " + e2.response.data
@@ -201,5 +151,6 @@ def initialize() {
     log.warn "AcuRite required fields not completed.  Please complete for proper operation."
     return
   }
-  runEvery5Minutes("poll")
+  def poll_interval_cmd = (settings?.pollInterval ? : "5 Minutes").replace(" ", "")
+  "runEvery${pollIntervalCmd}"(pollSchedule)
 }
