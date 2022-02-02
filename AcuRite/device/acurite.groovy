@@ -16,7 +16,7 @@
  *
  *  Last Update 02/01/2022
  *
- *  v0.0.6 - added windSpeed (thanks again, chad.andrews)
+ *  v0.0.6 - added windSpeed and attributes (thanks again, chad.andrews)
  *  v0.0.5 - added debug option
  *  v0.0.4 - fixed scheduler (thanks chad.andrews)
  *  v0.0.3 - fixed typo
@@ -36,6 +36,45 @@ metadata {
     capability "Initialize"
     capability "Polling"
     capability "Battery"
+
+    attribute "location_name", "string"
+    attribute "location_latitude", "string"
+    attribute "location_longitude", "string"
+    attribute "location_elevation", "decimal"
+    attribute "location_timezone", "string"
+    attribute "device_country", "string"
+
+    attribute "device_name", "string"
+    attribute "device_model", "string"
+    attribute "device_status", "string"
+
+    attribute "device_battery_level", "string"
+    attribute "battery", "number"
+
+    attribute "device_signal_strength", "number"
+    attribute "device_last_checkin", "string"
+
+    attribute "lightning_last_strike_distance", "number"
+    attribute "lightning_closest_strike_distance", "number"
+    attribute "lightning_strike_count", "number"
+    attribute "interference", "number"
+    attribute "measured_light", "number"
+    attribute "light_intensity", "number"
+    attribute "illuminance", "number"
+    attribute "uv_index", "number"
+    attribute "wind_speed_average", "number"
+    attribute "rainfall", "decimal"
+    attribute "pressure", "decimal"
+    attribute "wind_chill", "decimal"
+    attribute "dew_point", "number"
+    attribute "wind_direction", "number"
+    attribute "wind_direction_abbreviation", "string"
+    attribute "wind_direction_point", "string"
+    attribute "wind_speed", "number"
+    attribute "windSpeed", "number"
+    attribute "humidity", "number"
+    attribute "temperature", "decimal"
+
   }
 
   preferences() {
