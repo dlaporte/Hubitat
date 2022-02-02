@@ -16,6 +16,7 @@
  *
  *  Last Update 02/01/2022
  *
+ *  v0.0.6 - added windSpeed (thanks again, chad.andrews)
  *  v0.0.5 - added debug option
  *  v0.0.4 - fixed scheduler (thanks chad.andrews)
  *  v0.0.3 - fixed typo
@@ -128,6 +129,9 @@ def get_acurite_data() {
             if (sensor_name == "wind_direction") {
               sendEvent(name: "wind_direction_abbreviation", value: "${sensor.wind_direction.abbreviation}")
               sendEvent(name: "wind_direction_point", value: "${sensor.wind_direction.point}")
+            }
+            if (sensor_name == "wind_speed") {
+              sendEvent(name: "windSpeed", value: "${sensor_value}", unit: "${sensor_unit}")
             }
             if (sensor_name == "light_intensity") {
               sendEvent(name: "illuminance", value: "${sensor_value}", unit: "${sensor_unit}")
