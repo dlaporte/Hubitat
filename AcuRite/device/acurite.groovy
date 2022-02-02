@@ -16,6 +16,7 @@
  *
  *  Last Update 02/01/2022
  *
+ *  v0.0.7 - added windDirection (you're a machine, chad.andrews) 
  *  v0.0.6 - added windSpeed and attributes (thanks again, chad.andrews)
  *  v0.0.5 - added debug option
  *  v0.0.4 - fixed scheduler (thanks chad.andrews)
@@ -70,6 +71,7 @@ metadata {
     attribute "wind_direction", "number"
     attribute "wind_direction_abbreviation", "string"
     attribute "wind_direction_point", "string"
+    attribute "windDirection", "string"
     attribute "wind_speed", "number"
     attribute "windSpeed", "number"
     attribute "humidity", "number"
@@ -168,6 +170,7 @@ def get_acurite_data() {
             if (sensor_name == "wind_direction") {
               sendEvent(name: "wind_direction_abbreviation", value: "${sensor.wind_direction.abbreviation}")
               sendEvent(name: "wind_direction_point", value: "${sensor.wind_direction.point}")
+              sendEvent(name: "windDirection", value: "${sensor_value}")
             }
             if (sensor_name == "wind_speed") {
               sendEvent(name: "windSpeed", value: "${sensor_value}", unit: "${sensor_unit}")
