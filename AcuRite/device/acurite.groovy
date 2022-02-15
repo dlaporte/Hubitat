@@ -34,6 +34,7 @@ metadata {
     capability "Pressure Measurement"
     capability "Illuminance Measurement"
     capability "Relative Humidity Measurement"
+    capability "UltravioletIndex"
     capability "Initialize"
     capability "Polling"
     capability "Battery"
@@ -63,6 +64,7 @@ metadata {
     attribute "light_intensity", "number"
     attribute "illuminance", "number"
     attribute "uv_index", "number"
+    attribute "ultravioletIndex", "number"
     attribute "wind_speed_average", "number"
     attribute "rainfall", "decimal"
     attribute "pressure", "decimal"
@@ -177,6 +179,9 @@ def get_acurite_data() {
             }
             if (sensor_name == "light_intensity") {
               sendEvent(name: "illuminance", value: "${sensor_value}", unit: "${sensor_unit}")
+            }
+            if (sensor_name == "uv_index") {
+              sendEvent(name: "ultravioletIndex", value: "${sensor_value}", unit: "${sensor_unit}")
             }
           }
         }
