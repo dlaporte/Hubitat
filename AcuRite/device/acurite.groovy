@@ -16,6 +16,7 @@
  *
  *  Last Update 02/01/2022
  *
+ *  v0.0.8 - added Ultraviolet capability
  *  v0.0.7 - added windDirection (you're a machine, chad.andrews) 
  *  v0.0.6 - added windSpeed and attributes (thanks again, chad.andrews)
  *  v0.0.5 - added debug option
