@@ -1,0 +1,16 @@
+{
+  "packageName": "Amcrest ASH26",
+  "author": "David LaPorte",
+  "version": "0.2",
+  "minimumHEVersion": "2.1.9",
+  "dateReleased": "2022-02-02",
+  "drivers": [
+    {
+      "id": "b607fa7f-ed1e-4b9b-adad-01bd88a5664b",
+      "name": "Amcrest ASH26",
+      "namespace": "dlaporte",
+      "location": "https://raw.githubusercontent.com/dlaporte/Hubitat/main/ASH26/device/Amcrest-ASH26.groovy",
+      "required": true
+    }
+  ]
+}
