@@ -1,0 +1,16 @@
+{
+  "packageName": "JuiceBox EVSE",
+  "author": "David LaPorte",
+  "version": "0.1",
+  "minimumHEVersion": "2.1.9",
+  "dateReleased": "2022-01-21",
+  "drivers": [
+    {
+      "id": "d93f31f2-d233-4459-9d4e-2b70d48def36",
+      "name": "eMotorWerks JuiceBox",
+      "namespace": "dlaporte",
+      "location": "https://raw.githubusercontent.com/dlaporte/Hubitat/main/JuiceBox/device/juicebox-evse.groovy",
+      "required": true
+    }
+  ]
+}
