@@ -1,0 +1,13 @@
+{
+	"author": "David LaPorte",
+	"gitHubUrl": "https://github.com/dlaporte",
+	"packages": [
+		{
+			"name": "Amcrest ASH26,
+			"category": "Integrations",
+			"location": "https://raw.githubusercontent.com/dlaporte/Hubitat/main/ASH26/device/Amcrest-ASH26.groovy",
+			"description": "Light controls for Amcrest ASH26 outdoor security camera"
+		}
+	]
+	
+}
