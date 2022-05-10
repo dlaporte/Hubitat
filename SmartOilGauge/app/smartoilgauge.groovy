@@ -373,10 +373,12 @@ void pollChildren(Boolean updateData=true){
 			def level = ((devData.gallons.toFloat()/devData.tank_volume.toFloat())*100).round(2)
 			def lastReadTime = devData.last_read
 			def capacity = devData.tank_volume
-//            def battery = devData.battery
+
             def battery
-            if (devData.battery == "Good") {
+            if (devData.battery == "Excellent") {
                 battery = 100
+            } else if (devData.battery == "Good") {
+                battery = 75
             } else if (devData.battery == "Fair") {
                 battery = 50
             } else if (devData.battery == "Poor") {
