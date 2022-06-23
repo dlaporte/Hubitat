@@ -1,0 +1,16 @@
+{
+  "packageName": "AcuRite Weather Station",
+  "author": "David LaPorte",
+  "version": "0.0.8",
+  "minimumHEVersion": "2.1.9",
+  "dateReleased": "2022-06-23",
+  "drivers": [
+    {
+      "id": "fe491414-4bfc-4b43-ad3e-7e34b3e35ff0",
+      "name": "AcuRite Weather Station",
+      "namespace": "dlaporte",
+      "location": "https://raw.githubusercontent.com/dlaporte/Hubitat/main/AcuRite/device/acurite.groovy",
+      "required": true
+    }
+  ]
+}
