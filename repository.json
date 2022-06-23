@@ -5,7 +5,7 @@
 		{
 			"name": "Amcrest ASH26",
 			"category": "Integrations",
-			"location": "https://raw.githubusercontent.com/dlaporte/Hubitat/main/ASH26/device/Amcrest-ASH26.groovy",
+			"location": "https://raw.githubusercontent.com/dlaporte/Hubitat/main/ASH26/packageManifest.json",
 			"description": "Light controls for Amcrest ASH26 outdoor security camera"
 		},
 		{
