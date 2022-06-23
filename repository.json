@@ -7,6 +7,12 @@
 			"category": "Integrations",
 			"location": "https://raw.githubusercontent.com/dlaporte/Hubitat/main/ASH26/device/Amcrest-ASH26.groovy",
 			"description": "Light controls for Amcrest ASH26 outdoor security camera"
+		},
+		{
+			"name": "AcuRite Weather Station",
+			"category": "Integrations",
+			"location": "https://raw.githubusercontent.com/dlaporte/Hubitat/main/AcuRite/device/acurite.groovy",
+			"description": "Access to AcuRite sensor data via myacurite.com"
 		}
 	]
 	
