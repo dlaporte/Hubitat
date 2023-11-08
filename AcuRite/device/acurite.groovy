@@ -14,8 +14,9 @@
  *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
  *  for the specific language governing permissions and limitations under the License.
  *
- *  Last Update 02/15/2022
+ *  Last Update 11/08/2023
  *
+ *  v0.0.9 - suppressed password in debug logs
  *  v0.0.8 - added UltravioletIndex capability
  *  v0.0.7 - added windDirection (you're a machine, chad.andrews) 
  *  v0.0.6 - added windSpeed and attributes (thanks again, chad.andrews)
@@ -105,10 +106,11 @@ def get_acurite_data() {
     body: [
       "remember": true,
       "email": "${acurite_username}",
-      "password": "${acurite_password}"
     ]
   ]
   if (debug) log.debug "AcuRite: login_params: " + login_params
+    
+  login_params.body.password = login_params.body['password'] = acurite_password
 
   try {
     httpPostJson(login_params) {
