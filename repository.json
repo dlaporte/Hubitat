@@ -13,6 +13,12 @@
 			"category": "Integrations",
 			"location": "https://raw.githubusercontent.com/dlaporte/Hubitat/main/AcuRite/packageManifest.json",
 			"description": "Access to AcuRite sensor data via myacurite.com"
+		},
+		{
+			"name": "Radon Fan Sensor",
+			"category": "Integrations",
+			"location": "https://raw.githubusercontent.com/dlaporte/Hubitat/main/RadonFanSensor/packageManifest.json",
+			"description": "Monitor radon fan with a door sensor (eg. WADWAZ-1/Monoprice 15270)"
 		}
 	]
 	
