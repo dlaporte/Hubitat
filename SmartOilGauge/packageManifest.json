@@ -1,0 +1,26 @@
+{
+  "packageName": "Smart Oil Gauge",
+  "author": "dlaporte",
+  "minimumHEVersion": "2.1.9",
+  "dateReleased": "2025-09-01",
+  "apps": [
+    {
+      "id": "22278792-e18b-4bc1-8b85-7de24b8e8832",
+      "name": "Smart Oil Gauge (Connect)",
+      "namespace": "dlaporte",
+      "location": "https://raw.githubusercontent.com/dlaporte/Hubitat/refs/heads/main/SmartOilGauge/app/smartoilgauge.groovy",
+      "required": true,
+      "oauth": true,
+      "primary": true
+    }
+  ],
+  "drivers": [
+    {
+      "id": "37d34d73-d84b-4f65-8818-58704e1a79ab",
+      "name": "Smart Oil Gauge",
+      "namespace": "dlaporte",
+      "location": "https://raw.githubusercontent.com/dlaporte/Hubitat/refs/heads/main/SmartOilGauge/device/smartoilgauge.groovy",
+      "required": true
+    }
+  ]
+}
