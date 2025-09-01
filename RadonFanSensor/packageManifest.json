@@ -1,7 +1,7 @@
 {
   "packageName": "Radon Fan Sensor",
   "author": "David LaPorte",
-  "version": "0.2",
+  "version": "0.3",
   "minimumHEVersion": "2.1.9",
   "dateReleased": "2025-09-01",
   "drivers": [
