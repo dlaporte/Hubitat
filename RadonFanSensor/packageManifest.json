@@ -1,0 +1,16 @@
+{
+  "packageName": "Radon Fan Sensor",
+  "author": "David LaPorte",
+  "version": "0.2",
+  "minimumHEVersion": "2.1.9",
+  "dateReleased": "2025-09-01",
+  "drivers": [
+    {
+      "id": "c34390fc-6497-4578-87e3-4f77374c5ea0",
+      "name": "Radon Fan Sensor",
+      "namespace": "dlaporte",
+      "location": "https://raw.githubusercontent.com/dlaporte/Hubitat/refs/heads/main/RadonFanSensor/device/15270-radon-fan.groovy",
+      "required": true
+    }
+  ]
+}
