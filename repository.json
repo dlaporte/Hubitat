@@ -19,6 +19,12 @@
 			"category": "Integrations",
 			"location": "https://raw.githubusercontent.com/dlaporte/Hubitat/main/RadonFanSensor/packageManifest.json",
 			"description": "Monitor radon fan with a door sensor (eg. WADWAZ-1/Monoprice 15270)"
+		},
+		{
+			"name": "Smart Oil Gauge",
+			"category": "Integrations",
+			"location": "https://raw.githubusercontent.com/dlaporte/Hubitat/main/SmartOilGaude/packageManifest.json",
+			"description": "Monitor the Smart Oil Gauge (https://www.smartoilgauge.com)"
 		}
 	]
 	
