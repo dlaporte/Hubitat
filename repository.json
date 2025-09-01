@@ -23,7 +23,7 @@
 		{
 			"name": "Smart Oil Gauge",
 			"category": "Integrations",
-			"location": "https://raw.githubusercontent.com/dlaporte/Hubitat/main/SmartOilGaude/packageManifest.json",
+			"location": "https://raw.githubusercontent.com/dlaporte/Hubitat/main/SmartOilGauge/packageManifest.json",
 			"description": "Monitor the Smart Oil Gauge (https://www.smartoilgauge.com)"
 		}
 	]
