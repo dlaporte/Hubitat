@@ -13,7 +13,7 @@
  *  for the specific language governing permissions and limitations under the License.
  *
  * For monitoring your oil tank using Smart Oil Gauge (https://www.smartoilgauge.com)
- * You must subscribe to the Droplet Fuel 69 monitoring service ($2/month) for the required API access.
+ * You must subscribe to the Droplet Fuel monitoring service ($2/month) for the required API access.
  */
 
 import groovy.json.*
