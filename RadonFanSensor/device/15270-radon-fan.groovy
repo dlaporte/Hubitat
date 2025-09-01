@@ -1,7 +1,7 @@
 /**
  *  WADWAZ-1/Monoprice 15270 as Radon Fan Sensor
  *
- *  Version - 0.1
+ *  Version - 0.2
  *
  *  Copyright 2017 David LaPorte
  *
@@ -14,17 +14,23 @@
  *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
  *  for the specific language governing permissions and limitations under the License.
  *
+ *  Instructions:
+ *
+ *      1) Click "Drivers Code"and "+ Add Drive" in your Hubitat web interface
+ *      2) Paste in the code from: https://github.com/dlaporte/Hubitat/blob/main/SmartOilGauge/app/smartoilgauge.groovy
+ *      3) Click "Create"
+ *      4) Click "Publish -> For Me"
+ * 
  * Parts List:
  *
- *	1) Dwyer 1910-00 Pressure Switch
- *	2) 1/8" barbed 3-way fitting
- *	3) 1/8" Barb x 1/8" NPT Male Pipe fitting
- *	4) 1/8" ID plastic tubing
- *	5) Monoprice 15270, Linear WADWAZ-1 ,or equivalent (eg. Schlage) Door/Window Sensor
+ *      1) Dwyer 1910-00 Pressure Switch
+ *      2) 1/8" barbed 3-way fitting
+ *      3) 1/8" Barb x 1/8" NPT Male Pipe fitting
+ *      4) 1/8" ID plastic tubing
  *
  * Install (non-destructively) on an existing RadonAway Easy Manometer:
  *
- *      1) Use a dremel or other tool to cut Monoprice 15270 sensor case to expose terminals
+ *      1) Use a dremel or other tool to cut away sensor case to expose terminals
  *      2) Connect terminals on pressure switch to terminals on sensor
  *      3) Install 1/8" Barb x 1/8" NPT fitting on pressure switch low pressure connection  
  *      4) Test - attach tubing to adapter and gently inhale
@@ -34,17 +40,19 @@
  *      8) Connect tubing from adapter to 3-way fitting
  *      9) Insert short tube into vent pipe hole
  *      10) Test - shut off power to the fan to make sure there's not an updraft in the pipe that false positives
- *      11) Setup a CoRE piston to alert you 
- *      12) Sleep soundly knowing your house can no longer silently kill you if the fan dies!
+ *      11) Sleep soundly knowing your house can no longer silently kill you if the fan dies!
  */
 
 // for the UI
 metadata {
 
 	definition (name: "WADWAZ-1/Monoprice 15270 as Radon Fan Sensor", namespace: "dlaporte", author: "dlaporte") {
-		capability "Switch"
 		capability "Sensor"
 		capability "Battery"
+		capability "Refresh"
+		
+		attribute "switch", "enum", ["on", "off"]
+		
 		fingerprint deviceId: "0x2001", inClusters: "0x71, 0x85, 0x80, 0x72, 0x30, 0x86, 0x84"
 	}
 
@@ -55,28 +63,22 @@ metadata {
 	}
 
     tiles(scale: 2) {
-	multiAttributeTile(name:"fan_icon", type: "generic", width: 6, height: 4){
-		tileAttribute ("device.switch", key: "PRIMARY_CONTROL") {
-			attributeState "on", label:'${name}', icon:"st.thermostat.fan-on", backgroundColor:"#7bb630"
-			attributeState "off", label:'${name}', icon:"st.thermostat.fan-off", backgroundColor:"#bc2323"
-		}
-	}
-            multiAttributeTile(name:"fan", type: "lighting", width: 6, height: 4){
-                tileAttribute ("device.switch", key: "PRIMARY_CONTROL") {
-                    attributeState "on", label:'', icon:"st.thermostat.fan-on", backgroundColor:"#7bb630"
-                    attributeState "off", label:'', icon:"st.thermostat.fan-off", backgroundColor:"#bc2323"
-                }
-                tileAttribute("device.battery", key: "SECONDARY_CONTROL") {
-                    attributeState("battery", label: 'Battery: ${currentValue}%')
-                }
+        multiAttributeTile(name:"fan_icon", type: "generic", width: 6, height: 4){
+            tileAttribute ("device.switch", key: "PRIMARY_CONTROL") {
+                attributeState "on", label:'Fan Running', icon:"st.thermostat.fan-on", backgroundColor:"#7bb630"
+                attributeState "off", label:'Fan Off', icon:"st.thermostat.fan-off", backgroundColor:"#bc2323"
             }
-
-            standardTile("refresh", "device.refresh", inactiveLabel: false, decoration: "flat", width: 1, height: 1) {
-                state "default", action:"refresh.refresh", icon:"st.secondary.refresh"
+            tileAttribute("device.battery", key: "SECONDARY_CONTROL") {
+                attributeState("battery", label: 'Battery: ${currentValue}%')
             }
+        }
 
-            main "fan_icon"
-            details(["fan","refresh"])
+        standardTile("refresh", "device.refresh", inactiveLabel: false, decoration: "flat", width: 2, height: 2) {
+            state "default", action:"refresh.refresh", icon:"st.secondary.refresh"
+        }
+
+        main "fan_icon"
+        details(["fan_icon","refresh"])
     }
 }
 
@@ -213,6 +215,27 @@ def zwaveEvent(hubitat.zwave.commands.manufacturerspecificv2.ManufacturerSpecifi
 
 def zwaveEvent(hubitat.zwave.Command cmd) {
 	createEvent(descriptionText: "$device.displayName: $cmd", displayed: false)
+}
+
+def refresh() {
+	log.debug "refresh() called"
+	def commands = []
+	
+	// Request current sensor state
+	commands << zwave.sensorBinaryV1.sensorBinaryGet()
+	
+	// Request battery level if device supports it
+	if (!state.lastbat || (new Date().time) - state.lastbat > 53*60*60*1000) {
+		commands << zwave.batteryV1.batteryGet()
+	}
+	
+	// Return the commands to be sent
+	return commands.collect{ response(it) }
+}
+
+void initialize() {
+	log.debug "initialize() called"
+	refresh()
 }
 
 0
