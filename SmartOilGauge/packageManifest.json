@@ -22,5 +22,8 @@
       "location": "https://raw.githubusercontent.com/dlaporte/Hubitat/refs/heads/main/SmartOilGauge/device/smartoilgauge.groovy",
       "required": true
     }
-  ]
+  ],
+  "version": "0.0.3",
+  "releaseNotes": "Initial release to Hubitat Package Manager",
+  "communityLink": "https://community.hubitat.com/t/smart-oil-gauge-app-and-device/63078"
 }
