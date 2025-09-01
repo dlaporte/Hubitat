@@ -1,7 +1,7 @@
 /**
- *  WADWAZ-1/Monoprice 15270 as Radon Fan Sensor
+ *  Radon Fan Sensor
  *
- *  Version - 0.2
+ *  Version - 0.3
  *
  *  Copyright 2017 David LaPorte
  *
@@ -24,9 +24,10 @@
  * Parts List:
  *
  *      1) Dwyer 1910-00 Pressure Switch
- *      2) 1/8" barbed 3-way fitting
- *      3) 1/8" Barb x 1/8" NPT Male Pipe fitting
- *      4) 1/8" ID plastic tubing
+ *      2) I door switch with terminals, similar to WADWAZ-1 or Monoprice 15270
+ *      3) 1/8" barbed 3-way fitting
+ *      4) 1/8" Barb x 1/8" NPT Male Pipe fitting
+ *      5) 1/8" ID plastic tubing
  *
  * Install (non-destructively) on an existing RadonAway Easy Manometer:
  *
@@ -46,7 +47,7 @@
 // for the UI
 metadata {
 
-	definition (name: "WADWAZ-1/Monoprice 15270 as Radon Fan Sensor", namespace: "dlaporte", author: "dlaporte") {
+	definition (name: "Radon Fan Sensor", namespace: "dlaporte", author: "dlaporte") {
 		capability "Sensor"
 		capability "Battery"
 		capability "Refresh"
