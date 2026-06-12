@@ -10,8 +10,10 @@
  *
  *  Does NOT expose any siren/alarm-trigger commands by design.
  *
+ *  v0.3 - added microphone enable/disable (SetEnc.audio).
  *  v0.2 - UX pass: dropped redundant floodlightModeNum attribute,
- *         renamed cameraIP → cameraIP, shorter keepLightOn label.
+ *         renamed cameraIp → cameraIP, shorter keepLightOn label,
+ *         renamed flKeepOnSupported → floodlightKeepOnSupported.
  *  v0.1 - initial release
  *
  *  Copyright 2026 David LaPorte
@@ -50,6 +52,7 @@ metadata {
     attribute "lightingSchedule", "string"
     attribute "IRMode", "string"
     attribute "dayNightMode", "string"
+    attribute "microphone", "string"
 
     attribute "personDetected", "string"
     attribute "vehicleDetected", "string"
@@ -67,6 +70,9 @@ metadata {
     ]
     command "setIRMode", [[name: "mode", type: "ENUM", constraints: ["Auto", "Off"]]]
     command "setDayNightMode", [[name: "mode", type: "ENUM", constraints: ["Auto", "Color", "Black&White"]]]
+    command "setMicrophone", [[name: "state", type: "ENUM",
+        description: "Enable or disable the camera's microphone (Enc.audio)",
+        constraints: ["On", "Off"]]]
   }
 
   preferences {
@@ -106,12 +112,13 @@ def initialize() {
   unschedule()
   state.token = null
   state.tokenExpiry = 0
-  // v0.2 cleanup: drop legacy state map and renamed/removed attributes
+  // v0.2 cleanup: drop legacy state map, renamed/removed attributes, and stale dataValue keys
   state.remove("AISupport")
-  state.remove("flKeepOnSupported") // moved to device.dataValue in v0.2
+  state.remove("flKeepOnSupported") // v0.1 stored capability here; v0.2 moved to dataValue
   ["cameraIp", "irMode", "floodlightModeNum", "alarmEnabled"].each {
     try { device.deleteCurrentState(it) } catch (Exception e) { /* older HE without API; ignore */ }
   }
+  try { device.removeDataValue("flKeepOnSupported") } catch (Exception e) { /* fine if absent */ }
   // Bump epoch so any in-flight pollStatus from a previous initialize() bows out cleanly
   state.pollEpoch = ((state.pollEpoch ?: 0) as Integer) + 1
 
@@ -198,7 +205,7 @@ def keepAlive() {
 }
 
 private boolean shouldKeepAlive() {
-  return keepLightOn && device.getDataValue("flKeepOnSupported") != "true"
+  return keepLightOn && device.getDataValue("floodlightKeepOnSupported") != "true"
 }
 
 // ---------------------------------------------------------------------------
@@ -269,6 +276,14 @@ def setDayNightMode(String mode) {
   if (resp && resp[0]?.code == 0) sendEvent(name: "dayNightMode", value: mode)
 }
 
+def setMicrophone(String state) {
+  if (!(state in ["On", "Off"])) { log.error "Reolink: invalid microphone state '${state}'"; return }
+  Integer v = (state == "On") ? 1 : 0
+  def resp = sendCmd([[cmd: "SetEnc", param: [Enc: [channel: 0, audio: v]]]])
+  if (resp && resp[0]?.code == 0) sendEvent(name: "microphone", value: state)
+  else log.error "Reolink: setMicrophone failed: ${resp}"
+}
+
 // ---------------------------------------------------------------------------
 // Refresh + poll
 // ---------------------------------------------------------------------------
@@ -281,7 +296,8 @@ def refresh() {
       [cmd: "GetAbility",   param: [User: [userName: username]]],
       [cmd: "GetWhiteLed",  param: [channel: 0]],
       [cmd: "GetIrLights",  param: [channel: 0]],
-      [cmd: "GetIsp",       param: [channel: 0]]
+      [cmd: "GetIsp",       param: [channel: 0]],
+      [cmd: "GetEnc",       param: [channel: 0]]
   ])
   if (!resp) return
 
@@ -307,7 +323,7 @@ def refresh() {
         break
       case "GetAbility":
         def chn = r.value.Ability?.abilityChn?.getAt(0) ?: [:]
-        device.updateDataValue("flKeepOnSupported", String.valueOf((chn.supportFLKeepOn?.permit ?: 0) > 0))
+        device.updateDataValue("floodlightKeepOnSupported", String.valueOf((chn.supportFLKeepOn?.permit ?: 0) > 0))
         break
       case "GetWhiteLed":
         def w = r.value.WhiteLed ?: [:]
@@ -332,6 +348,10 @@ def refresh() {
         break
       case "GetIsp":
         sendEvent(name: "dayNightMode", value: r.value.Isp?.dayNight ?: "unknown")
+        break
+      case "GetEnc":
+        def en = r.value.Enc?.audio
+        if (en != null) sendEvent(name: "microphone", value: en == 1 ? "On" : "Off")
         break
     }
   }
