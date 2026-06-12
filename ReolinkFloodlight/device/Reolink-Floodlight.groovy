@@ -5,7 +5,7 @@
  *  Elite Pro Floodlight PoE (F760P), Duo 3 PoE (P750) and similar models.
  *
  *  Exposes: Switch (on/off), SwitchLevel (brightness), MotionSensor (alarm state),
- *  AI detection attributes (person/vehicle/animal), floodlight mode, IR mode,
+ *  AI detection attributes (person/vehicle/animal/face), floodlight mode, IR mode,
  *  day/night mode, device info, and a self-rescheduling poll loop.
  *
  *  Does NOT expose any siren/alarm-trigger commands by design.
@@ -53,6 +53,7 @@ metadata {
     attribute "personDetected", "string"
     attribute "vehicleDetected", "string"
     attribute "animalDetected", "string"
+    attribute "faceDetected", "string"
 
     command "setBrightness", [[name: "level", type: "NUMBER",
         description: "Floodlight brightness, 0-100 (0 turns the light off)"]]
@@ -76,9 +77,11 @@ metadata {
     input("keepLightOn", "bool", title: "Refresh floodlight every 2 minutes while on (works around firmware 3-min auto-off)",
         defaultValue: true)
     section("AI Support") {
-      input("aiPerson",  "bool", title: "Report person detection",     defaultValue: true)
-      input("aiVehicle", "bool", title: "Report vehicle detection",    defaultValue: true)
-      input("aiAnimal",  "bool", title: "Report animal detection",     defaultValue: true)
+      input("aiPerson",  "bool", title: "Report person detection",  defaultValue: true)
+      input("aiVehicle", "bool", title: "Report vehicle detection", defaultValue: true)
+      input("aiAnimal",  "bool", title: "Report animal detection",  defaultValue: true)
+      input("aiFace",    "bool", title: "Report face detection (only supported on some models)",
+          defaultValue: false)
     }
     input("debug", "bool", title: "Debug logging", defaultValue: false)
   }
@@ -350,6 +353,7 @@ def pollStatus() {
         if (aiPerson  != false) sendEvent(name: "personDetected",  value: v.people?.alarm_state  == 1 ? "active" : "inactive")
         if (aiVehicle != false) sendEvent(name: "vehicleDetected", value: v.vehicle?.alarm_state == 1 ? "active" : "inactive")
         if (aiAnimal  != false) sendEvent(name: "animalDetected",  value: v.dog_cat?.alarm_state == 1 ? "active" : "inactive")
+        if (aiFace    == true)  sendEvent(name: "faceDetected",    value: v.face?.alarm_state    == 1 ? "active" : "inactive")
       }
     }
   }
