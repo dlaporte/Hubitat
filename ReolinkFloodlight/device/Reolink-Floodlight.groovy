@@ -10,6 +10,8 @@
  *
  *  Does NOT expose any siren/alarm-trigger commands by design.
  *
+ *  v0.2 - UX pass: dropped redundant floodlightModeNum attribute,
+ *         renamed cameraIP → cameraIP, shorter keepLightOn label.
  *  v0.1 - initial release
  *
  *  Copyright 2026 David LaPorte
@@ -42,10 +44,9 @@ metadata {
     attribute "hardwareVersion", "string"
     attribute "serial", "string"
     attribute "mac", "string"
-    attribute "cameraIp", "string"
+    attribute "cameraIP", "string"
 
     attribute "floodlightMode", "string"
-    attribute "floodlightModeNum", "number"
     attribute "lightingSchedule", "string"
     attribute "IRMode", "string"
     attribute "dayNightMode", "string"
@@ -74,7 +75,7 @@ metadata {
     input("password", "password", title: "Password", required: true)
     input("pollInterval", "number", title: "Motion/AI poll interval (seconds)",
         defaultValue: 5, range: "5..300", required: true)
-    input("keepLightOn", "bool", title: "Refresh floodlight every 2 minutes while on (works around firmware 3-min auto-off)",
+    input("keepLightOn", "bool", title: "Keep floodlight on indefinitely (re-asserts state every 2 min)",
         defaultValue: true)
     section("AI Support") {
       input("aiPerson",  "bool", title: "Report person detection",  defaultValue: true)
@@ -105,7 +106,11 @@ def initialize() {
   unschedule()
   state.token = null
   state.tokenExpiry = 0
-  state.remove("AISupport") // legacy: pre-v0.2 stored capability map here; now driven by preferences
+  // v0.2 cleanup: drop legacy state map and renamed/removed attributes
+  state.remove("AISupport")
+  ["cameraIp", "irMode", "floodlightModeNum", "alarmEnabled"].each {
+    try { device.deleteCurrentState(it) } catch (Exception e) { /* older HE without API; ignore */ }
+  }
   // Bump epoch so any in-flight pollStatus from a previous initialize() bows out cleanly
   state.pollEpoch = ((state.pollEpoch ?: 0) as Integer) + 1
 
@@ -114,7 +119,7 @@ def initialize() {
     return
   }
 
-  sendEvent(name: "cameraIp", value: ip)
+  sendEvent(name: "cameraIP", value: ip)
   refresh()
   runIn(1, "pollStatus")
 }
@@ -215,8 +220,7 @@ def setFloodlightMode(String mode) {
       : [WhiteLed: [channel: 0, mode: m]]
   def resp = sendCmd([[cmd: "SetWhiteLed", param: param]])
   if (resp && resp[0]?.code == 0) {
-    sendEvent(name: "floodlightMode",    value: mode)
-    sendEvent(name: "floodlightModeNum", value: m)
+    sendEvent(name: "floodlightMode", value: mode)
     if (m == 0) {
       unschedule("keepAlive")
       sendEvent(name: "switch", value: "off")
@@ -298,7 +302,7 @@ def refresh() {
         def ll = r.value.LocalLink ?: [:]
         sendEvent(name: "mac",      value: ll.mac ?: "unknown")
         // 'static' is a Groovy reserved word — use subscript form
-        sendEvent(name: "cameraIp", value: ll["static"]?.ip ?: ip)
+        sendEvent(name: "cameraIP", value: ll["static"]?.ip ?: ip)
         break
       case "GetAbility":
         def chn = r.value.Ability?.abilityChn?.getAt(0) ?: [:]
@@ -306,9 +310,8 @@ def refresh() {
         break
       case "GetWhiteLed":
         def w = r.value.WhiteLed ?: [:]
-        sendEvent(name: "switch",            value: w.state == 1 ? "on" : "off")
-        sendEvent(name: "level",             value: w.bright != null ? w.bright : 0)
-        sendEvent(name: "floodlightModeNum", value: w.mode != null ? w.mode : 0)
+        sendEvent(name: "switch", value: w.state == 1 ? "on" : "off")
+        sendEvent(name: "level",  value: w.bright != null ? w.bright : 0)
         def modeName = (w.mode != null && w.mode >= 0 && w.mode <= 3)
             ? ["Off", "NightSmart", "AlwaysAtNight", "Schedule"][w.mode as Integer]
             : "Unknown"

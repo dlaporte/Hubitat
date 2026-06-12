@@ -1,7 +1,7 @@
 {
   "packageName": "Reolink Floodlight Camera",
   "author": "David LaPorte",
-  "version": "0.1",
+  "version": "0.2",
   "minimumHEVersion": "2.1.9",
   "dateReleased": "2026-06-12",
   "drivers": [
