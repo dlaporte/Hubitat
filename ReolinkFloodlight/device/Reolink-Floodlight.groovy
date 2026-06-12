@@ -54,18 +54,22 @@ metadata {
     attribute "vehicleDetected", "string"
     attribute "animalDetected", "string"
     attribute "faceDetected", "string"
+    attribute "alarmEnabled", "string"
 
-    command "setFloodlightMode", [[name: "mode", type: "ENUM", description: "Floodlight auto-mode",
+    command "setBrightness", [[name: "level", type: "NUMBER",
+        description: "Floodlight brightness, 0-100 (0 turns the light off)"]]
+    command "setFloodlightMode", [[name: "mode", type: "ENUM",
+        description: "Off = fully disabled; other modes control auto-trigger behavior",
         constraints: ["Off", "NightSmart", "AlwaysAtNight", "Schedule"]]]
     command "setLightingSchedule", [
-        [name: "startHour", type: "NUMBER"],
-        [name: "startMinute", type: "NUMBER"],
-        [name: "endHour", type: "NUMBER"],
-        [name: "endMinute", type: "NUMBER"]
+        [name: "startTime", type: "TIME", description: "Time of day to start lighting (Schedule mode only)"],
+        [name: "endTime",   type: "TIME", description: "Time of day to end lighting"]
     ]
     command "setIrMode", [[name: "mode", type: "ENUM", constraints: ["Auto", "Off"]]]
     command "setDayNightMode", [[name: "mode", type: "ENUM", constraints: ["Auto", "Color", "Black&White"]]]
-    command "disableFloodlight"
+    command "setAlarmEnable", [[name: "enabled", type: "ENUM",
+        description: "Allow camera siren to fire from motion/AI events. Configuration only; never triggers the siren itself.",
+        constraints: ["true", "false"]]]
   }
 
   preferences {
@@ -136,8 +140,15 @@ def off() {
   applyFloodlight(0, null)
 }
 
+// SwitchLevel capability — required for Rule Machine dimmer compatibility.
+// `duration` (ramp time) is ignored; the camera firmware does not support fades.
 def setLevel(level, duration = null) {
-  if (debug) log.debug "Reolink: setLevel(${level})"
+  setBrightness(level)
+}
+
+// Friendlier alias for setLevel — explicit "brightness" naming on the device page.
+def setBrightness(level) {
+  if (debug) log.debug "Reolink: setBrightness(${level})"
   Integer lvl = (level as BigDecimal).intValue()
   if (lvl < 0) lvl = 0
   if (lvl > 100) lvl = 100
@@ -185,26 +196,41 @@ private boolean shouldKeepAlive() {
 // Custom commands
 // ---------------------------------------------------------------------------
 
+// Mode "Off" fully disables the floodlight — turns the light off NOW (state:0)
+// AND clears the auto-mode (mode:0) so it won't re-trigger from schedule, smart
+// detection, or always-at-night. The Reolink app does not expose mode:0; this
+// is the only path to a truly silent floodlight.
+// Other modes only change the auto-behavior; they don't toggle the light off.
 def setFloodlightMode(String mode) {
   def m = ["Off": 0, "NightSmart": 1, "AlwaysAtNight": 2, "Schedule": 3][mode]
   if (m == null) {
     log.error "Reolink: invalid floodlight mode '${mode}'"
     return
   }
-  def resp = sendCmd([[cmd: "SetWhiteLed", param: [WhiteLed: [channel: 0, mode: m]]]])
+  def param = (m == 0)
+      ? [WhiteLed: [channel: 0, state: 0, mode: 0]]
+      : [WhiteLed: [channel: 0, mode: m]]
+  def resp = sendCmd([[cmd: "SetWhiteLed", param: param]])
   if (resp && resp[0]?.code == 0) {
-    sendEvent(name: "floodlightMode", value: mode)
+    sendEvent(name: "floodlightMode",    value: mode)
     sendEvent(name: "floodlightModeNum", value: m)
+    if (m == 0) {
+      unschedule("keepAlive")
+      sendEvent(name: "switch", value: "off")
+    }
   } else {
     log.error "Reolink: setFloodlightMode failed: ${resp}"
   }
 }
 
-def setLightingSchedule(startHour, startMinute, endHour, endMinute) {
-  def sched = [
-      StartHour: startHour as Integer, StartMin: startMinute as Integer,
-      EndHour: endHour as Integer,     EndMin: endMinute as Integer
-  ]
+def setLightingSchedule(String startTime, String endTime) {
+  def s = parseHm(startTime)
+  def e = parseHm(endTime)
+  if (s == null || e == null) {
+    log.error "Reolink: setLightingSchedule got unparseable time(s): start='${startTime}' end='${endTime}'"
+    return
+  }
+  def sched = [StartHour: s.hour, StartMin: s.minute, EndHour: e.hour, EndMin: e.minute]
   def resp = sendCmd([[cmd: "SetWhiteLed", param: [WhiteLed: [channel: 0, LightingSchedule: sched]]]])
   if (resp && resp[0]?.code == 0) {
     sendEvent(name: "lightingSchedule",
@@ -212,6 +238,15 @@ def setLightingSchedule(startHour, startMinute, endHour, endMinute) {
   } else {
     log.error "Reolink: setLightingSchedule failed: ${resp}"
   }
+}
+
+// Accepts either "HH:mm" or an ISO datetime like "1970-01-01T18:00:00.000-0500"
+// (Hubitat TIME inputs from rule-machine pass the latter form).
+private Map parseHm(String t) {
+  if (!t) return null
+  def m = t =~ /(\d{1,2}):(\d{2})/
+  if (m && m[0]) return [hour: m[0][1] as Integer, minute: m[0][2] as Integer]
+  return null
 }
 
 def setIrMode(String mode) {
@@ -226,20 +261,17 @@ def setDayNightMode(String mode) {
   if (resp && resp[0]?.code == 0) sendEvent(name: "dayNightMode", value: mode)
 }
 
-// Fully disable the floodlight: turns the light off now AND clears the auto-mode
-// so it won't re-trigger at night, on schedule, or on AI detection. The Reolink
-// app does not expose mode:0, so this is the only path to a truly silent floodlight.
-def disableFloodlight() {
-  if (debug) log.debug "Reolink: disableFloodlight()"
-  unschedule("keepAlive")
-  def resp = sendCmd([[cmd: "SetWhiteLed", param: [WhiteLed: [channel: 0, state: 0, mode: 0]]]])
-  if (resp && resp[0]?.code == 0) {
-    sendEvent(name: "switch",            value: "off")
-    sendEvent(name: "floodlightMode",    value: "Off")
-    sendEvent(name: "floodlightModeNum", value: 0)
-  } else {
-    log.error "Reolink: disableFloodlight failed: ${resp}"
-  }
+// Toggles whether the camera's built-in siren is ALLOWED to fire from
+// motion/AI events. This is a configuration-only command — it never
+// directly triggers the siren. The driver intentionally does not expose
+// AudioAlarmPlay or any other manual siren-trigger.
+def setAlarmEnable(String enabled) {
+  if (!(enabled in ["true", "false"])) { log.error "Reolink: invalid setAlarmEnable arg"; return }
+  if (!state.alarmSupport) { log.warn "Reolink: this camera does not report audio-alarm support"; return }
+  Integer v = (enabled == "true") ? 1 : 0
+  def resp = sendCmd([[cmd: "SetAudioAlarmV20", param: [Audio: [enable: v]]]])
+  if (resp && resp[0]?.code == 0) sendEvent(name: "alarmEnabled", value: enabled)
+  else log.error "Reolink: setAlarmEnable failed: ${resp}"
 }
 
 // ---------------------------------------------------------------------------
@@ -249,12 +281,13 @@ def disableFloodlight() {
 def refresh() {
   if (debug) log.debug "Reolink: refresh()"
   def resp = sendCmd([
-      [cmd: "GetDevInfo",   param: [:]],
-      [cmd: "GetLocalLink", param: [:]],
-      [cmd: "GetAbility",   param: [User: [userName: username]]],
-      [cmd: "GetWhiteLed",  param: [channel: 0]],
-      [cmd: "GetIrLights",  param: [channel: 0]],
-      [cmd: "GetIsp",       param: [channel: 0]]
+      [cmd: "GetDevInfo",       param: [:]],
+      [cmd: "GetLocalLink",     param: [:]],
+      [cmd: "GetAbility",       param: [User: [userName: username]]],
+      [cmd: "GetWhiteLed",      param: [channel: 0]],
+      [cmd: "GetIrLights",      param: [channel: 0]],
+      [cmd: "GetIsp",           param: [channel: 0]],
+      [cmd: "GetAudioAlarmV20", param: [channel: 0]]
   ])
   if (!resp) return
 
@@ -279,7 +312,8 @@ def refresh() {
         sendEvent(name: "cameraIp", value: ll["static"]?.ip ?: ip)
         break
       case "GetAbility":
-        def chn = r.value.Ability.abilityChn?.getAt(0) ?: [:]
+        def ab  = r.value.Ability ?: [:]
+        def chn = ab.abilityChn?.getAt(0) ?: [:]
         state.aiSupport = [
             people:  (chn.supportAiPeople?.permit ?: 0)  > 0,
             vehicle: (chn.supportAiVehicle?.permit ?: 0) > 0,
@@ -287,6 +321,7 @@ def refresh() {
             face:    (chn.supportAiFace?.permit ?: 0)    > 0
         ]
         state.flKeepOnSupported = (chn.supportFLKeepOn?.permit ?: 0) > 0
+        state.alarmSupport      = (ab.supportAudioAlarm?.permit ?: 0) > 0
         break
       case "GetWhiteLed":
         def w = r.value.WhiteLed ?: [:]
@@ -312,6 +347,10 @@ def refresh() {
         break
       case "GetIsp":
         sendEvent(name: "dayNightMode", value: r.value.Isp?.dayNight ?: "unknown")
+        break
+      case "GetAudioAlarmV20":
+        def en = r.value.Audio?.enable
+        if (en != null) sendEvent(name: "alarmEnabled", value: en == 1 ? "true" : "false")
         break
     }
   }
