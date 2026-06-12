@@ -54,7 +54,6 @@ metadata {
     attribute "vehicleDetected", "string"
     attribute "animalDetected", "string"
     attribute "faceDetected", "string"
-    attribute "alarmEnabled", "string"
 
     command "setBrightness", [[name: "level", type: "NUMBER",
         description: "Floodlight brightness, 0-100 (0 turns the light off)"]]
@@ -67,9 +66,6 @@ metadata {
     ]
     command "setIrMode", [[name: "mode", type: "ENUM", constraints: ["Auto", "Off"]]]
     command "setDayNightMode", [[name: "mode", type: "ENUM", constraints: ["Auto", "Color", "Black&White"]]]
-    command "setAlarmEnable", [[name: "enabled", type: "ENUM",
-        description: "Allow camera siren to fire from motion/AI events. Configuration only; never triggers the siren itself.",
-        constraints: ["true", "false"]]]
   }
 
   preferences {
@@ -261,19 +257,6 @@ def setDayNightMode(String mode) {
   if (resp && resp[0]?.code == 0) sendEvent(name: "dayNightMode", value: mode)
 }
 
-// Toggles whether the camera's built-in siren is ALLOWED to fire from
-// motion/AI events. This is a configuration-only command — it never
-// directly triggers the siren. The driver intentionally does not expose
-// AudioAlarmPlay or any other manual siren-trigger.
-def setAlarmEnable(String enabled) {
-  if (!(enabled in ["true", "false"])) { log.error "Reolink: invalid setAlarmEnable arg"; return }
-  if (!state.alarmSupport) { log.warn "Reolink: this camera does not report audio-alarm support"; return }
-  Integer v = (enabled == "true") ? 1 : 0
-  def resp = sendCmd([[cmd: "SetAudioAlarmV20", param: [Audio: [enable: v]]]])
-  if (resp && resp[0]?.code == 0) sendEvent(name: "alarmEnabled", value: enabled)
-  else log.error "Reolink: setAlarmEnable failed: ${resp}"
-}
-
 // ---------------------------------------------------------------------------
 // Refresh + poll
 // ---------------------------------------------------------------------------
@@ -281,13 +264,12 @@ def setAlarmEnable(String enabled) {
 def refresh() {
   if (debug) log.debug "Reolink: refresh()"
   def resp = sendCmd([
-      [cmd: "GetDevInfo",       param: [:]],
-      [cmd: "GetLocalLink",     param: [:]],
-      [cmd: "GetAbility",       param: [User: [userName: username]]],
-      [cmd: "GetWhiteLed",      param: [channel: 0]],
-      [cmd: "GetIrLights",      param: [channel: 0]],
-      [cmd: "GetIsp",           param: [channel: 0]],
-      [cmd: "GetAudioAlarmV20", param: [channel: 0]]
+      [cmd: "GetDevInfo",   param: [:]],
+      [cmd: "GetLocalLink", param: [:]],
+      [cmd: "GetAbility",   param: [User: [userName: username]]],
+      [cmd: "GetWhiteLed",  param: [channel: 0]],
+      [cmd: "GetIrLights",  param: [channel: 0]],
+      [cmd: "GetIsp",       param: [channel: 0]]
   ])
   if (!resp) return
 
@@ -312,8 +294,7 @@ def refresh() {
         sendEvent(name: "cameraIp", value: ll["static"]?.ip ?: ip)
         break
       case "GetAbility":
-        def ab  = r.value.Ability ?: [:]
-        def chn = ab.abilityChn?.getAt(0) ?: [:]
+        def chn = r.value.Ability?.abilityChn?.getAt(0) ?: [:]
         state.aiSupport = [
             people:  (chn.supportAiPeople?.permit ?: 0)  > 0,
             vehicle: (chn.supportAiVehicle?.permit ?: 0) > 0,
@@ -321,7 +302,6 @@ def refresh() {
             face:    (chn.supportAiFace?.permit ?: 0)    > 0
         ]
         state.flKeepOnSupported = (chn.supportFLKeepOn?.permit ?: 0) > 0
-        state.alarmSupport      = (ab.supportAudioAlarm?.permit ?: 0) > 0
         break
       case "GetWhiteLed":
         def w = r.value.WhiteLed ?: [:]
@@ -347,10 +327,6 @@ def refresh() {
         break
       case "GetIsp":
         sendEvent(name: "dayNightMode", value: r.value.Isp?.dayNight ?: "unknown")
-        break
-      case "GetAudioAlarmV20":
-        def en = r.value.Audio?.enable
-        if (en != null) sendEvent(name: "alarmEnabled", value: en == 1 ? "true" : "false")
         break
     }
   }
