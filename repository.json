@@ -25,6 +25,12 @@
 			"category": "Integrations",
 			"location": "https://raw.githubusercontent.com/dlaporte/Hubitat/main/SmartOilGauge/packageManifest.json",
 			"description": "Monitor the Smart Oil Gauge (https://www.smartoilgauge.com)"
+		},
+		{
+			"name": "Reolink Floodlight Camera",
+			"category": "Integrations",
+			"location": "https://raw.githubusercontent.com/dlaporte/Hubitat/main/ReolinkFloodlight/packageManifest.json",
+			"description": "Control floodlight, motion/AI detection, microphone, status LED, and view RTSP / snapshot URLs for Reolink WhiteLed cameras (Elite Pro Floodlight PoE, Elite Floodlight WiFi, Duo 3 PoE, etc.)"
 		}
 	]
 	
