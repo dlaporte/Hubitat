@@ -10,7 +10,10 @@
  *
  *  Does NOT expose any siren/alarm-trigger commands by design.
  *
- *  v0.3 - added microphone enable/disable (SetEnc.audio).
+ *  v0.3 - added microphone enable/disable (SetEnc.audio);
+ *         removed AI report toggles (the prefs were only filtering
+ *         events driver-side, which was misleading — emission is now
+ *         auto-gated on the camera's per-call AI support flags).
  *  v0.2 - UX pass: dropped redundant floodlightModeNum attribute,
  *         renamed cameraIp → cameraIP, shorter keepLightOn label,
  *         renamed flKeepOnSupported → floodlightKeepOnSupported.
@@ -83,13 +86,6 @@ metadata {
         defaultValue: 5, range: "5..300", required: true)
     input("keepLightOn", "bool", title: "Keep floodlight on indefinitely (re-asserts state every 2 min)",
         defaultValue: true)
-    section("AI Support") {
-      input("aiPerson",  "bool", title: "Report person detection",  defaultValue: true)
-      input("aiVehicle", "bool", title: "Report vehicle detection", defaultValue: true)
-      input("aiAnimal",  "bool", title: "Report animal detection",  defaultValue: true)
-      input("aiFace",    "bool", title: "Report face detection (only supported on some models)",
-          defaultValue: false)
-    }
     input("debug", "bool", title: "Debug logging", defaultValue: false)
   }
 }
@@ -374,10 +370,12 @@ def pollStatus() {
         sendEvent(name: "motion", value: r.value?.state == 1 ? "active" : "inactive")
       } else if (r.cmd == "GetAiState") {
         def v = r.value ?: [:]
-        if (aiPerson  != false) sendEvent(name: "personDetected",  value: v.people?.alarm_state  == 1 ? "active" : "inactive")
-        if (aiVehicle != false) sendEvent(name: "vehicleDetected", value: v.vehicle?.alarm_state == 1 ? "active" : "inactive")
-        if (aiAnimal  != false) sendEvent(name: "animalDetected",  value: v.dog_cat?.alarm_state == 1 ? "active" : "inactive")
-        if (aiFace    == true)  sendEvent(name: "faceDetected",    value: v.face?.alarm_state    == 1 ? "active" : "inactive")
+        // Gate each emission on the per-call `support` flag so unsupported AI
+        // types don't surface as perpetually-"inactive" clutter.
+        if (v.people?.support  == 1) sendEvent(name: "personDetected",  value: v.people.alarm_state  == 1 ? "active" : "inactive")
+        if (v.vehicle?.support == 1) sendEvent(name: "vehicleDetected", value: v.vehicle.alarm_state == 1 ? "active" : "inactive")
+        if (v.dog_cat?.support == 1) sendEvent(name: "animalDetected",  value: v.dog_cat.alarm_state == 1 ? "active" : "inactive")
+        if (v.face?.support    == 1) sendEvent(name: "faceDetected",    value: v.face.alarm_state    == 1 ? "active" : "inactive")
       }
     }
   }
