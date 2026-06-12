@@ -374,7 +374,7 @@ private boolean login() {
       if (data && data[0]?.code == 0) {
         state.token = data[0].value.Token.name
         state.tokenExpiry = now() + ((data[0].value.Token.leaseTime as Long) * 1000L)
-        if (debug) log.debug "Reolink: login OK token=${state.token} leaseTime=${data[0].value.Token.leaseTime}s"
+        if (debug) log.debug "Reolink: login OK token=…${state.token?.takeRight(4)} leaseTime=${data[0].value.Token.leaseTime}s"
         ok = true
       } else {
         log.error "Reolink: login failed: ${data}"
