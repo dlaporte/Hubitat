@@ -108,6 +108,7 @@ def initialize() {
   state.tokenExpiry = 0
   // v0.2 cleanup: drop legacy state map and renamed/removed attributes
   state.remove("AISupport")
+  state.remove("flKeepOnSupported") // moved to device.dataValue in v0.2
   ["cameraIp", "irMode", "floodlightModeNum", "alarmEnabled"].each {
     try { device.deleteCurrentState(it) } catch (Exception e) { /* older HE without API; ignore */ }
   }
@@ -197,7 +198,7 @@ def keepAlive() {
 }
 
 private boolean shouldKeepAlive() {
-  return keepLightOn && !state.flKeepOnSupported
+  return keepLightOn && device.getDataValue("flKeepOnSupported") != "true"
 }
 
 // ---------------------------------------------------------------------------
@@ -306,7 +307,7 @@ def refresh() {
         break
       case "GetAbility":
         def chn = r.value.Ability?.abilityChn?.getAt(0) ?: [:]
-        state.flKeepOnSupported = (chn.supportFLKeepOn?.permit ?: 0) > 0
+        device.updateDataValue("flKeepOnSupported", String.valueOf((chn.supportFLKeepOn?.permit ?: 0) > 0))
         break
       case "GetWhiteLed":
         def w = r.value.WhiteLed ?: [:]
