@@ -10,6 +10,8 @@
  *
  *  Does NOT expose any siren/alarm-trigger commands by design.
  *
+ *  v0.4 - added powerLED toggle, RTSP URLs, SD-card health attributes,
+ *         and snapshotURL (short-session JPEG endpoint for dashboards).
  *  v0.3 - added microphone enable/disable (SetEnc.audio);
  *         removed AI report toggles (the prefs were only filtering
  *         events driver-side, which was misleading — emission is now
@@ -56,6 +58,15 @@ metadata {
     attribute "IRMode", "string"
     attribute "dayNightMode", "string"
     attribute "microphone", "string"
+    attribute "powerLED", "string"
+
+    attribute "rtspMainStream", "string"
+    attribute "rtspSubStream", "string"
+    attribute "snapshotURL", "string"
+
+    attribute "sdCardCapacityMB", "number"
+    attribute "sdCardFreeMB", "number"
+    attribute "sdCardMounted", "string"
 
     attribute "personDetected", "string"
     attribute "vehicleDetected", "string"
@@ -75,6 +86,9 @@ metadata {
     command "setDayNightMode", [[name: "mode", type: "ENUM", constraints: ["Auto", "Color", "Black&White"]]]
     command "setMicrophone", [[name: "state", type: "ENUM",
         description: "Enable or disable the camera's microphone (Enc.audio)",
+        constraints: ["On", "Off"]]]
+    command "setPowerLED", [[name: "state", type: "ENUM",
+        description: "Toggle the camera's status/power LED (only on models with one)",
         constraints: ["On", "Off"]]]
   }
 
@@ -124,6 +138,13 @@ def initialize() {
   }
 
   sendEvent(name: "cameraIP", value: ip)
+  // Snapshot URL embeds credentials so any Hubitat image tile or dashboard can fetch
+  // a live JPEG via short-session auth. Plain HTTP, LAN only — same threat model as the
+  // rest of the camera API. Do not screenshot/share unless you trust the audience.
+  String snap = "http://${ip}/cgi-bin/api.cgi?cmd=Snap&channel=0&rs=hubitat" +
+      "&user=${URLEncoder.encode(username, 'UTF-8')}&password=${URLEncoder.encode(password, 'UTF-8')}"
+  sendEvent(name: "snapshotURL", value: snap)
+
   refresh()
   runIn(1, "pollStatus")
 }
@@ -280,6 +301,17 @@ def setMicrophone(String state) {
   else log.error "Reolink: setMicrophone failed: ${resp}"
 }
 
+def setPowerLED(String state) {
+  if (!(state in ["On", "Off"])) { log.error "Reolink: invalid powerLED state '${state}'"; return }
+  if (device.getDataValue("powerLEDSupported") != "true") {
+    log.warn "Reolink: this camera does not report a controllable power LED"
+    return
+  }
+  def resp = sendCmd([[cmd: "SetPowerLed", param: [PowerLed: [channel: 0, state: state]]]])
+  if (resp && resp[0]?.code == 0) sendEvent(name: "powerLED", value: state)
+  else log.error "Reolink: setPowerLED failed: ${resp}"
+}
+
 // ---------------------------------------------------------------------------
 // Refresh + poll
 // ---------------------------------------------------------------------------
@@ -293,7 +325,10 @@ def refresh() {
       [cmd: "GetWhiteLed",  param: [channel: 0]],
       [cmd: "GetIrLights",  param: [channel: 0]],
       [cmd: "GetIsp",       param: [channel: 0]],
-      [cmd: "GetEnc",       param: [channel: 0]]
+      [cmd: "GetEnc",       param: [channel: 0]],
+      [cmd: "GetRtspUrl",   param: [channel: 0]],
+      [cmd: "GetHddInfo",   param: [:]],
+      [cmd: "GetPowerLed",  param: [channel: 0]]
   ])
   if (!resp) return
 
@@ -320,6 +355,7 @@ def refresh() {
       case "GetAbility":
         def chn = r.value.Ability?.abilityChn?.getAt(0) ?: [:]
         device.updateDataValue("floodlightKeepOnSupported", String.valueOf((chn.supportFLKeepOn?.permit ?: 0) > 0))
+        device.updateDataValue("powerLEDSupported",         String.valueOf((chn.powerLed?.permit ?: 0) > 0))
         break
       case "GetWhiteLed":
         def w = r.value.WhiteLed ?: [:]
@@ -348,6 +384,21 @@ def refresh() {
       case "GetEnc":
         def en = r.value.Enc?.audio
         if (en != null) sendEvent(name: "microphone", value: en == 1 ? "On" : "Off")
+        break
+      case "GetRtspUrl":
+        def u = r.value.rtspUrl ?: [:]
+        if (u.mainStream) sendEvent(name: "rtspMainStream", value: u.mainStream)
+        if (u.subStream)  sendEvent(name: "rtspSubStream",  value: u.subStream)
+        break
+      case "GetHddInfo":
+        def h = r.value.HddInfo?.getAt(0) ?: [:]
+        if (h.capacity != null) sendEvent(name: "sdCardCapacityMB", value: h.capacity)
+        if (h.size     != null) sendEvent(name: "sdCardFreeMB",     value: h.size)
+        if (h.mount    != null) sendEvent(name: "sdCardMounted",    value: h.mount == 1 ? "true" : "false")
+        break
+      case "GetPowerLed":
+        def s = r.value.PowerLed?.state
+        if (s != null) sendEvent(name: "powerLED", value: s)
         break
     }
   }
