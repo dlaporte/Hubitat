@@ -1,0 +1,16 @@
+{
+  "packageName": "Reolink Floodlight Camera",
+  "author": "David LaPorte",
+  "version": "0.1",
+  "minimumHEVersion": "2.1.9",
+  "dateReleased": "2026-06-12",
+  "drivers": [
+    {
+      "id": "c1f9a4d2-3e8b-4f5c-9d2e-7a1b6c4f0d3e",
+      "name": "Reolink Floodlight Camera",
+      "namespace": "dlaporte",
+      "location": "https://raw.githubusercontent.com/dlaporte/Hubitat/main/ReolinkFloodlight/device/Reolink-Floodlight.groovy",
+      "required": true
+    }
+  ]
+}
