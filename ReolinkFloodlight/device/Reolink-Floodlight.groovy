@@ -60,8 +60,8 @@ metadata {
         description: "Off = fully disabled; other modes control auto-trigger behavior",
         constraints: ["Off", "NightSmart", "AlwaysAtNight", "Schedule"]]]
     command "setLightingSchedule", [
-        [name: "startTime", type: "TIME", description: "Time of day to start lighting (Schedule mode only)"],
-        [name: "endTime",   type: "TIME", description: "Time of day to end lighting"]
+        [name: "startTime", type: "STRING", description: "Lighting start time in 24-hour HH:mm (e.g. 18:00)"],
+        [name: "endTime",   type: "STRING", description: "Lighting end time in 24-hour HH:mm (e.g. 06:00)"]
     ]
     command "setIRMode", [[name: "mode", type: "ENUM", constraints: ["Auto", "Off"]]]
     command "setDayNightMode", [[name: "mode", type: "ENUM", constraints: ["Auto", "Color", "Black&White"]]]
