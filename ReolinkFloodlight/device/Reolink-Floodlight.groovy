@@ -5,7 +5,7 @@
  *  Elite Pro Floodlight PoE (F760P), Duo 3 PoE (P750) and similar models.
  *
  *  Exposes: Switch (on/off), SwitchLevel (brightness), MotionSensor (alarm state),
- *  AI detection attributes (person/vehicle/animal/face), floodlight mode, IR mode,
+ *  AI detection attributes (person/vehicle/animal), floodlight mode, IR mode,
  *  day/night mode, device info, and a self-rescheduling poll loop.
  *
  *  Does NOT expose any siren/alarm-trigger commands by design.
@@ -53,7 +53,6 @@ metadata {
     attribute "personDetected", "string"
     attribute "vehicleDetected", "string"
     attribute "animalDetected", "string"
-    attribute "faceDetected", "string"
 
     command "setBrightness", [[name: "level", type: "NUMBER",
         description: "Floodlight brightness, 0-100 (0 turns the light off)"]]
@@ -76,6 +75,11 @@ metadata {
         defaultValue: 5, range: "5..300", required: true)
     input("keepLightOn", "bool", title: "Refresh floodlight every 2 minutes while on (works around firmware 3-min auto-off)",
         defaultValue: true)
+    section("AI Support") {
+      input("aiPerson",  "bool", title: "Report person detection",     defaultValue: true)
+      input("aiVehicle", "bool", title: "Report vehicle detection",    defaultValue: true)
+      input("aiAnimal",  "bool", title: "Report animal detection",     defaultValue: true)
+    }
     input("debug", "bool", title: "Debug logging", defaultValue: false)
   }
 }
@@ -98,7 +102,7 @@ def initialize() {
   unschedule()
   state.token = null
   state.tokenExpiry = 0
-  state.AISupport = [:]
+  state.remove("AISupport") // legacy: pre-v0.2 stored capability map here; now driven by preferences
   // Bump epoch so any in-flight pollStatus from a previous initialize() bows out cleanly
   state.pollEpoch = ((state.pollEpoch ?: 0) as Integer) + 1
 
@@ -295,12 +299,6 @@ def refresh() {
         break
       case "GetAbility":
         def chn = r.value.Ability?.abilityChn?.getAt(0) ?: [:]
-        state.AISupport = [
-            people:  (chn.supportAiPeople?.permit ?: 0)  > 0,
-            vehicle: (chn.supportAiVehicle?.permit ?: 0) > 0,
-            animal:  ((chn.supportAiDogCat?.permit ?: 0) > 0) || ((chn.supportAiAnimal?.permit ?: 0) > 0),
-            face:    (chn.supportAiFace?.permit ?: 0)    > 0
-        ]
         state.flKeepOnSupported = (chn.supportFLKeepOn?.permit ?: 0) > 0
         break
       case "GetWhiteLed":
@@ -349,10 +347,9 @@ def pollStatus() {
         sendEvent(name: "motion", value: r.value?.state == 1 ? "active" : "inactive")
       } else if (r.cmd == "GetAiState") {
         def v = r.value ?: [:]
-        if (state.AISupport?.people)  sendEvent(name: "personDetected",  value: v.people?.alarm_state  == 1 ? "active" : "inactive")
-        if (state.AISupport?.vehicle) sendEvent(name: "vehicleDetected", value: v.vehicle?.alarm_state == 1 ? "active" : "inactive")
-        if (state.AISupport?.animal)  sendEvent(name: "animalDetected",  value: v.dog_cat?.alarm_state == 1 ? "active" : "inactive")
-        if (state.AISupport?.face)    sendEvent(name: "faceDetected",    value: v.face?.alarm_state    == 1 ? "active" : "inactive")
+        if (aiPerson  != false) sendEvent(name: "personDetected",  value: v.people?.alarm_state  == 1 ? "active" : "inactive")
+        if (aiVehicle != false) sendEvent(name: "vehicleDetected", value: v.vehicle?.alarm_state == 1 ? "active" : "inactive")
+        if (aiAnimal  != false) sendEvent(name: "animalDetected",  value: v.dog_cat?.alarm_state == 1 ? "active" : "inactive")
       }
     }
   }
