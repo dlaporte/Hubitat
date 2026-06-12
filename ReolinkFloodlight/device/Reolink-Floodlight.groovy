@@ -47,7 +47,7 @@ metadata {
     attribute "floodlightMode", "string"
     attribute "floodlightModeNum", "number"
     attribute "lightingSchedule", "string"
-    attribute "irMode", "string"
+    attribute "IRMode", "string"
     attribute "dayNightMode", "string"
 
     attribute "personDetected", "string"
@@ -64,7 +64,7 @@ metadata {
         [name: "startTime", type: "TIME", description: "Time of day to start lighting (Schedule mode only)"],
         [name: "endTime",   type: "TIME", description: "Time of day to end lighting"]
     ]
-    command "setIrMode", [[name: "mode", type: "ENUM", constraints: ["Auto", "Off"]]]
+    command "setIRMode", [[name: "mode", type: "ENUM", constraints: ["Auto", "Off"]]]
     command "setDayNightMode", [[name: "mode", type: "ENUM", constraints: ["Auto", "Color", "Black&White"]]]
   }
 
@@ -98,7 +98,7 @@ def initialize() {
   unschedule()
   state.token = null
   state.tokenExpiry = 0
-  state.aiSupport = [:]
+  state.AISupport = [:]
   // Bump epoch so any in-flight pollStatus from a previous initialize() bows out cleanly
   state.pollEpoch = ((state.pollEpoch ?: 0) as Integer) + 1
 
@@ -245,10 +245,10 @@ private Map parseHm(String t) {
   return null
 }
 
-def setIrMode(String mode) {
+def setIRMode(String mode) {
   if (!(mode in ["Auto", "Off"])) { log.error "Reolink: invalid IR mode"; return }
   def resp = sendCmd([[cmd: "SetIrLights", param: [IrLights: [channel: 0, state: mode]]]])
-  if (resp && resp[0]?.code == 0) sendEvent(name: "irMode", value: mode)
+  if (resp && resp[0]?.code == 0) sendEvent(name: "IRMode", value: mode)
 }
 
 def setDayNightMode(String mode) {
@@ -295,7 +295,7 @@ def refresh() {
         break
       case "GetAbility":
         def chn = r.value.Ability?.abilityChn?.getAt(0) ?: [:]
-        state.aiSupport = [
+        state.AISupport = [
             people:  (chn.supportAiPeople?.permit ?: 0)  > 0,
             vehicle: (chn.supportAiVehicle?.permit ?: 0) > 0,
             animal:  ((chn.supportAiDogCat?.permit ?: 0) > 0) || ((chn.supportAiAnimal?.permit ?: 0) > 0),
@@ -323,7 +323,7 @@ def refresh() {
         }
         break
       case "GetIrLights":
-        sendEvent(name: "irMode", value: r.value.IrLights?.state ?: "unknown")
+        sendEvent(name: "IRMode", value: r.value.IrLights?.state ?: "unknown")
         break
       case "GetIsp":
         sendEvent(name: "dayNightMode", value: r.value.Isp?.dayNight ?: "unknown")
@@ -349,10 +349,10 @@ def pollStatus() {
         sendEvent(name: "motion", value: r.value?.state == 1 ? "active" : "inactive")
       } else if (r.cmd == "GetAiState") {
         def v = r.value ?: [:]
-        if (state.aiSupport?.people)  sendEvent(name: "personDetected",  value: v.people?.alarm_state  == 1 ? "active" : "inactive")
-        if (state.aiSupport?.vehicle) sendEvent(name: "vehicleDetected", value: v.vehicle?.alarm_state == 1 ? "active" : "inactive")
-        if (state.aiSupport?.animal)  sendEvent(name: "animalDetected",  value: v.dog_cat?.alarm_state == 1 ? "active" : "inactive")
-        if (state.aiSupport?.face)    sendEvent(name: "faceDetected",    value: v.face?.alarm_state    == 1 ? "active" : "inactive")
+        if (state.AISupport?.people)  sendEvent(name: "personDetected",  value: v.people?.alarm_state  == 1 ? "active" : "inactive")
+        if (state.AISupport?.vehicle) sendEvent(name: "vehicleDetected", value: v.vehicle?.alarm_state == 1 ? "active" : "inactive")
+        if (state.AISupport?.animal)  sendEvent(name: "animalDetected",  value: v.dog_cat?.alarm_state == 1 ? "active" : "inactive")
+        if (state.AISupport?.face)    sendEvent(name: "faceDetected",    value: v.face?.alarm_state    == 1 ? "active" : "inactive")
       }
     }
   }
