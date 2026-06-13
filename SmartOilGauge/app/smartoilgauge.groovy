@@ -1,6 +1,15 @@
 /*
  *  Smart Oil Gauge (Connect)
  *
+ *  v0.0.14 - second review round fixes:
+ *            - TEnergyTbl key changed from day-of-year (1-365) to "yyyy-DDD"
+ *              so Jan 1 entries don't alias against a year-ago Jan 1.
+ *            - Tile "refilled" threshold now uses refillThresholdPct
+ *              (matching computeTankMetrics) instead of hardcoded -2 gal.
+ *            - Date.parse in the tile renderer now uses the hub timezone
+ *              instead of the JVM default.
+ *            - initialize() reuses cached state.deviceData when present
+ *              instead of synchronously re-fetching on every preference save.
  *  v0.0.13 - real-review fixes:
  *            - "Gallons used" condition was inverted after the v0.0.7
  *              subtraction-direction change; consumption was being labelled
@@ -59,7 +68,7 @@ definition(
 	oauth: true
 )
 
-static String appVersion() { "0.0.13" }
+static String appVersion() { "0.0.14" }
 
 preferences {
 	page(name: "settings", title: "Smart Oil Gauge", content: "settingsPage", install: true)
@@ -113,8 +122,11 @@ void initialize() {
 		"autoExecMS", "dbgAppndName"
 	].each { state.remove(it) }
 
-	// Create child devices for any newly-discovered tanks.
-	Map tankData = fetchTankData()
+	// Only hit the API during initialize() on first install. Subsequent saves
+	// rely on the hourly pollChildren — fetching synchronously here on every
+	// preference save was making the settings page block for the duration of
+	// the HTTP round-trip.
+	Map tankData = (state.devices && state.deviceData) ? (state.deviceData as Map) : fetchTankData()
 	boolean newDeviceCreated = false
 	tankData.each { sensorId, tank ->
 		String dni = getDeviceDNI(sensorId)
@@ -437,14 +449,17 @@ private Map computeTankMetrics(String sensorId, Float gallons, Float capacity) {
 }
 
 // Daily level snapshot for the tile chart. Was a 70-line "automation eval"
-// pipeline triggered off subscribe(d, "energy", ...); now a 10-line direct
-// call from pollChildren.
+// pipeline triggered off subscribe(d, "energy", ...); now a direct call
+// from pollChildren.
+//
+// Keys are "yyyy-DDD" (year + day-of-year) so Jan 1 entries don't alias
+// against the previous year's Jan 1. Daily dedup compares string keys.
 private void recordDailyLevel(devId, float level) {
 	String key = "TEnergyTbl${devId}"
 	List table = state[key] ?: []
-	Integer dayNum = new Date().format("D", location.timeZone ?: TimeZone.getDefault()) as Integer
-	if (table && table.last()[0] == dayNum) table = table.take(table.size() - 1)
-	table << [dayNum, level]
+	String dayKey = new Date().format("yyyy-DDD", location.timeZone ?: TimeZone.getDefault())
+	if (table && table.last()[0] == dayKey) table = table.take(table.size() - 1)
+	table << [dayKey, level]
 	while (table.size() > 365) table.removeAt(0)
 	state[key] = table
 }
@@ -520,14 +535,17 @@ private String getEDeviceTile(dev) {
 	String lowFuel = dev.currentValue("lowFuel")
 
 	// "Gallons used" — penultimate vs. current in the daily snapshot table.
-	// Positive consumption when gallons dropped; negative means a refill happened.
+	// Positive consumption when gallons dropped; "refilled" label uses the
+	// same percentage threshold as computeTankMetrics so the tile and the
+	// lastRefillAt event agree about what counts as a refill.
 	def yesterdayLevel = table.size() > 1 ? table[-2][1] : null
 	String used = "—"
 	if (yesterdayLevel != null && capacity) {
+		Float refillThresholdPct = (settings.refillThresholdPct ?: 5) as Float
+		Float refillCutoff = (capacity as Float) * refillThresholdPct / 100
 		float yesterdayGal = (capacity as Float) * (yesterdayLevel as Float) / 100
 		float consumed = yesterdayGal - (gallons as Float)   // positive = consumed
-		if (consumed < -2) {
-			// Big negative consumption = refill happened.
+		if (consumed < -refillCutoff) {
 			used = "+${(-consumed).round(2)} (refilled)"
 		} else {
 			used = "${consumed.round(2)}"
@@ -537,7 +555,11 @@ private String getEDeviceTile(dev) {
 	String formattedRead = "—"
 	if (lastReadTime) {
 		try {
-			Date d = Date.parse("yyyy-MM-dd HH:mm:ss", lastReadTime.toString())
+			// Parse the Droplet last_read timestamp in the hub's timezone, not the
+			// JVM default — otherwise non-default TZ hubs see wrong "Last updated".
+			SimpleDateFormat parser = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
+			parser.setTimeZone(getTimeZone() ?: TimeZone.getDefault())
+			Date d = parser.parse(lastReadTime.toString())
 			SimpleDateFormat fmt = new SimpleDateFormat("MMM d, yyyy h:mm a")
 			if (getTimeZone()) fmt.setTimeZone(getTimeZone())
 			formattedRead = fmt.format(d)

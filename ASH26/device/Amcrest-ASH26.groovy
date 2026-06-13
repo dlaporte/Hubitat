@@ -3,6 +3,9 @@
  *  Enable control of lights, night vision, motion detection, and other settings
  *  only available through Amcrest mobile app.
  *
+ *  v0.6 - chain abandonment on a mid-sequence SetConfig failure now logs
+ *         a loud error noting how many steps were skipped, instead of
+ *         silently leaving the camera in a half-configured state.
  *  v0.5 - format digest `nc` as RFC 2617 8-digit hex (was decimal int, which
  *         Amcrest accepted but stricter servers would reject), and chain
  *         on()/off()'s two SetConfig calls sequentially via the response
@@ -227,6 +230,11 @@ def verifySetResponse(response, data) {
     if (data.chainRest) setSequence(data.chainRest as List)
   } else {
     log.error "ASH26: set ${data.settingName} failed: ${text}"
+    if (data.chainRest) {
+      // Don't silently swallow the rest of the chain — for on()/off() this
+      // means the camera ends up in a half-configured state. Loudly flag it.
+      log.error "ASH26: chain abandoned with ${(data.chainRest as List).size()} step(s) remaining; camera state may be inconsistent"
+    }
   }
 }
 

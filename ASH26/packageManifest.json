@@ -1,7 +1,7 @@
 {
   "packageName": "Amcrest ASH26",
   "author": "David LaPorte",
-  "version": "0.5",
+  "version": "0.6",
   "minimumHEVersion": "2.1.9",
   "dateReleased": "2026-06-12",
   "drivers": [

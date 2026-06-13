@@ -23,7 +23,7 @@
       "required": true
     }
   ],
-  "version": "0.0.13",
-  "releaseNotes": "Real-review fixes: corrected inverted Gallons used / refilled label; daysRemaining null no longer stored as the string \"null\"; HTML-escaped device labels in tile pages; stopped logging settings (had ClientSecret); dropped unused Power Meter capability; refill events log unconditionally.",
+  "version": "0.0.14",
+  "releaseNotes": "Second review round: fixed TEnergyTbl key wrap on Jan 1; tile refill threshold now matches refillThresholdPct setting; Date.parse uses hub timezone; initialize() no longer blocks settings save on a synchronous API fetch.",
   "communityLink": "https://community.hubitat.com/t/smart-oil-gauge-app-and-device/63078"
 }

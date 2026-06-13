@@ -16,6 +16,9 @@
  *
  *  Last Update 2026-06-12
  *
+ *  v0.0.17 - defensive parse of lightning_strike_count — a non-numeric API
+ *            value would have thrown NumberFormatException and aborted the
+ *            rest of process_acurite_data.
  *  v0.0.16 - no longer logs the params Map (which carried the live session
  *            token in the x-one-vue-token header) — debug log now shows only
  *            the URL.
@@ -321,8 +324,14 @@ private void process_acurite_data(data) {
   // If strike count increased since last poll, stamp lastStrikeAt = now.
   // If lastStrikeAt was within the configured window, lightningActive = true.
   def currStrikes = snap["lightning_strike_count"]?.value
-  if (currStrikes != null) {
-    Long currStrikesLong = (currStrikes as Long)
+  // Defensive parse — if the API ever returns a non-numeric value here
+  // (empty string, "N/A", etc.) a bare `as Long` cast would throw and
+  // abort the whole sensor loop, losing subsequent updates.
+  Long currStrikesLong = null
+  if (currStrikes != null && currStrikes.toString().isLong()) {
+    currStrikesLong = currStrikes.toString().toLong()
+  }
+  if (currStrikesLong != null) {
     Long prevStrikes = (state.acurite_prev_strikes ?: 0L) as Long
     if (currStrikesLong > prevStrikes) {
       String ts = new Date().format("yyyy-MM-dd'T'HH:mm:ssZ", location.timeZone ?: TimeZone.getDefault())
