@@ -23,7 +23,7 @@
       "required": true
     }
   ],
-  "version": "0.0.7",
-  "releaseNotes": "Major cleanup: dropped ~660 lines of nest-manager-derived scaffolding (automation eval, execution history, per-app disable, enableOauth hack). Tile page rewritten with minimal inline CSS — external dependencies reduced from 11 to 2 (Bootstrap CDN + tank images in this repo). Drops tonesto7/nest-manager assets, FontAwesome, FlowType, clipboard.js, vex, Swiper, Google Charts, Google Fonts, normalize.css, hamburgers.css.",
+  "version": "0.0.8",
+  "releaseNotes": "DRY'd duplicate API call. v0.0.7 stripped nest-manager scaffolding (~660 lines) and rewrote the tile page with minimal inline CSS; external deps dropped from 11 to 2.",
   "communityLink": "https://community.hubitat.com/t/smart-oil-gauge-app-and-device/63078"
 }

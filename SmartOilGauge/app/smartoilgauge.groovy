@@ -1,55 +1,25 @@
 /*
  *  Smart Oil Gauge (Connect)
  *
- *  v0.0.7 - Major cleanup pass:
- *           - Stripped the nest-manager automation-eval scaffolding (~70 lines):
- *             automationGenericEvt / doTheEvent / scheduleAutomationEval /
- *             runAutomationEval / getAutoRunSec. It only ever fed the daily
- *             energy table, which we now update directly from pollChildren.
- *           - Stripped execution-history accumulators (~60 lines):
- *             storeLastEventData, storeExecutionHistory, addToList, plus
- *             state.detailEventHistory / evalExecutionHistory /
- *             detailExecutionHistory. The app never read them back.
- *           - Stripped the per-app "disable this automation" toggle and the
- *             setAutomationStatus / getAutoType / getIsAutomationDisabled
- *             machinery. Single-automation app — uninstall to disable.
- *           - Removed enableOauth() which POSTed to an undocumented Hubitat
- *             admin endpoint (http://localhost:8080/app/edit/update). If the
- *             access token isn't present, the settings page now shows clear
- *             instructions instead.
- *           - Rewrote the tile-rendering HTML: dropped FontAwesome, FlowType,
- *             clipboard.js, vex, Swiper, gstatic charts, Google Fonts,
- *             normalize.css, hamburgers.css, and the diagpages_new.css /
- *             diagpages.min.js dependency on tonesto7/nest-manager. The
- *             tile page now depends only on Bootstrap (stable CDN) + tank
- *             images from this repo. Net external dependencies dropped from
- *             11 to 2.
- *           - Dropped icons() / gitRepo / gitBranch / gitPath / getAppImg /
- *             getDevImg helpers (only used to fetch icons from someone
- *             else's repo).
- *           - Initialize() removes the legacy state keys above so upgraders
- *             don't accumulate dead data.
- *  v0.0.6 - explicit User-Agent on all Droplet calls + use expires_in from
- *           OAuth response + fixed obs script-level binding.
+ *  v0.0.8 - DRY'd getDevices + RefreshDeviceStatus into one fetchTankData().
+ *  v0.0.7 - stripped nest-manager scaffolding (~660 lines); rewrote tile
+ *           page with minimal inline CSS; external deps 11 → 2.
+ *  v0.0.6 - explicit User-Agent, expires_in from OAuth response,
+ *           fixed obs script-level binding.
  *  v0.0.5 - per-tank refill detection, usageRate, daysRemaining, lowFuel,
- *           accountNumber attributes + threshold preferences.
- *  v0.0.4 - swapped dead cdn.rawgit.com URLs to jsdelivr (since superseded
- *           by v0.0.7's local CSS rewrite) + stopped force-enabling debug.
- *  v0.0.3 - earlier release
+ *           accountNumber attributes.
+ *  v0.0.4 - swapped dead rawgit URLs (since superseded), stopped
+ *           force-enabling debug.
+ *  v0.0.3 - earlier release.
  *
- *  Modified by David LaPorte. Based on the Tank Utility app from EricS,
- *  based on ideas from Joshua Spain. The nest-manager-derived dashboard
- *  scaffolding has been cut here; what's left is straight-line oil-gauge
- *  polling.
+ *  Modified by David LaPorte. Based on the Tank Utility app by EricS,
+ *  itself based on Joshua Spain's work.
  *
- *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
- *  in compliance with the License. You may obtain a copy of the License at:
- *
+ *  Licensed under the Apache License, Version 2.0:
  *      http://www.apache.org/licenses/LICENSE-2.0
  *
- * For monitoring your oil tank using Smart Oil Gauge (https://www.smartoilgauge.com)
- * You must subscribe to the Droplet Fuel monitoring service ($2/month) for the
- * required API access.
+ *  For Smart Oil Gauge (https://www.smartoilgauge.com). Requires a
+ *  Droplet Fuel monitoring subscription for API access.
  */
 
 import groovy.json.*
@@ -68,7 +38,7 @@ definition(
 	oauth: true
 )
 
-static String appVersion() { "0.0.7" }
+static String appVersion() { "0.0.8" }
 
 preferences {
 	page(name: "settings", title: "Smart Oil Gauge", content: "settingsPage", install: true)
@@ -122,14 +92,12 @@ void initialize() {
 	].each { state.remove(it) }
 
 	// Create child devices for any newly-discovered tanks.
-	List devs = getDevices()
-	Map deviceStatus = RefreshDeviceStatus()
+	Map tankData = fetchTankData()
 	boolean newDeviceCreated = false
-	devs.each { String sensorId ->
+	tankData.each { sensorId, tank ->
 		String dni = getDeviceDNI(sensorId)
 		def child = getChildDevice(dni)
 		if (!child) {
-			Map tank = deviceStatus[sensorId]
 			String label = tank?.tank_num ? "Tank ${tank.tank_num}" : "Tank ${sensorId}"
 			child = addChildDevice("dlaporte", CHILD_NAME(), dni, [name: label, label: label])
 			logInfo "Created ${child.displayName} (dni: ${dni})"
@@ -167,7 +135,7 @@ private settingsPage() {
 		}
 
 		if (haveToken) {
-			List devs = state.devices ?: getDevices()
+			List devs = state.devices ?: (fetchTankData().keySet() as List)
 			section("Tanks (${devs.size()})") {
 				if (state.access_token) {
 					if (devs.size() > 1) {
@@ -276,48 +244,11 @@ private boolean getAPIToken() {
 	return ok
 }
 
-List getDevices() {
-	logTrace "getDevices()"
-	List devices = []
-	if (!getToken()) {
-		logTrace "getDevices: no token available"
-		return devices
-	}
-	def params = [
-		uri: DROPLET_API(),
-		path: "/auto/get_tank_data.php",
-		headers: dropletHeaders(),
-		body: [access_token: state.APIToken, start_index: 0, max_results: 1000]
-	]
-	try {
-		httpPost(params) { resp ->
-			if (resp.status == 200) {
-				def obs = parseJson(resp.data.toString())
-				if (obs?.result != "ok") {
-					logError "getDevices: API returned non-ok: ${obs?.error_msg ?: obs}"
-					return
-				}
-				obs.data.each { dev ->
-					logTrace "getDevices: found sensor_id ${dev.sensor_id}"
-					devices << dev.sensor_id
-				}
-			} else {
-				logError "getDevices: HTTP ${resp.status}"
-				state.APIToken = null
-				state.APITokenExpirationTime = 0L
-			}
-		}
-		state.devices = devices
-	} catch (Exception e) {
-		logError "getDevices exception: ${e.message}"
-		state.APIToken = null
-		state.APITokenExpirationTime = 0L
-	}
-	return devices
-}
-
-private Map RefreshDeviceStatus() {
-	logTrace "RefreshDeviceStatus()"
+// Single source of truth for the upstream call. Returns a Map keyed by
+// sensor_id, or [:] on any failure. Also keeps state.devices (list of
+// sensor_ids) and state.deviceData (the full Map) up to date.
+private Map fetchTankData() {
+	logTrace "fetchTankData()"
 	Map deviceData = [:]
 	if (!getToken()) return deviceData
 	def params = [
@@ -328,27 +259,26 @@ private Map RefreshDeviceStatus() {
 	]
 	try {
 		httpPost(params) { resp ->
-			if (resp.status == 200) {
-				def obs = parseJson(resp.data.toString())
-				if (obs?.result != "ok") {
-					logError "RefreshDeviceStatus: API returned non-ok: ${obs?.error_msg ?: obs}"
-					return
-				}
-				obs.data.each { dev ->
-					deviceData[dev.sensor_id] = dev
-				}
-			} else {
-				logError "RefreshDeviceStatus: HTTP ${resp.status}"
+			if (resp.status != 200) {
+				logError "fetchTankData: HTTP ${resp.status}"
 				state.APIToken = null
 				state.APITokenExpirationTime = 0L
+				return
 			}
+			def obs = parseJson(resp.data.toString())
+			if (obs?.result != "ok") {
+				logError "fetchTankData: API non-ok: ${obs?.error_msg ?: obs}"
+				return
+			}
+			obs.data.each { dev -> deviceData[dev.sensor_id] = dev }
 		}
 	} catch (Exception e) {
-		logError "RefreshDeviceStatus exception: ${e.message}"
+		logError "fetchTankData exception: ${e.message}"
 		state.APIToken = null
 		state.APITokenExpirationTime = 0L
 	}
 	state.deviceData = deviceData
+	state.devices = deviceData.keySet() as List
 	return deviceData
 }
 
@@ -367,7 +297,7 @@ void pollChildren(boolean updateData = true) {
 		logInfo "pollChildren: no known devices"
 		return
 	}
-	Map deviceData = updateData ? RefreshDeviceStatus() : (state.deviceData ?: [:])
+	Map deviceData = updateData ? fetchTankData() : (state.deviceData ?: [:])
 
 	devices.each { sensorId ->
 		try {
@@ -510,10 +440,10 @@ def getTile() {
 		render contentType: "text/html", data: "Device '${dni}' not found"
 		return
 	}
-	return renderDeviceTiles(null, device)
+	return renderDeviceTiles(device)
 }
 
-def renderDeviceTiles(type = null, theDev = null) {
+def renderDeviceTiles(theDev = null) {
 	def allDevices = theDev ? [theDev] : app.getChildDevices(true).sort { it?.getLabel() }
 	String panelsHtml = allDevices.findAll { it?.typeName == CHILD_NAME() }.collect { dev ->
 		"""<div class="panel panel-primary"><div class="panel-heading"><h3 class="panel-title">${dev?.getLabel()}</h3></div><div class="panel-body">${getEDeviceTile(dev)}</div></div>"""

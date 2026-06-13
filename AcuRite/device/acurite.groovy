@@ -16,11 +16,9 @@
  *
  *  Last Update 2026-06-12
  *
- *  v0.0.12 - restored measured_light attribute (erroneously removed in
- *            v0.0.10 — the API's MeasuredLight sensor actually populates
- *            it). Fixed weatherSummary to render temperature with the
- *            degree symbol (was "23F", now "23°F"; API returns the unit
- *            as bare "F"/"C" without the °).
+ *  v0.0.13 - dropped poll_schedule() wrapper; runEvery uses "poll" directly.
+ *  v0.0.12 - restored measured_light attribute; weatherSummary temp now
+ *            renders with degree symbol.
  *  v0.0.11 - converted login + data fetch to asynchttpPost / asynchttpGet,
  *            so a poll cycle no longer blocks the scheduler when myacurite
  *            is slow or unreachable. Added derived `lightningActive` boolean
@@ -132,10 +130,6 @@ def poll() {
   get_acurite_data()
 }
 
-def poll_schedule() {
-  poll()
-}
-
 def initialize() {
   unschedule()
   if (debug) log.debug "AcuRite: initialize() called"
@@ -153,7 +147,7 @@ def initialize() {
     return
   }
   def poll_interval_cmd = (settings?.poll_interval ?: "5 Minutes").replace(" ", "")
-  "runEvery${poll_interval_cmd}"(poll_schedule)
+  "runEvery${poll_interval_cmd}"("poll")
   if (debug) log.debug "AcuRite: scheduling as runEvery" + poll_interval_cmd
 }
 
