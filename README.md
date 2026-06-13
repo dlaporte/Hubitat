@@ -4,14 +4,13 @@ A collection of [Hubitat Elevation](https://hubitat.com) drivers and apps
 for hardware and services I run at home. All packages are available through
 [Hubitat Package Manager](https://community.hubitat.com/t/release-hubitat-package-manager/38016) (HPM).
 
-## Installation via HPM
+## Installation
 
-1. Open **Hubitat Package Manager** → **Settings → Modify list of repositories**
-2. Add `https://raw.githubusercontent.com/dlaporte/Hubitat/main/repository.json`
-3. **HPM → Install** → search by package name below
+In **Hubitat Package Manager → Install**, search by the package name
+below. This repo is already registered in HPM's master list.
 
-To install a single driver directly without HPM, open **Drivers code → New driver → Import**
-and paste the file's raw URL.
+To install a single driver directly without HPM, open **Drivers code → New
+driver → Import** and paste the file's raw URL.
 
 ## Packages
 
