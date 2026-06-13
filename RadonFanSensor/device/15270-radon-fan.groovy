@@ -1,6 +1,14 @@
 /**
  *  Radon Fan Sensor
  *
+ *  v0.5 - added ContactSensor capability (contact = closed when fan is
+ *         running, open when off) alongside the existing switch attribute
+ *         so the device matches the semantic Hubitat expects for a binary
+ *         sensor. Added lastStartedAt / lastStoppedAt timestamps and a
+ *         fanAlarm attribute that fires "alarm" if the fan has been off
+ *         for longer than a user-configurable threshold (default 30 min).
+ *         Gated all log.debug calls behind a debug preference (was always
+ *         on). Existing switch-based rules are unchanged — additive only.
  *  v0.4 - removed SmartThings legacy simulator/tiles blocks, fixed
  *         wrong install-instructions URL, removed stray literal 0.
  *  v0.3 - earlier release
@@ -51,16 +59,26 @@ metadata {
 	definition (name: "Radon Fan Sensor", namespace: "dlaporte", author: "dlaporte") {
 		capability "Sensor"
 		capability "Battery"
+		capability "ContactSensor"
 		capability "Refresh"
-		
-		attribute "switch", "enum", ["on", "off"]
-		
+
+		attribute "switch", "enum", ["on", "off"]    // backward compat with prior rules
+		attribute "lastStartedAt", "string"           // ISO timestamp of last fan-on transition
+		attribute "lastStoppedAt", "string"           // ISO timestamp of last fan-off transition
+		attribute "fanAlarm", "string"                // "ok" or "alarm" — alarm if off too long
+
 		fingerprint deviceId: "0x2001", inClusters: "0x71, 0x85, 0x80, 0x72, 0x30, 0x86, 0x84"
+	}
+
+	preferences {
+		input "alarmAfterMinutes", "number", title: "Fire fanAlarm if fan has been off for (minutes)",
+			defaultValue: 30, required: false, range: "1..1440"
+		input "debug", "bool", title: "Debug logging", defaultValue: false
 	}
 }
 
 def parse(String description) {
-	log.debug "parse:${description}"
+	if (debug) log.debug "parse:${description}"
 	def result = null
 	if (description.startsWith("Err")) {
 		result = createEvent(descriptionText:description)
@@ -73,7 +91,7 @@ def parse(String description) {
 		}
 	} else {
 		def cmd = zwave.parse(description, [0x20: 1, 0x25: 1, 0x30: 1, 0x31: 5, 0x80: 1, 0x84: 1, 0x71: 3, 0x9C: 1])
-		log.debug "parse:cmd = ${cmd}"
+		if (debug) log.debug "parse:cmd = ${cmd}"
 		if (cmd) {
 			result = zwaveEvent(cmd)
 		}
@@ -82,14 +100,34 @@ def parse(String description) {
 }
 
 def sensorValueEvent(value) {
-	log.debug "sensorValueEvent:value = ${value}"
+	if (debug) log.debug "sensorValueEvent:value = ${value}"
+	String ts = new Date().format("yyyy-MM-dd'T'HH:mm:ssZ", location.timeZone ?: TimeZone.getDefault())
 	def result = null
 	if (value) {
+		// Fan started: switch=on, contact=closed, record timestamp, cancel pending alarm
 		result = createEvent(name: "switch", value: "on", descriptionText: "$device.displayName is running")
+		sendEvent(name: "contact", value: "closed", descriptionText: "fan running")
+		sendEvent(name: "lastStartedAt", value: ts)
+		sendEvent(name: "fanAlarm", value: "ok")
+		unschedule("checkFanAlarm")
 	} else {
+		// Fan stopped: switch=off, contact=open, record timestamp, schedule alarm check
 		result = createEvent(name: "switch", value: "off", descriptionText: "$device.displayName is not running")
+		sendEvent(name: "contact", value: "open", descriptionText: "fan stopped")
+		sendEvent(name: "lastStoppedAt", value: ts)
+		Integer afterMin = (alarmAfterMinutes ?: 30) as Integer
+		runIn(afterMin * 60, "checkFanAlarm")
 	}
 	return result
+}
+
+// Called via runIn after the configured fan-off threshold. If the fan is still
+// off, fire the fanAlarm attribute → "alarm" so Rule Machine can notify.
+def checkFanAlarm() {
+	if (device.currentValue("contact") == "open") {
+		sendEvent(name: "fanAlarm", value: "alarm", descriptionText: "fan has been off too long",
+			isStateChange: true)
+	}
 }
 
 def zwaveEvent(hubitat.zwave.commands.basicv1.BasicReport cmd) {
@@ -177,7 +215,7 @@ def zwaveEvent(hubitat.zwave.commands.manufacturerspecificv2.ManufacturerSpecifi
 	def result = []
 
 	def msr = String.format("%04X-%04X-%04X", cmd.manufacturerId, cmd.productTypeId, cmd.productId)
-	log.debug "msr: $msr"
+	if (debug) log.debug "msr: $msr"
 	updateDataValue("MSR", msr)
 	
 	result << createEvent(descriptionText: "$device.displayName MSR: $msr", isStateChange: false)
@@ -195,7 +233,7 @@ def zwaveEvent(hubitat.zwave.Command cmd) {
 }
 
 def refresh() {
-	log.debug "refresh() called"
+	if (debug) log.debug "refresh() called"
 	def commands = []
 	
 	// Request current sensor state
@@ -211,6 +249,6 @@ def refresh() {
 }
 
 void initialize() {
-	log.debug "initialize() called"
+	if (debug) log.debug "initialize() called"
 	refresh()
 }
