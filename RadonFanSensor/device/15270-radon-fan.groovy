@@ -1,6 +1,13 @@
 /**
  *  Radon Fan Sensor
  *
+ *  v0.7 - three Z-Wave correctness fixes:
+ *         - state.MSR now actually gets set (was only written to dataValue,
+ *           which made every wake-up retransmit config forever)
+ *         - BatteryReport no longer sends wakeUpNoMoreInformation
+ *           (WakeUpNotification already owns the closing NOMI)
+ *         - removed dead `description == "updated"` branch in parse()
+ *           (a SmartThings platform artifact, never fires on Hubitat)
  *  v0.6 - removed cargo-cult Enerwave-motion MSR branch that does not
  *         apply to this Monoprice 15270 / WADWAZ-1.
  *  v0.5 - added ContactSensor capability (contact = closed when fan is
@@ -84,13 +91,6 @@ def parse(String description) {
 	def result = null
 	if (description.startsWith("Err")) {
 		result = createEvent(descriptionText:description)
-	} else if (description == "updated") {
-		if (!state.MSR) {
-		result = [
-		response(zwave.wakeUpV1.wakeUpIntervalSet(seconds:4*3600, nodeid:zwaveHubNodeId)),
-		response(zwave.manufacturerSpecificV2.manufacturerSpecificGet()),
-		]
-		}
 	} else {
 		def cmd = zwave.parse(description, [0x20: 1, 0x25: 1, 0x30: 1, 0x31: 5, 0x80: 1, 0x84: 1, 0x71: 3, 0x9C: 1])
 		if (debug) log.debug "parse:cmd = ${cmd}"
@@ -210,7 +210,10 @@ def zwaveEvent(hubitat.zwave.commands.batteryv1.BatteryReport cmd) {
 		map.value = cmd.batteryLevel
 	}
 	state.lastbat = new Date().time
-	[createEvent(map), response(zwave.wakeUpV1.wakeUpNoMoreInformation())]
+	// Don't send wakeUpNoMoreInformation here — WakeUpNotification owns NOMI
+	// as its final command. Sending it again from BatteryReport could put
+	// the device to sleep before the controller finishes its command queue.
+	[createEvent(map)]
 }
 
 def zwaveEvent(hubitat.zwave.commands.manufacturerspecificv2.ManufacturerSpecificReport cmd) {
@@ -219,6 +222,10 @@ def zwaveEvent(hubitat.zwave.commands.manufacturerspecificv2.ManufacturerSpecifi
 	def msr = String.format("%04X-%04X-%04X", cmd.manufacturerId, cmd.productTypeId, cmd.productId)
 	if (debug) log.debug "msr: $msr"
 	updateDataValue("MSR", msr)
+	// All other handlers check `state.MSR` (not `device.data.MSR`), so we
+	// have to set both — otherwise WakeUpNotification keeps re-running its
+	// "do we have MSR?" config branch on every wake-up forever.
+	state.MSR = msr
 
 	result << createEvent(descriptionText: "$device.displayName MSR: $msr", isStateChange: false)
 

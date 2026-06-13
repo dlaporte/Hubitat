@@ -1,6 +1,19 @@
 /*
  *  Smart Oil Gauge (Connect)
  *
+ *  v0.0.13 - real-review fixes:
+ *            - "Gallons used" condition was inverted after the v0.0.7
+ *              subtraction-direction change; consumption was being labelled
+ *              "refilled" and refills were going unlabelled.
+ *            - daysRemaining: null no longer hits sendEvent (was storing
+ *              the literal string "null" on the attribute).
+ *            - Device labels html-escaped before interpolation into tile
+ *              pages (XSS hardening).
+ *            - installed()/updated() no longer log ${settings} (which
+ *              contained ClientSecret in plaintext).
+ *            - Dropped unused Power Meter capability on the child device.
+ *            - Refill detection logs at unconditional log.info instead of
+ *              gated logInfo, so the event surfaces without enabling debug.
  *  v0.0.12 - defensive `obs.data?.each` in fetchTankData; child device
  *            dropped dead parse() and empty installed() handlers.
  *  v0.0.11 - dropped the redundant Polling capability on the child device
@@ -46,7 +59,7 @@ definition(
 	oauth: true
 )
 
-static String appVersion() { "0.0.12" }
+static String appVersion() { "0.0.13" }
 
 preferences {
 	page(name: "settings", title: "Smart Oil Gauge", content: "settingsPage", install: true)
@@ -72,12 +85,13 @@ private Map dropletHeaders() {
 // ---------------------------------------------------------------------------
 
 void installed() {
-	log.info "Smart Oil Gauge installed: ${settings}"
+	// Don't log ${settings} — it contains ClientSecret in plaintext.
+	log.info "Smart Oil Gauge installed"
 	initialize()
 }
 
 void updated() {
-	log.info "Smart Oil Gauge updated: ${settings}"
+	log.info "Smart Oil Gauge updated"
 	initialize()
 }
 
@@ -340,13 +354,15 @@ void pollChildren(boolean updateData = true) {
 				[battery: battery],
 				[accountNumber: acctNum],
 				[usageRate: derived.usageRate],
-				[daysRemaining: derived.daysRemaining],
 				[lowFuel: derived.lowFuel ? "true" : "false"]
 			]
+			// Skip null derived metrics — sendEvent(value:null) stores the
+			// literal string "null" on the attribute.
+			if (derived.daysRemaining != null) events << [daysRemaining: derived.daysRemaining]
 			if (derived.refillDetected) {
 				events << [lastRefillAt: derived.refillAt]
 				events << [lastRefillGallons: derived.refillGallons]
-				logInfo "pollChildren: refill on ${d.label} +${derived.refillGallons} gal"
+				log.info "SOG: refill detected on ${d.label} +${derived.refillGallons} gal"
 			}
 			events.each { evt -> d.generateEvent(evt) }
 		} catch (Exception e) {
@@ -454,10 +470,10 @@ def getTile() {
 def renderDeviceTiles(theDev = null) {
 	def allDevices = theDev ? [theDev] : app.getChildDevices(true).sort { it?.getLabel() }
 	String panelsHtml = allDevices.findAll { it?.typeName == CHILD_NAME() }.collect { dev ->
-		"""<div class="panel"><h2>${dev?.getLabel()}</h2>${getEDeviceTile(dev)}</div>"""
+		"""<div class="panel"><h2>${htmlEscape(dev?.getLabel())}</h2>${getEDeviceTile(dev)}</div>"""
 	}.join("\n")
 
-	String title = theDev ? theDev.getLabel() : "All Tanks"
+	String title = htmlEscape(theDev ? theDev.getLabel() : "All Tanks")
 	String html = """<!doctype html>
 <html lang="en">
 <head>
@@ -504,12 +520,18 @@ private String getEDeviceTile(dev) {
 	String lowFuel = dev.currentValue("lowFuel")
 
 	// "Gallons used" — penultimate vs. current in the daily snapshot table.
+	// Positive consumption when gallons dropped; negative means a refill happened.
 	def yesterdayLevel = table.size() > 1 ? table[-2][1] : null
 	String used = "—"
 	if (yesterdayLevel != null && capacity) {
 		float yesterdayGal = (capacity as Float) * (yesterdayLevel as Float) / 100
-		float galDelta = (gallons as Float) - yesterdayGal
-		used = galDelta < -2 ? "${galDelta.round(2)} (refilled)" : "${galDelta.round(2)}"
+		float consumed = yesterdayGal - (gallons as Float)   // positive = consumed
+		if (consumed < -2) {
+			// Big negative consumption = refill happened.
+			used = "+${(-consumed).round(2)} (refilled)"
+		} else {
+			used = "${consumed.round(2)}"
+		}
 	}
 
 	String formattedRead = "—"
@@ -572,6 +594,18 @@ private String renderTankSvg(def level) {
 
 String getDeviceDNI(String DeviceID) {
 	return [app.id, DeviceID].join('.')
+}
+
+// Minimal HTML entity escaping for values interpolated into rendered tiles.
+// Device labels are user-controlled and the tile URLs are OAuth-accessible.
+private String htmlEscape(s) {
+	if (s == null) return ""
+	return s.toString()
+		.replace("&", "&amp;")
+		.replace("<", "&lt;")
+		.replace(">", "&gt;")
+		.replace("\"", "&quot;")
+		.replace("'", "&#39;")
 }
 
 String getAppEndpointUrl(String subPath) {

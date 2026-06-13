@@ -23,7 +23,7 @@
       "required": true
     }
   ],
-  "version": "0.0.12",
-  "releaseNotes": "Defensive null guard in fetchTankData; child device dropped unused parse() and empty installed() handlers.",
+  "version": "0.0.13",
+  "releaseNotes": "Real-review fixes: corrected inverted Gallons used / refilled label; daysRemaining null no longer stored as the string \"null\"; HTML-escaped device labels in tile pages; stopped logging settings (had ClientSecret); dropped unused Power Meter capability; refill events log unconditionally.",
   "communityLink": "https://community.hubitat.com/t/smart-oil-gauge-app-and-device/63078"
 }

@@ -3,6 +3,10 @@
  *  Enable control of lights, night vision, motion detection, and other settings
  *  only available through Amcrest mobile app.
  *
+ *  v0.5 - format digest `nc` as RFC 2617 8-digit hex (was decimal int, which
+ *         Amcrest accepted but stricter servers would reject), and chain
+ *         on()/off()'s two SetConfig calls sequentially via the response
+ *         handler instead of firing them concurrently.
  *  v0.4 - converted all HTTP to asynchttpGet so the 1-minute refresh loop no
  *         longer blocks the Hubitat scheduler for up to 10 seconds per call
  *         when the camera is offline. Added installed()/updated() lifecycle
@@ -87,14 +91,22 @@ def refresh() {
 
 def on() {
   if (debug) log.debug "ASH26: on()"
-  set_camera_setting("AlarmLighting[0][0].Enable", "false")
-  set_camera_setting("Lighting_V2[0][0][1].Mode", "Manual")
+  // Order matters: disable alarm-lighting *first*, then set manual mode.
+  // With the previous parallel firing, the camera could observe the two
+  // sets in arbitrary order.
+  setSequence([["AlarmLighting[0][0].Enable", "false"], ["Lighting_V2[0][0][1].Mode", "Manual"]])
 }
 
 def off() {
   if (debug) log.debug "ASH26: off()"
-  set_camera_setting("AlarmLighting[0][0].Enable", "true")
-  set_camera_setting("Lighting_V2[0][0][1].Mode", "Off")
+  setSequence([["AlarmLighting[0][0].Enable", "true"], ["Lighting_V2[0][0][1].Mode", "Off"]])
+}
+
+private setSequence(List remaining) {
+  if (!remaining) return
+  def head = remaining[0]
+  def rest = remaining.size() > 1 ? remaining[1..-1] : []
+  set_camera_setting(head[0], head[1], [chainRest: rest])
 }
 
 // ---------------------------------------------------------------------------
@@ -122,19 +134,21 @@ private get_camera_settings() {
   ])
 }
 
-private set_camera_setting(String name, String value) {
+private set_camera_setting(String name, String value, Map extra = [:]) {
   String uri = "/cgi-bin/configManager.cgi?action=setConfig&${name}=${value}"
   def params = [
       uri: "http://${ip}${uri}",
       contentType: "text/plain",
       timeout: 10
   ]
-  asynchttpGet("unauthRequestHandler", params, [
+  Map userData = [
       uri: uri,
       finalCallback: "verifySetResponse",
       settingName: name,
       settingValue: value
-  ])
+  ]
+  if (extra) userData.putAll(extra)
+  asynchttpGet("unauthRequestHandler", params, userData)
 }
 
 // First callback: expects a 401, parses the WWW-Authenticate challenge,
@@ -210,6 +224,7 @@ def verifySetResponse(response, data) {
   String text = (response.data ?: "").toString().trim()
   if (text == "OK") {
     if (debug) log.debug "ASH26: set ${data.settingName} = ${data.settingValue}"
+    if (data.chainRest) setSequence(data.chainRest as List)
   } else {
     log.error "ASH26: set ${data.settingName} failed: ${text}"
   }
@@ -253,10 +268,14 @@ private String calcDigestAuth(String uri, String algorithm, Map headers) {
   String HA2 = "GET:${uri}"
   String HA2_hash = hash(algorithm, HA2)
 
+  // Each request gets a fresh nonce challenge from the server, so reuse
+  // protection isn't actually relying on this counter — but RFC 2617 §3.2.2
+  // still requires the wire format to be exactly 8 lowercase hex digits.
   state.nc = (state.nc ?: 0) + 1
+  String nc = String.format("%08x", (state.nc as Integer))
 
   String cnonce = java.util.UUID.randomUUID().toString().replaceAll('-', '').substring(0, 8)
-  String response = "${HA1_hash}:${headers.nonce}:${state.nc}:${cnonce}:auth:${HA2_hash}"
+  String response = "${HA1_hash}:${headers.nonce}:${nc}:${cnonce}:auth:${HA2_hash}"
   String response_enc = hash(algorithm, response)
 
   String eol = " "
@@ -268,6 +287,6 @@ private String calcDigestAuth(String uri, String algorithm, Map headers) {
     'nonce="' + headers.nonce + '",' + eol +
     'cnonce="' + cnonce + '",' + eol +
     'opaque="' + (headers.opaque ?: "") + '",' + eol +
-    'nc=' + state.nc + ',' + eol +
+    'nc=' + nc + ',' + eol +
     'response="' + response_enc + '"'
 }

@@ -16,6 +16,9 @@
  *
  *  Last Update 2026-06-12
  *
+ *  v0.0.16 - no longer logs the params Map (which carried the live session
+ *            token in the x-one-vue-token header) — debug log now shows only
+ *            the URL.
  *  v0.0.15 - skip sendEvent on null sensor values (was setting attributes
  *            to the literal string "null" — e.g. lightning distances).
  *  v0.0.14 - swapped Polling capability for Refresh (modern Hubitat
@@ -177,7 +180,9 @@ private fetch_acurite_data(boolean alreadyRetried) {
     headers: ["x-one-vue-token": state.acurite_token],
     timeout: 15
   ]
-  if (debug) log.debug "AcuRite: fetch_acurite_data params: " + params
+  // Log the URL only — params.headers contains the live session token, and
+  // debug-enabled logs are routinely shared in community support threads.
+  if (debug) log.debug "AcuRite: fetch_acurite_data ${params.uri}"
   asynchttpGet("fetchAcuriteDataHandler", params, [retried: alreadyRetried])
 }
 

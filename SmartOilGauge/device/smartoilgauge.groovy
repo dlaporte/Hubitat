@@ -19,7 +19,6 @@ metadata {
 		capability "Energy Meter"
 		capability "Refresh"
 		capability "Sensor"
-		capability "Power Meter"
 		capability "Battery"
 		capability "Relative Humidity Measurement"
 

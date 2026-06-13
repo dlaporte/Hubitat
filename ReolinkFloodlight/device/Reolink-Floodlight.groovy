@@ -10,6 +10,10 @@
  *
  *  Does NOT expose any siren/alarm-trigger commands by design.
  *
+ *  v0.6 - snapshotURL attribute is now opt-in (new publishSnapshotURL pref,
+ *         default off). It embeds the camera username/password, which would
+ *         otherwise persist in event history, hub backups, and the Maker
+ *         API. Disabling the pref also clears any previously-emitted value.
  *  v0.5 - converted all HTTP to asynchttpPost. The sync httpPost calls in the
  *         poll loop were blocking the Hubitat scheduler for up to 10s per
  *         request when the camera was offline; the async pattern eliminates
@@ -104,6 +108,9 @@ metadata {
         defaultValue: 5, range: "5..300", required: true)
     input("keepLightOn", "bool", title: "Keep floodlight on indefinitely (re-asserts state every 2 min)",
         defaultValue: true)
+    input("publishSnapshotURL", "bool",
+        title: "Publish snapshotURL attribute (embeds username/password in plaintext — only enable if you use it in an image tile)",
+        defaultValue: false)
     input("debug", "bool", title: "Debug logging", defaultValue: false)
   }
 }
@@ -142,12 +149,16 @@ def initialize() {
   }
 
   sendEvent(name: "cameraIP", value: ip)
-  // Snapshot URL embeds credentials so any Hubitat image tile or dashboard can fetch
-  // a live JPEG via short-session auth. Plain HTTP, LAN only — same threat model as the
-  // rest of the camera API. Do not screenshot/share unless you trust the audience.
-  String snap = "http://${ip}/cgi-bin/api.cgi?cmd=Snap&channel=0&rs=hubitat" +
-      "&user=${URLEncoder.encode(username, 'UTF-8')}&password=${URLEncoder.encode(password, 'UTF-8')}"
-  sendEvent(name: "snapshotURL", value: snap)
+  // snapshotURL is opt-in (default off). The URL embeds the camera's plaintext
+  // username/password, which would otherwise live in event history, hub
+  // backups, and the Maker API.
+  if (publishSnapshotURL) {
+    String snap = "http://${ip}/cgi-bin/api.cgi?cmd=Snap&channel=0&rs=hubitat" +
+        "&user=${URLEncoder.encode(username, 'UTF-8')}&password=${URLEncoder.encode(password, 'UTF-8')}"
+    sendEvent(name: "snapshotURL", value: snap)
+  } else {
+    try { device.deleteCurrentState("snapshotURL") } catch (Exception e) { /* fine if absent */ }
+  }
 
   refresh()
   runIn(1, "pollStatus")
