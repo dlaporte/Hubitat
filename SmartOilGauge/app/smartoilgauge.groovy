@@ -1,6 +1,10 @@
 /*
  *  Smart Oil Gauge (Connect)
  *
+ *  v0.0.9 - tile page now zero-external: dropped Bootstrap CDN, replaced
+ *           the 5 tank PNGs with one inline SVG that fills dynamically.
+ *           Also dropped the iconUrl PNG references (Hubitat shows a
+ *           default icon) and deleted the now-unused images/ directory.
  *  v0.0.8 - DRY'd getDevices + RefreshDeviceStatus into one fetchTankData().
  *  v0.0.7 - stripped nest-manager scaffolding (~660 lines); rewrote tile
  *           page with minimal inline CSS; external deps 11 → 2.
@@ -31,14 +35,11 @@ definition(
 	author: "David LaPorte",
 	description: "Virtual device handler for Smart Oil Gauge",
 	category: "My Apps",
-	iconUrl: "https://github.com/dlaporte/Hubitat/raw/main/SmartOilGauge/images/tank-3.png",
-	iconX2Url: "https://github.com/dlaporte/Hubitat/raw/main/SmartOilGauge/images/tank-3.png",
-	iconX3Url: "https://github.com/dlaporte/Hubitat/raw/main/SmartOilGauge/images/tank-3.png",
 	singleInstance: true,
 	oauth: true
 )
 
-static String appVersion() { "0.0.8" }
+static String appVersion() { "0.0.9" }
 
 preferences {
 	page(name: "settings", title: "Smart Oil Gauge", content: "settingsPage", install: true)
@@ -446,7 +447,7 @@ def getTile() {
 def renderDeviceTiles(theDev = null) {
 	def allDevices = theDev ? [theDev] : app.getChildDevices(true).sort { it?.getLabel() }
 	String panelsHtml = allDevices.findAll { it?.typeName == CHILD_NAME() }.collect { dev ->
-		"""<div class="panel panel-primary"><div class="panel-heading"><h3 class="panel-title">${dev?.getLabel()}</h3></div><div class="panel-body">${getEDeviceTile(dev)}</div></div>"""
+		"""<div class="panel"><h2>${dev?.getLabel()}</h2>${getEDeviceTile(dev)}</div>"""
 	}.join("\n")
 
 	String title = theDev ? theDev.getLabel() : "All Tanks"
@@ -454,24 +455,27 @@ def renderDeviceTiles(theDev = null) {
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Smart Oil Gauge — ${title}</title>
-<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" integrity="sha384-BVYiiSIFeK1dGmJRAkycuHAHRg32OmUcww7on3RYdg4Va+PmSTsz/K68vbdEjh4u" crossorigin="anonymous">
 <style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; background: #f6f8fa; margin: 0; padding: 16px; }
-  h1 { font-size: 24px; margin: 8px 0 16px 0; }
-  .panel { max-width: 720px; margin: 0 auto 16px; }
-  .panel-title { font-size: 18px; }
-  .tank-body { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: center; }
-  .tank-stats b { display: inline-block; min-width: 110px; }
-  .tank-image img { max-width: 180px; height: auto; }
-  .tank-level { font-size: 48px; font-weight: 600; text-align: center; margin: 4px 0 0 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+         background: #f6f8fa; margin: 0; padding: 16px; color: #24292e; }
+  h1 { font-size: 22px; margin: 8px 0 16px 0; display: flex; justify-content: space-between; align-items: center; }
+  h2 { font-size: 16px; margin: 0; padding: 12px 16px; background: #2c5aa0; color: #fff;
+       border-top-left-radius: 6px; border-top-right-radius: 6px; }
+  .panel { max-width: 720px; margin: 0 auto 16px; background: #fff;
+           border: 1px solid #d1d5da; border-radius: 6px; }
+  .tank-body { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: center; padding: 16px; }
+  .tank-stats b { display: inline-block; min-width: 130px; }
+  .tank-level { font-size: 42px; font-weight: 600; text-align: center; margin: 4px 0 0 0; }
   .lowfuel { color: #b94a48; }
-  .refresh { float: right; }
+  .refresh { padding: 6px 12px; font-size: 14px; text-decoration: none; color: #fff;
+             background: #2c5aa0; border-radius: 4px; }
+  .refresh:hover { background: #1e4078; }
 </style>
 </head>
 <body>
-<h1>Smart Oil Gauge — ${title} <a class="btn btn-default btn-sm refresh" href="javascript:location.reload(true)">⟳ Refresh</a></h1>
+<h1>Smart Oil Gauge — ${title}<a class="refresh" href="javascript:location.reload(true)">⟳ Refresh</a></h1>
 ${panelsHtml}
 </body>
 </html>"""
@@ -481,10 +485,9 @@ ${panelsHtml}
 private String getEDeviceTile(dev) {
 	List table = state["TEnergyTbl${dev.id}"] ?: []
 	if (table.size() == 0) {
-		return """<div class="tank-body"><div>Waiting for data...</div></div>"""
+		return """<div class="tank-body"><div>Waiting for data…</div></div>"""
 	}
 
-	// Snapshot of current state from the device's attributes
 	def gallons = dev.currentValue("gallons")
 	def capacity = dev.currentValue("capacity")
 	def level = dev.currentValue("level")
@@ -493,10 +496,8 @@ private String getEDeviceTile(dev) {
 	def daysRemaining = dev.currentValue("daysRemaining")
 	String lowFuel = dev.currentValue("lowFuel")
 
-	// "Gallons used" computed from the daily snapshot table — penultimate vs.
-	// current. Skips the trailing dup if today's reading already updated.
-	def t0 = table
-	def yesterdayLevel = t0.size() > 1 ? t0[-2][1] : null
+	// "Gallons used" — penultimate vs. current in the daily snapshot table.
+	def yesterdayLevel = table.size() > 1 ? table[-2][1] : null
 	String used = "—"
 	if (yesterdayLevel != null && capacity) {
 		float yesterdayGal = (capacity as Float) * (yesterdayLevel as Float) / 100
@@ -514,18 +515,6 @@ private String getEDeviceTile(dev) {
 		} catch (Exception e) { formattedRead = lastReadTime.toString() }
 	}
 
-	// Tank image: 5-stage based on % of typical-fill (capacity * 0.8)
-	def num = 1
-	if (capacity && gallons) {
-		float cap80 = (capacity as Float) * 0.8
-		float g = gallons as Float
-		if (g >= cap80 * 0.25) num = 2
-		if (g >= cap80 * 0.45) num = 3
-		if (g >= cap80 * 0.65) num = 4
-		if (g >= cap80 * 0.90) num = 5
-	}
-	String tankImg = "https://github.com/dlaporte/Hubitat/raw/main/SmartOilGauge/images/tank-${num}.png"
-
 	String lowFuelClass = (lowFuel == "true") ? " lowfuel" : ""
 	String usageLine = (usageRate && (usageRate as Float) > 0)
 		? "<br><b>Usage rate:</b> ${usageRate} gal/day"
@@ -536,17 +525,38 @@ private String getEDeviceTile(dev) {
 
 	return """<div class="tank-body">
   <div class="tank-stats">
-    <b>Capacity:</b> ${capacity ?: '—'}<br>
+    <b>Capacity:</b> ${capacity ?: '—'} gal<br>
     <b>Tank level:</b> <span class="${lowFuelClass}">${level ?: '—'}%</span><br>
     <b>Gallons:</b> ${gallons ?: '—'}<br>
     <b>Gallons used:</b> ${used}${usageLine}${daysLine}<br>
     <b>Last updated:</b> ${formattedRead}
   </div>
   <div class="tank-image">
-    <img src="${tankImg}" alt="tank">
-    <div class="tank-level">${level ?: '—'}</div>
+    ${renderTankSvg(level)}
+    <div class="tank-level ${lowFuelClass}">${level ?: '—'}%</div>
   </div>
 </div>"""
+}
+
+// Inline SVG tank that fills from the bottom based on level (0..100).
+// Zero external assets — no PNGs, no CSS framework needed.
+private String renderTankSvg(def level) {
+	Float lvl = level != null ? (level as Float) : 0f
+	if (lvl < 0) lvl = 0f
+	if (lvl > 100) lvl = 100f
+	// Tank body interior: y=12..132 (height 120). Fill rises from bottom.
+	Float fillHeight = 120 * lvl / 100
+	Float fillY = 12 + (120 - fillHeight)
+	String fillColor = lvl <= 25 ? "#b94a48" : "#c69963"
+	return """<svg width="140" height="170" viewBox="0 0 100 150" xmlns="http://www.w3.org/2000/svg">
+  <rect x="42" y="2" width="16" height="8" fill="#555" rx="1"/>
+  <rect x="8" y="12" width="84" height="120" rx="6" fill="#f0f0f0" stroke="#333" stroke-width="2"/>
+  <rect x="10" y="${fillY}" width="80" height="${fillHeight}" fill="${fillColor}" opacity="0.85"/>
+  <line x1="8" y1="42" x2="92" y2="42" stroke="#999" stroke-width="0.5" stroke-dasharray="3,3"/>
+  <line x1="8" y1="72" x2="92" y2="72" stroke="#999" stroke-width="0.5" stroke-dasharray="3,3"/>
+  <line x1="8" y1="102" x2="92" y2="102" stroke="#999" stroke-width="0.5" stroke-dasharray="3,3"/>
+  <rect x="8" y="12" width="84" height="120" rx="6" fill="none" stroke="#333" stroke-width="2"/>
+</svg>"""
 }
 
 // ---------------------------------------------------------------------------
