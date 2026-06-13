@@ -2,7 +2,7 @@
   "packageName": "Smart Oil Gauge",
   "author": "dlaporte",
   "minimumHEVersion": "2.1.9",
-  "dateReleased": "2025-09-01",
+  "dateReleased": "2026-06-12",
   "apps": [
     {
       "id": "22278792-e18b-4bc1-8b85-7de24b8e8832",
@@ -23,7 +23,7 @@
       "required": true
     }
   ],
-  "version": "0.0.3",
-  "releaseNotes": "Initial release to Hubitat Package Manager",
+  "version": "0.0.4",
+  "releaseNotes": "Fixed dead cdn.rawgit.com URLs (swapped to jsdelivr); stopped initialize() from force-enabling debug logging on every save.",
   "communityLink": "https://community.hubitat.com/t/smart-oil-gauge-app-and-device/63078"
 }

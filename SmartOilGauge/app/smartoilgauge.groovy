@@ -67,13 +67,6 @@ void uninstalled(){
 void initialize(){
 	LogTrace("initialize")
 
-	settingUpdate("showDebug", "true", "bool")
-	Boolean traceWasOn = false
-	if(settings.advAppDebug){
-		traceWasOn = true
-	}
-	settingUpdate("advAppDebug", "true", "bool")
-
 	if(!state.autoTyp){ state.autoTyp = "chart" }
 	unsubscribe()
 	unschedule()
@@ -114,10 +107,10 @@ void initialize(){
 
 	scheduleAutomationEval(30)
 
-	if(!traceWasOn){
-		settingUpdate("advAppDebug", "false", "bool")
-	}
-	runIn(1800, logsOff, [overwrite: true])
+	// Auto-disable debug logging 30 minutes after each save, but only when
+	// debug is currently on. Previously this block force-enabled debug on
+	// every initialize() regardless of the user's preference.
+	if(showDebug){ runIn(1800, logsOff, [overwrite: true]) }
 
 	pollChildren(false)
 }
@@ -689,7 +682,7 @@ def renderDeviceTiles(type=null, theDev=null){
 		<html lang="en">
 			<head>
 				${getWebHeaderHtml(myType, true, true, true, true)}
-				<link rel="stylesheet" href="https://cdn.rawgit.com/tonesto7/nest-manager/master/Documents/css/diagpages_new.css">
+				<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/tonesto7/nest-manager@master/Documents/css/diagpages_new.css">
 				<style>
 					h1, h2, h3, h4, h5, h6 {
 						padding: 20px;
@@ -751,7 +744,7 @@ def renderDeviceTiles(type=null, theDev=null){
 						fontRatio: 30
 					});
 				</script>
-				<script src="https://cdn.rawgit.com/tonesto7/nest-manager/master/Documents/js/diagpages.min.js"></script>
+				<script src="https://cdn.jsdelivr.net/gh/tonesto7/nest-manager@master/Documents/js/diagpages.min.js"></script>
 				<script>
 					\$(document).ready(function(){
 						${scrStr}
