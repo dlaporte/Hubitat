@@ -16,6 +16,8 @@
  *
  *  Last Update 2026-06-12
  *
+ *  v0.0.15 - skip sendEvent on null sensor values (was setting attributes
+ *            to the literal string "null" — e.g. lightning distances).
  *  v0.0.14 - swapped Polling capability for Refresh (modern Hubitat
  *            convention); poll() retained as a backward-compat alias.
  *  v0.0.13 - dropped poll_schedule() wrapper; runEvery uses "poll" directly.
@@ -285,19 +287,27 @@ private void process_acurite_data(data) {
     def attr_name = rename[sensor_name] ?: sensor_name
     def sensor_value = sensor.last_reading_value
     def sensor_unit = sensor.chart_unit
-    if (sensor_unit) {
-      sendEvent(name: attr_name, value: sensor_value, unit: sensor_unit)
-    } else {
-      sendEvent(name: attr_name, value: sensor_value)
-    }
     snap[sensor_name] = [value: sensor_value, unit: sensor_unit]
 
-    if (sensor_name == "wind_direction") {
-      sendEvent(name: "wind_direction_abbreviation", value: sensor.wind_direction?.abbreviation)
-      sendEvent(name: "wind_direction_point", value: sensor.wind_direction?.point)
-      snap["wind_direction_abbreviation"] = [value: sensor.wind_direction?.abbreviation]
+    // Skip null readings — sendEvent on null sets the attribute to the
+    // literal string "null". Lightning distance fields are often null
+    // when there's been no recent strike.
+    if (sensor_value != null) {
+      if (sensor_unit) {
+        sendEvent(name: attr_name, value: sensor_value, unit: sensor_unit)
+      } else {
+        sendEvent(name: attr_name, value: sensor_value)
+      }
     }
-    if (sensor_name == "light_intensity") {
+
+    if (sensor_name == "wind_direction") {
+      def abbr = sensor.wind_direction?.abbreviation
+      def pt = sensor.wind_direction?.point
+      if (abbr != null) sendEvent(name: "wind_direction_abbreviation", value: abbr)
+      if (pt != null)   sendEvent(name: "wind_direction_point",        value: pt)
+      snap["wind_direction_abbreviation"] = [value: abbr]
+    }
+    if (sensor_name == "light_intensity" && sensor_value != null) {
       sendEvent(name: "illuminance", value: sensor_value, unit: sensor_unit)
     }
   }

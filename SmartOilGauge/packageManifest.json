@@ -23,7 +23,7 @@
       "required": true
     }
   ],
-  "version": "0.0.11",
-  "releaseNotes": "Dropped the redundant Polling capability on the child device; Refresh covers the same flow and poll() remains as a backward-compat alias.",
+  "version": "0.0.12",
+  "releaseNotes": "Defensive null guard in fetchTankData; child device dropped unused parse() and empty installed() handlers.",
   "communityLink": "https://community.hubitat.com/t/smart-oil-gauge-app-and-device/63078"
 }

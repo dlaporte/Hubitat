@@ -1,6 +1,8 @@
 /*
  *  Smart Oil Gauge (Connect)
  *
+ *  v0.0.12 - defensive `obs.data?.each` in fetchTankData; child device
+ *            dropped dead parse() and empty installed() handlers.
  *  v0.0.11 - dropped the redundant Polling capability on the child device
  *            (Refresh covers it); poll() retained as a backward-compat alias.
  *  v0.0.10 - restored iconUrl/iconX2Url (Hubitat's definition() validator
@@ -44,7 +46,7 @@ definition(
 	oauth: true
 )
 
-static String appVersion() { "0.0.11" }
+static String appVersion() { "0.0.12" }
 
 preferences {
 	page(name: "settings", title: "Smart Oil Gauge", content: "settingsPage", install: true)
@@ -276,7 +278,7 @@ private Map fetchTankData() {
 				logError "fetchTankData: API non-ok: ${obs?.error_msg ?: obs}"
 				return
 			}
-			obs.data.each { dev -> deviceData[dev.sensor_id] = dev }
+			obs.data?.each { dev -> deviceData[dev.sensor_id] = dev }
 		}
 	} catch (Exception e) {
 		logError "fetchTankData exception: ${e.message}"

@@ -39,15 +39,6 @@ metadata {
 	}
 }
     
-void installed() {
-	log.debug "installed()"
-}
-
-// parse events into attributes
-def parse(String description) {
-	log.debug "Parsing '${description}'"
-}
-
 def refresh() {
 	parent.pollChildren()
 }
