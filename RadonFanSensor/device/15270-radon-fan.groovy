@@ -1,7 +1,9 @@
 /**
  *  Radon Fan Sensor
  *
- *  Version - 0.3
+ *  v0.4 - removed SmartThings legacy simulator/tiles blocks, fixed
+ *         wrong install-instructions URL, removed stray literal 0.
+ *  v0.3 - earlier release
  *
  *  Copyright 2017 David LaPorte
  *
@@ -16,10 +18,9 @@
  *
  *  Instructions:
  *
- *      1) Click "Drivers Code"and "+ Add Drive" in your Hubitat web interface
- *      2) Paste in the code from: https://github.com/dlaporte/Hubitat/blob/main/SmartOilGauge/app/smartoilgauge.groovy
- *      3) Click "Create"
- *      4) Click "Publish -> For Me"
+ *      1) Click "Drivers Code" and "+ Add Driver" in your Hubitat web interface
+ *      2) Paste in the code from: https://github.com/dlaporte/Hubitat/blob/main/RadonFanSensor/device/15270-radon-fan.groovy
+ *      3) Click "Save"
  * 
  * Parts List:
  *
@@ -56,31 +57,6 @@ metadata {
 		
 		fingerprint deviceId: "0x2001", inClusters: "0x71, 0x85, 0x80, 0x72, 0x30, 0x86, 0x84"
 	}
-
-	simulator {
-		// status messages
-		status "on":  "command: 2001, payload: FF"
-		status "off": "command: 2001, payload: 00"
-	}
-
-    tiles(scale: 2) {
-        multiAttributeTile(name:"fan_icon", type: "generic", width: 6, height: 4){
-            tileAttribute ("device.switch", key: "PRIMARY_CONTROL") {
-                attributeState "on", label:'Fan Running', icon:"st.thermostat.fan-on", backgroundColor:"#7bb630"
-                attributeState "off", label:'Fan Off', icon:"st.thermostat.fan-off", backgroundColor:"#bc2323"
-            }
-            tileAttribute("device.battery", key: "SECONDARY_CONTROL") {
-                attributeState("battery", label: 'Battery: ${currentValue}%')
-            }
-        }
-
-        standardTile("refresh", "device.refresh", inactiveLabel: false, decoration: "flat", width: 2, height: 2) {
-            state "default", action:"refresh.refresh", icon:"st.secondary.refresh"
-        }
-
-        main "fan_icon"
-        details(["fan_icon","refresh"])
-    }
 }
 
 def parse(String description) {
@@ -238,5 +214,3 @@ void initialize() {
 	log.debug "initialize() called"
 	refresh()
 }
-
-0
