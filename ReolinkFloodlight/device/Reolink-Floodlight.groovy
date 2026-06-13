@@ -155,8 +155,9 @@ def initialize() {
 
 def uninstalled() {
   unschedule()
-  if (state.token) {
-    // Fire-and-forget logout — no callback needed.
+  if (hasValidToken()) {
+    // Fire-and-forget logout — no callback needed. Skipped if token is expired
+    // so we don't kick off a fresh login just to immediately invalidate it.
     sendCmd([[cmd: "Logout", param: [:]]], null, [:])
   }
 }
@@ -324,30 +325,30 @@ def setDayNightModeHandler(result, data) {
   else log.error "Reolink: setDayNightMode failed: ${result}"
 }
 
-def setMicrophone(String state) {
-  if (!(state in ["On", "Off"])) { log.error "Reolink: invalid microphone state '${state}'"; return }
-  Integer v = (state == "On") ? 1 : 0
+def setMicrophone(String value) {
+  if (!(value in ["On", "Off"])) { log.error "Reolink: invalid microphone state '${value}'"; return }
+  Integer v = (value == "On") ? 1 : 0
   sendCmd([[cmd: "SetEnc", param: [Enc: [channel: 0, audio: v]]]],
-      "setMicrophoneHandler", [state: state])
+      "setMicrophoneHandler", [value: value])
 }
 
 def setMicrophoneHandler(result, data) {
-  if (result && result[0]?.code == 0) sendEvent(name: "microphone", value: data.state)
+  if (result && result[0]?.code == 0) sendEvent(name: "microphone", value: data.value)
   else log.error "Reolink: setMicrophone failed: ${result}"
 }
 
-def setPowerLED(String state) {
-  if (!(state in ["On", "Off"])) { log.error "Reolink: invalid powerLED state '${state}'"; return }
+def setPowerLED(String value) {
+  if (!(value in ["On", "Off"])) { log.error "Reolink: invalid powerLED state '${value}'"; return }
   if (device.getDataValue("powerLEDSupported") != "true") {
     log.warn "Reolink: this camera does not report a controllable power LED"
     return
   }
-  sendCmd([[cmd: "SetPowerLed", param: [PowerLed: [channel: 0, state: state]]]],
-      "setPowerLEDHandler", [state: state])
+  sendCmd([[cmd: "SetPowerLed", param: [PowerLed: [channel: 0, state: value]]]],
+      "setPowerLEDHandler", [value: value])
 }
 
 def setPowerLEDHandler(result, data) {
-  if (result && result[0]?.code == 0) sendEvent(name: "powerLED", value: data.state)
+  if (result && result[0]?.code == 0) sendEvent(name: "powerLED", value: data.value)
   else log.error "Reolink: setPowerLED failed: ${result}"
 }
 
@@ -448,14 +449,14 @@ def refreshHandler(result, data) {
 def pollStatus() {
   Integer myEpoch = (state.pollEpoch ?: 0) as Integer
 
-  // Always schedule the next poll first, BEFORE firing the request. That way
-  // even if the camera is offline (response never arrives) the loop keeps
-  // ticking, and the next pollStatus runs at its normal cadence — not after
-  // a 10-second HTTP timeout.
-  if (state.pollEpoch == myEpoch) {
-    Integer delay = Math.max(5, ((pollInterval ?: 5) as Integer))
-    runIn(delay, "pollStatus")
-  }
+  // Schedule the next poll first, BEFORE firing the request. That way even if
+  // the camera is offline (response never arrives) the loop keeps ticking at
+  // its normal cadence — not stalled behind a 10-second HTTP timeout. The
+  // meaningful epoch check happens in pollStatusHandler (after the request
+  // returns); here in pollStatus, single-threaded execution guarantees the
+  // epoch hasn't changed since we read it.
+  Integer delay = Math.max(5, ((pollInterval ?: 5) as Integer))
+  runIn(delay, "pollStatus")
 
   sendCmd([
       [cmd: "GetMdState", param: [channel: 0]],
