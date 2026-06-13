@@ -17,7 +17,6 @@
 metadata {
 	definition (name: "Smart Oil Gauge", namespace: "dlaporte" , author: "David LaPorte") {
 		capability "Energy Meter"
-		capability "Polling"
 		capability "Refresh"
 		capability "Sensor"
 		capability "Power Meter"
@@ -50,13 +49,13 @@ def parse(String description) {
 }
 
 def refresh() {
-	log.debug "refresh called"
-	poll()
+	parent.pollChildren()
 }
 
+// Kept as a backward-compat alias for any rules that called poll()
+// directly when the Polling capability was declared.
 void poll() {
-	log.debug "Executing 'poll' using parent SmartApp"
-	parent.pollChildren()
+	refresh()
 }
 
 def generateEvent(Map results) {

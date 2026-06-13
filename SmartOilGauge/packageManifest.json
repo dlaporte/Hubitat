@@ -23,7 +23,7 @@
       "required": true
     }
   ],
-  "version": "0.0.10",
-  "releaseNotes": "Fix install error introduced in v0.0.9 — Hubitat's definition() validator rejects empty iconUrl/iconX2Url, so restored those plus tank-3.png. Tile page itself remains zero-external.",
+  "version": "0.0.11",
+  "releaseNotes": "Dropped the redundant Polling capability on the child device; Refresh covers the same flow and poll() remains as a backward-compat alias.",
   "communityLink": "https://community.hubitat.com/t/smart-oil-gauge-app-and-device/63078"
 }

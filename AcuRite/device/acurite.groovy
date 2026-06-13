@@ -16,6 +16,8 @@
  *
  *  Last Update 2026-06-12
  *
+ *  v0.0.14 - swapped Polling capability for Refresh (modern Hubitat
+ *            convention); poll() retained as a backward-compat alias.
  *  v0.0.13 - dropped poll_schedule() wrapper; runEvery uses "poll" directly.
  *  v0.0.12 - restored measured_light attribute; weatherSummary temp now
  *            renders with degree symbol.
@@ -56,7 +58,7 @@ metadata {
     capability "Relative Humidity Measurement"
     capability "UltravioletIndex"
     capability "Initialize"
-    capability "Polling"
+    capability "Refresh"
     capability "Battery"
 
     attribute "location_name", "string"
@@ -125,10 +127,14 @@ def updated() {
   initialize()
 }
 
-def poll() {
-  if (debug) log.info "AcuRite: poll() called"
+def refresh() {
+  if (debug) log.info "AcuRite: refresh() called"
   get_acurite_data()
 }
+
+// Backward-compat alias — kept so rules that called poll() under the
+// old Polling capability keep working.
+def poll() { refresh() }
 
 def initialize() {
   unschedule()
@@ -147,7 +153,7 @@ def initialize() {
     return
   }
   def poll_interval_cmd = (settings?.poll_interval ?: "5 Minutes").replace(" ", "")
-  "runEvery${poll_interval_cmd}"("poll")
+  "runEvery${poll_interval_cmd}"("refresh")
   if (debug) log.debug "AcuRite: scheduling as runEvery" + poll_interval_cmd
 }
 

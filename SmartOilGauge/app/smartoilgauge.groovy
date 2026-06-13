@@ -1,6 +1,8 @@
 /*
  *  Smart Oil Gauge (Connect)
  *
+ *  v0.0.11 - dropped the redundant Polling capability on the child device
+ *            (Refresh covers it); poll() retained as a backward-compat alias.
  *  v0.0.10 - restored iconUrl/iconX2Url (Hubitat's definition() validator
  *            rejects empty/absent values) and the tank-3.png file they
  *            point at. The tile page itself remains zero-external.
@@ -42,7 +44,7 @@ definition(
 	oauth: true
 )
 
-static String appVersion() { "0.0.10" }
+static String appVersion() { "0.0.11" }
 
 preferences {
 	page(name: "settings", title: "Smart Oil Gauge", content: "settingsPage", install: true)

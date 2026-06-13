@@ -1,7 +1,7 @@
 {
   "packageName": "AcuRite Weather Station",
   "author": "David LaPorte",
-  "version": "0.0.13",
+  "version": "0.0.14",
   "minimumHEVersion": "2.1.9",
   "dateReleased": "2026-06-12",
   "drivers": [
