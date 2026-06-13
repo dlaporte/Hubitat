@@ -16,6 +16,11 @@
  *
  *  Last Update 2026-06-12
  *
+ *  v0.0.12 - restored measured_light attribute (erroneously removed in
+ *            v0.0.10 — the API's MeasuredLight sensor actually populates
+ *            it). Fixed weatherSummary to render temperature with the
+ *            degree symbol (was "23F", now "23°F"; API returns the unit
+ *            as bare "F"/"C" without the °).
  *  v0.0.11 - converted login + data fetch to asynchttpPost / asynchttpGet,
  *            so a poll cycle no longer blocks the scheduler when myacurite
  *            is slow or unreachable. Added derived `lightningActive` boolean
@@ -77,6 +82,7 @@ metadata {
     attribute "lightning_closest_strike_distance", "number"
     attribute "lightning_strike_count", "number"
     attribute "interference", "number"
+    attribute "measured_light", "number"
     attribute "light_intensity", "number"
     attribute "illuminance", "number"
     attribute "ultravioletIndex", "number"
@@ -134,9 +140,11 @@ def initialize() {
   unschedule()
   if (debug) log.debug "AcuRite: initialize() called"
 
-  // v0.0.10 cleanup: drop attribute names removed/renamed in earlier versions
-  // so upgraders don't see phantom entries in the Current States panel.
-  ["wind_direction", "wind_speed", "uv_index", "measured_light"].each {
+  // Drop attribute names removed/renamed in earlier versions so upgraders
+  // don't see phantom entries in the Current States panel. measured_light
+  // was erroneously removed in v0.0.10 and restored in v0.0.12 — no longer
+  // listed here.
+  ["wind_direction", "wind_speed", "uv_index"].each {
     try { device.deleteCurrentState(it) } catch (Exception e) { /* older HE without API; ignore */ }
   }
 
@@ -314,10 +322,16 @@ private void process_acurite_data(data) {
     sendEvent(name: "lightningActive", value: active ? "true" : "false")
   }
 
-  // Derived: weatherSummary  ("72°F, 45%RH, wind SW 8 mph")
+  // Derived: weatherSummary  ("72°F, 45% RH, wind SW 8 mph")
+  // AcuRite returns temperature unit as bare "F"/"C"; we prepend ° for display.
   def parts = []
   if (snap.temperature?.value != null) {
-    parts << "${snap.temperature.value}${snap.temperature.unit ?: '°'}"
+    def tu = snap.temperature.unit
+    String tempPart = "${snap.temperature.value}"
+    if (tu in ["F", "C"]) tempPart += "°${tu}"
+    else if (tu) tempPart += tu
+    else tempPart += "°"
+    parts << tempPart
   }
   if (snap.humidity?.value != null) {
     parts << "${snap.humidity.value}% RH"
