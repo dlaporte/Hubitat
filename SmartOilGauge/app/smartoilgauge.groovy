@@ -1,10 +1,11 @@
 /*
  *  Smart Oil Gauge (Connect)
  *
+ *  v0.0.10 - restored iconUrl/iconX2Url (Hubitat's definition() validator
+ *            rejects empty/absent values) and the tank-3.png file they
+ *            point at. The tile page itself remains zero-external.
  *  v0.0.9 - tile page now zero-external: dropped Bootstrap CDN, replaced
  *           the 5 tank PNGs with one inline SVG that fills dynamically.
- *           Also dropped the iconUrl PNG references (Hubitat shows a
- *           default icon) and deleted the now-unused images/ directory.
  *  v0.0.8 - DRY'd getDevices + RefreshDeviceStatus into one fetchTankData().
  *  v0.0.7 - stripped nest-manager scaffolding (~660 lines); rewrote tile
  *           page with minimal inline CSS; external deps 11 → 2.
@@ -35,11 +36,13 @@ definition(
 	author: "David LaPorte",
 	description: "Virtual device handler for Smart Oil Gauge",
 	category: "My Apps",
+	iconUrl: "https://github.com/dlaporte/Hubitat/raw/main/SmartOilGauge/images/tank-3.png",
+	iconX2Url: "https://github.com/dlaporte/Hubitat/raw/main/SmartOilGauge/images/tank-3.png",
 	singleInstance: true,
 	oauth: true
 )
 
-static String appVersion() { "0.0.9" }
+static String appVersion() { "0.0.10" }
 
 preferences {
 	page(name: "settings", title: "Smart Oil Gauge", content: "settingsPage", install: true)

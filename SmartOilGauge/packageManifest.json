@@ -23,7 +23,7 @@
       "required": true
     }
   ],
-  "version": "0.0.9",
-  "releaseNotes": "Tile page is now fully self-contained — dropped Bootstrap CDN and the 5 tank PNGs in favor of inline CSS and an SVG tank that fills dynamically. Zero external HTML dependencies.",
+  "version": "0.0.10",
+  "releaseNotes": "Fix install error introduced in v0.0.9 — Hubitat's definition() validator rejects empty iconUrl/iconX2Url, so restored those plus tank-3.png. Tile page itself remains zero-external.",
   "communityLink": "https://community.hubitat.com/t/smart-oil-gauge-app-and-device/63078"
 }
