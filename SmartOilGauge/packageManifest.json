@@ -23,7 +23,7 @@
       "required": true
     }
   ],
-  "version": "0.0.6",
-  "releaseNotes": "Robustness pass: explicit User-Agent header on all Droplet Fuel API calls (insulates against Mod Security tightening), token TTL now read from the API's expires_in field (was hardcoded 3600s) with 60s of refresh slack, and fixed `obs` script-level binding in both data-fetch call sites.",
+  "version": "0.0.7",
+  "releaseNotes": "Major cleanup: dropped ~660 lines of nest-manager-derived scaffolding (automation eval, execution history, per-app disable, enableOauth hack). Tile page rewritten with minimal inline CSS — external dependencies reduced from 11 to 2 (Bootstrap CDN + tank images in this repo). Drops tonesto7/nest-manager assets, FontAwesome, FlowType, clipboard.js, vex, Swiper, Google Charts, Google Fonts, normalize.css, hamburgers.css.",
   "communityLink": "https://community.hubitat.com/t/smart-oil-gauge-app-and-device/63078"
 }

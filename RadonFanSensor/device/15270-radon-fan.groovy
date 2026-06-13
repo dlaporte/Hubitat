@@ -1,6 +1,8 @@
 /**
  *  Radon Fan Sensor
  *
+ *  v0.6 - removed cargo-cult Enerwave-motion MSR branch that does not
+ *         apply to this Monoprice 15270 / WADWAZ-1.
  *  v0.5 - added ContactSensor capability (contact = closed when fan is
  *         running, open when off) alongside the existing switch attribute
  *         so the device matches the semantic Hubitat expects for a binary
@@ -217,12 +219,11 @@ def zwaveEvent(hubitat.zwave.commands.manufacturerspecificv2.ManufacturerSpecifi
 	def msr = String.format("%04X-%04X-%04X", cmd.manufacturerId, cmd.productTypeId, cmd.productId)
 	if (debug) log.debug "msr: $msr"
 	updateDataValue("MSR", msr)
-	
+
 	result << createEvent(descriptionText: "$device.displayName MSR: $msr", isStateChange: false)
-	
-	if (msr == "011A-0601-0901") {  // Enerwave motion doesn't always get the associationSet that the hub sends on join
-		result << response(zwave.associationV1.associationSet(groupingIdentifier:1, nodeId:zwaveHubNodeId))
-	} else if (!device.currentState("battery")) {
+
+	// Request battery on first MSR if we don't have one yet.
+	if (!device.currentState("battery")) {
 		result << response(zwave.batteryV1.batteryGet())
 	}
 	result
