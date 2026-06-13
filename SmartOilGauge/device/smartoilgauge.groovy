@@ -29,6 +29,14 @@ metadata {
 		attribute "level", "number"
 		attribute "gallons", "number"
 		attribute "humidity", "number"
+
+		// v0.0.5 additions — derived metrics surfaced from the parent app
+		attribute "accountNumber", "string"
+		attribute "usageRate", "number"           // gallons per day (smoothed)
+		attribute "daysRemaining", "number"       // gallons / usageRate
+		attribute "lowFuel", "string"             // "true" / "false" vs threshold
+		attribute "lastRefillAt", "string"        // ISO timestamp of last detected refill
+		attribute "lastRefillGallons", "number"   // delta gallons at the refill
 	}
 }
     

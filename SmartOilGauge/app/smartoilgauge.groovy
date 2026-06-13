@@ -34,7 +34,7 @@ definition(
 	oauth:true
 )
 
-static String appVersion() { "0.0.3" }
+static String appVersion() { "0.0.5" }
 
 preferences {
 	page(name: "settings", title: "Settings", content: "settingsPage", install:true)
@@ -159,6 +159,15 @@ private settingsPage(){
 					paragraph imgTitle(getAppImg("graph_icon.png"), paraTitleStr(myStr))
 				}
 			}
+		}
+
+		section(sectionTitleStr("Tank Alerts &amp; Estimates:")){
+			input("lowFuelThresholdPct", "number", title: inputTitleStr("Low-fuel alert threshold (% of tank capacity)"),
+				required: false, defaultValue: 25, range: "1..99")
+			input("refillThresholdPct", "number", title: inputTitleStr("Minimum gallons increase to count as a refill (% of capacity)"),
+				required: false, defaultValue: 5, range: "1..99")
+			input("usageWindowHours", "number", title: inputTitleStr("Usage-rate smoothing window (hours; longer = less jitter)"),
+				required: false, defaultValue: 168, range: "6..720") // default 7 days
 		}
 
 		section(sectionTitleStr("Automation Options:")){
@@ -364,10 +373,11 @@ void pollChildren(Boolean updateData=true){
 				LogAction("pollChildren: no device data available $d.label", "warn", true)
 				return false
 			}
-			def gallons = devData.gallons
-			def level = ((devData.gallons.toFloat()/devData.tank_volume.toFloat())*100).round(2)
+			def gallons = devData.gallons.toFloat()
+			def capacity = devData.tank_volume.toFloat()
+			def level = ((gallons / capacity) * 100).round(2)
 			def lastReadTime = devData.last_read
-			def capacity = devData.tank_volume
+			def acctNum = devData.acct_num ?: ""
 
             def battery
             if (devData.battery == "Excellent") {
@@ -381,6 +391,13 @@ void pollChildren(Boolean updateData=true){
             } else {
                 battery = 0
             }
+
+			// Refill detection + usage rate + days-remaining derivation.
+			// Rolling history of (gallons, time) per sensor is kept in state so
+			// the parent app survives device restarts. Refill is "current gallons
+			// rose by at least refillThresholdPct of capacity since last reading".
+			def derived = computeTankMetrics(deviceid, gallons, capacity)
+
 			def events = [
 				['level': level],
 				['energy': level],
@@ -388,8 +405,17 @@ void pollChildren(Boolean updateData=true){
 				['capacity': capacity],
 				['gallons': gallons],
 				['lastreading': lastReadTime],
-				['battery': battery]
+				['battery': battery],
+				['accountNumber': acctNum],
+				['usageRate': derived.usageRate],
+				['daysRemaining': derived.daysRemaining],
+				['lowFuel': derived.lowFuel ? "true" : "false"]
 			]
+			if (derived.refillDetected) {
+				events << ['lastRefillAt': derived.refillAt]
+				events << ['lastRefillGallons': derived.refillGallons]
+				LogAction("pollChildren: refill detected on tank ${deviceid}: +${derived.refillGallons} gal", "info", true)
+			}
 			LogAction("pollChidren: Sending events: ${events}", "info", false)
 			events.each {
 				event -> d.generateEvent(event)
@@ -404,6 +430,69 @@ void pollChildren(Boolean updateData=true){
 
 String getDeviceDNI(String DeviceID){
 	return [app.id, DeviceID].join('.')
+}
+
+// Computes refill / usage-rate / days-remaining / low-fuel for one tank.
+// Returns a Map: [usageRate, daysRemaining, lowFuel, refillDetected, refillAt, refillGallons].
+//
+// State shape: state.tankHistory[sensorId] = [[gallons, timeMs], ...] kept within
+// the smoothing window. The oldest non-refill reading vs. current gives a smoothed
+// gallons-per-hour figure scaled to gallons-per-day. Refill events break the chain
+// (we discard prior readings so the next usageRate doesn't include the refill jump).
+private Map computeTankMetrics(String sensorId, Float gallons, Float capacity) {
+	Long nowMs = now()
+	Integer windowHours = (settings.usageWindowHours ?: 168) as Integer
+	Float refillThresholdPct = (settings.refillThresholdPct ?: 5) as Float
+	Float lowFuelThresholdPct = (settings.lowFuelThresholdPct ?: 25) as Float
+
+	if (state.tankHistory == null) state.tankHistory = [:]
+	def hist = state.tankHistory[sensorId] ?: []
+
+	// Refill detection: current rose by at least refillThresholdPct of capacity
+	boolean refillDetected = false
+	Float refillGallons = 0
+	String refillAt = null
+	if (hist) {
+		Float prevGallons = hist.last()[0] as Float
+		Float jumpThreshold = capacity * refillThresholdPct / 100
+		if (gallons > prevGallons + jumpThreshold) {
+			refillDetected = true
+			refillGallons = (gallons - prevGallons).round(2)
+			refillAt = new Date(nowMs).format("yyyy-MM-dd HH:mm:ss", getTimeZone() ?: TimeZone.getDefault())
+			hist = []  // discard history so the post-refill usageRate isn't polluted
+		}
+	}
+
+	// Drop entries older than the smoothing window
+	Long cutoff = nowMs - (windowHours * 3600L * 1000L)
+	hist = hist.findAll { (it[1] as Long) >= cutoff }
+	hist << [gallons, nowMs]
+	state.tankHistory[sensorId] = hist
+
+	// Usage rate: oldest reading vs. current
+	Float usageRate = 0
+	Integer daysRemaining = -1
+	if (hist.size() >= 2) {
+		Float oldestGal = hist.first()[0] as Float
+		Long oldestTime = hist.first()[1] as Long
+		Float hours = (nowMs - oldestTime) / (3600.0 * 1000.0)
+		Float galConsumed = oldestGal - gallons  // positive when consuming
+		if (hours >= 1 && galConsumed > 0) {
+			usageRate = (galConsumed / hours * 24).round(2)
+			if (usageRate > 0) daysRemaining = (gallons / usageRate).round() as Integer
+		}
+	}
+
+	Boolean lowFuel = (gallons / capacity * 100) <= lowFuelThresholdPct
+
+	return [
+		usageRate: usageRate,
+		daysRemaining: daysRemaining < 0 ? null : daysRemaining,
+		lowFuel: lowFuel,
+		refillDetected: refillDetected,
+		refillAt: refillAt,
+		refillGallons: refillGallons
+	]
 }
 
 static String strCapitalize(str){

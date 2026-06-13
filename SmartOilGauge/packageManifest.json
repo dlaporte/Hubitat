@@ -23,7 +23,7 @@
       "required": true
     }
   ],
-  "version": "0.0.4",
-  "releaseNotes": "Fixed dead cdn.rawgit.com URLs (swapped to jsdelivr); stopped initialize() from force-enabling debug logging on every save.",
+  "version": "0.0.5",
+  "releaseNotes": "Added per-tank refill detection, usage rate (gal/day), days-remaining estimate, low-fuel boolean, and accountNumber attributes. New preferences: low-fuel threshold, refill detection threshold, usage smoothing window. Also bumps appVersion() in sync with manifest.",
   "communityLink": "https://community.hubitat.com/t/smart-oil-gauge-app-and-device/63078"
 }
