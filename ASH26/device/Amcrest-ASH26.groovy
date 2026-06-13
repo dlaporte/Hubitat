@@ -3,6 +3,9 @@
  *  Enable control of lights, night vision, motion detection, and other settings
  *  only available through Amcrest mobile app.
  *
+ *  v0.7 - reset state.nc on initialize() so the digest nonce counter
+ *         doesn't accumulate in the serialized state map for the lifetime
+ *         of the install (each request gets a fresh server nonce anyway).
  *  v0.6 - chain abandonment on a mid-sequence SetConfig failure now logs
  *         a loud error noting how many steps were skipped, instead of
  *         silently leaving the camera in a half-configured state.
@@ -75,6 +78,11 @@ def updated() {
 
 def initialize() {
   unschedule()
+  // Reset the digest nonce counter so it doesn't accumulate forever in the
+  // serialized state map. Each request gets a fresh server-side nonce, so
+  // the counter's monotonic-increase isn't actually buying us replay
+  // protection beyond what the server already guarantees.
+  state.nc = 0
   if (!ip || !username || !password) {
     log.error "ASH26: required fields not completed, please complete for proper operation."
     return

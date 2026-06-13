@@ -1,6 +1,12 @@
 /*
  *  Smart Oil Gauge (Connect)
  *
+ *  v0.0.15 - third review round:
+ *            - reverted the v0.0.14 Date.parse TZ change; it introduced
+ *              an offset bug for hubs where the Droplet API's timezone
+ *              didn't match the hub's.
+ *            - state.tankHistory hard-capped at 720 entries regardless
+ *              of windowHours setting.
  *  v0.0.14 - second review round fixes:
  *            - TEnergyTbl key changed from day-of-year (1-365) to "yyyy-DDD"
  *              so Jan 1 entries don't alias against a year-ago Jan 1.
@@ -68,7 +74,7 @@ definition(
 	oauth: true
 )
 
-static String appVersion() { "0.0.14" }
+static String appVersion() { "0.0.15" }
 
 preferences {
 	page(name: "settings", title: "Smart Oil Gauge", content: "settingsPage", install: true)
@@ -423,6 +429,9 @@ private Map computeTankMetrics(String sensorId, Float gallons, Float capacity) {
 	Long cutoff = nowMs - (windowHours * 3600L * 1000L)
 	hist = hist.findAll { (it[1] as Long) >= cutoff }
 	hist << [gallons, nowMs]
+	// Hard cap independent of windowHours so an aggressive window setting
+	// can't bloat state indefinitely. 720 = max window at 1-per-hour polling.
+	while (hist.size() > 720) hist.removeAt(0)
 	state.tankHistory[sensorId] = hist
 
 	Float usageRate = 0
@@ -555,11 +564,12 @@ private String getEDeviceTile(dev) {
 	String formattedRead = "—"
 	if (lastReadTime) {
 		try {
-			// Parse the Droplet last_read timestamp in the hub's timezone, not the
-			// JVM default — otherwise non-default TZ hubs see wrong "Last updated".
-			SimpleDateFormat parser = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
-			parser.setTimeZone(getTimeZone() ?: TimeZone.getDefault())
-			Date d = parser.parse(lastReadTime.toString())
+			// Droplet's API doesn't document the timezone of last_read, so we
+			// parse it in JVM default (which on Hubitat matches the hub's TZ in
+			// the common case) and format in the hub's TZ for display. v0.0.14
+			// tried to set the parser TZ explicitly but that introduced an
+			// offset bug whenever the API timezone didn't match the hub.
+			Date d = Date.parse("yyyy-MM-dd HH:mm:ss", lastReadTime.toString())
 			SimpleDateFormat fmt = new SimpleDateFormat("MMM d, yyyy h:mm a")
 			if (getTimeZone()) fmt.setTimeZone(getTimeZone())
 			formattedRead = fmt.format(d)

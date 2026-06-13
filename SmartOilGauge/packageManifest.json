@@ -1,7 +1,7 @@
 {
   "packageName": "Smart Oil Gauge",
   "author": "dlaporte",
-  "minimumHEVersion": "2.1.9",
+  "minimumHEVersion": "2.2.0",
   "dateReleased": "2026-06-12",
   "apps": [
     {
@@ -23,7 +23,7 @@
       "required": true
     }
   ],
-  "version": "0.0.14",
-  "releaseNotes": "Second review round: fixed TEnergyTbl key wrap on Jan 1; tile refill threshold now matches refillThresholdPct setting; Date.parse uses hub timezone; initialize() no longer blocks settings save on a synchronous API fetch.",
+  "version": "0.0.15",
+  "releaseNotes": "Third review round: reverted v0.0.14's Date.parse TZ override (introduced an offset bug); state.tankHistory now hard-capped at 720 entries; manifest bumped to require HE 2.2.0 (matches device.deleteCurrentState reality).",
   "communityLink": "https://community.hubitat.com/t/smart-oil-gauge-app-and-device/63078"
 }

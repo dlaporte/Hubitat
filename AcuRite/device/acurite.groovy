@@ -16,6 +16,9 @@
  *
  *  Last Update 2026-06-12
  *
+ *  v0.0.18 - lightning_strike_count parse now uses isDouble() so a
+ *            float-formatted value ("3.0") doesn't silently disable the
+ *            entire lightningActive feature.
  *  v0.0.17 - defensive parse of lightning_strike_count — a non-numeric API
  *            value would have thrown NumberFormatException and aborted the
  *            rest of process_acurite_data.
@@ -326,10 +329,11 @@ private void process_acurite_data(data) {
   def currStrikes = snap["lightning_strike_count"]?.value
   // Defensive parse — if the API ever returns a non-numeric value here
   // (empty string, "N/A", etc.) a bare `as Long` cast would throw and
-  // abort the whole sensor loop, losing subsequent updates.
+  // abort the whole sensor loop, losing subsequent updates. isDouble()
+  // accepts both "3" and "3.0" since some weather APIs floatify counts.
   Long currStrikesLong = null
-  if (currStrikes != null && currStrikes.toString().isLong()) {
-    currStrikesLong = currStrikes.toString().toLong()
+  if (currStrikes != null && currStrikes.toString().isDouble()) {
+    currStrikesLong = (currStrikes.toString().toDouble() as Long)
   }
   if (currStrikesLong != null) {
     Long prevStrikes = (state.acurite_prev_strikes ?: 0L) as Long

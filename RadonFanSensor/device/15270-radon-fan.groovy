@@ -1,6 +1,8 @@
 /**
  *  Radon Fan Sensor
  *
+ *  v0.8 - re-arm checkFanAlarm in initialize() if the fan is currently off,
+ *         so a hub reboot doesn't silently defeat the safety alarm.
  *  v0.7 - three Z-Wave correctness fixes:
  *         - state.MSR now actually gets set (was only written to dataValue,
  *           which made every wake-up retransmit config forever)
@@ -259,4 +261,10 @@ def refresh() {
 void initialize() {
 	if (debug) log.debug "initialize() called"
 	refresh()
+	// Hub reboot loses any pending runIn. If the fan is currently off, re-arm
+	// the alarm timer so a hub restart doesn't silently defeat the safety net.
+	if (device.currentValue("contact") == "open") {
+		Integer afterMin = (alarmAfterMinutes ?: 30) as Integer
+		runIn(afterMin * 60, "checkFanAlarm")
+	}
 }

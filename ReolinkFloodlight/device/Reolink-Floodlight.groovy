@@ -10,6 +10,8 @@
  *
  *  Does NOT expose any siren/alarm-trigger commands by design.
  *
+ *  v0.7 - bumped manifest minimumHEVersion to 2.2.0 to match the
+ *         device.deleteCurrentState API the driver actually requires.
  *  v0.6 - snapshotURL attribute is now opt-in (new publishSnapshotURL pref,
  *         default off). It embeds the camera username/password, which would
  *         otherwise persist in event history, hub backups, and the Maker
