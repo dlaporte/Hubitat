@@ -10,6 +10,10 @@
  *
  *  Does NOT expose any siren/alarm-trigger commands by design.
  *
+ *  v0.5 - converted all HTTP to asynchttpPost. The sync httpPost calls in the
+ *         poll loop were blocking the Hubitat scheduler for up to 10s per
+ *         request when the camera was offline; the async pattern eliminates
+ *         that. User-visible behavior is identical when the camera is reachable.
  *  v0.4 - added powerLED toggle, RTSP URLs, SD-card health attributes,
  *         and snapshotURL (short-session JPEG endpoint for dashboards).
  *  v0.3 - added microphone enable/disable (SetEnc.audio);
@@ -152,7 +156,8 @@ def initialize() {
 def uninstalled() {
   unschedule()
   if (state.token) {
-    try { sendCmd([[cmd: "Logout", param: [:]]]) } catch (Exception e) { /* best-effort */ }
+    // Fire-and-forget logout — no callback needed.
+    sendCmd([[cmd: "Logout", param: [:]]], null, [:])
   }
 }
 
@@ -195,17 +200,22 @@ def setBrightness(level) {
 private applyFloodlight(Integer desiredState, Integer brightness) {
   def param = [WhiteLed: [channel: 0, state: desiredState]]
   if (brightness != null) param.WhiteLed.bright = brightness
+  sendCmd([[cmd: "SetWhiteLed", param: param]], "applyFloodlightHandler", [
+      desiredState: desiredState,
+      brightness: brightness
+  ])
+}
 
-  def resp = sendCmd([[cmd: "SetWhiteLed", param: param]])
-  if (resp && resp[0]?.code == 0) {
-    sendEvent(name: "switch", value: desiredState == 1 ? "on" : "off")
-    if (brightness != null) sendEvent(name: "level", value: brightness)
-    if (desiredState == 1 && shouldKeepAlive()) {
-      unschedule("keepAlive")
-      runIn(120, "keepAlive")
-    }
-  } else {
-    log.error "Reolink: SetWhiteLed failed: ${resp}"
+def applyFloodlightHandler(result, data) {
+  if (!result || result[0]?.code != 0) {
+    log.error "Reolink: SetWhiteLed failed: ${result}"
+    return
+  }
+  sendEvent(name: "switch", value: data.desiredState == 1 ? "on" : "off")
+  if (data.brightness != null) sendEvent(name: "level", value: data.brightness)
+  if (data.desiredState == 1 && shouldKeepAlive()) {
+    unschedule("keepAlive")
+    runIn(120, "keepAlive")
   }
 }
 
@@ -214,9 +224,9 @@ def keepAlive() {
   def level = (device.currentValue("level") ?: 100) as Integer
   if (debug) log.debug "Reolink: keepAlive — re-asserting state:1 bright:${level}"
   applyFloodlight(1, level)
-  // Always reschedule if we're still meant to be on, so a transient HTTP failure
-  // inside applyFloodlight doesn't terminate the keep-alive loop.
-  if (device.currentValue("switch") == "on" && shouldKeepAlive()) {
+  // Reschedule eagerly; if applyFloodlight fails (camera offline) we still want
+  // to keep trying so the light comes back on as soon as the camera returns.
+  if (shouldKeepAlive()) {
     runIn(120, "keepAlive")
   }
 }
@@ -243,15 +253,21 @@ def setFloodlightMode(String mode) {
   def param = (m == 0)
       ? [WhiteLed: [channel: 0, state: 0, mode: 0]]
       : [WhiteLed: [channel: 0, mode: m]]
-  def resp = sendCmd([[cmd: "SetWhiteLed", param: param]])
-  if (resp && resp[0]?.code == 0) {
-    sendEvent(name: "floodlightMode", value: mode)
-    if (m == 0) {
-      unschedule("keepAlive")
-      sendEvent(name: "switch", value: "off")
-    }
-  } else {
-    log.error "Reolink: setFloodlightMode failed: ${resp}"
+  sendCmd([[cmd: "SetWhiteLed", param: param]], "setFloodlightModeHandler", [
+      mode: mode,
+      modeNum: m
+  ])
+}
+
+def setFloodlightModeHandler(result, data) {
+  if (!result || result[0]?.code != 0) {
+    log.error "Reolink: setFloodlightMode failed: ${result}"
+    return
+  }
+  sendEvent(name: "floodlightMode", value: data.mode)
+  if (data.modeNum == 0) {
+    unschedule("keepAlive")
+    sendEvent(name: "switch", value: "off")
   }
 }
 
@@ -263,13 +279,18 @@ def setLightingSchedule(String startTime, String endTime) {
     return
   }
   def sched = [StartHour: s.hour, StartMin: s.minute, EndHour: e.hour, EndMin: e.minute]
-  def resp = sendCmd([[cmd: "SetWhiteLed", param: [WhiteLed: [channel: 0, LightingSchedule: sched]]]])
-  if (resp && resp[0]?.code == 0) {
-    sendEvent(name: "lightingSchedule",
-        value: String.format("%02d:%02d-%02d:%02d", sched.StartHour, sched.StartMin, sched.EndHour, sched.EndMin))
-  } else {
-    log.error "Reolink: setLightingSchedule failed: ${resp}"
+  sendCmd([[cmd: "SetWhiteLed", param: [WhiteLed: [channel: 0, LightingSchedule: sched]]]],
+      "setLightingScheduleHandler", [sched: sched])
+}
+
+def setLightingScheduleHandler(result, data) {
+  if (!result || result[0]?.code != 0) {
+    log.error "Reolink: setLightingSchedule failed: ${result}"
+    return
   }
+  def s = data.sched
+  sendEvent(name: "lightingSchedule",
+      value: String.format("%02d:%02d-%02d:%02d", s.StartHour, s.StartMin, s.EndHour, s.EndMin))
 }
 
 // Accepts either "HH:mm" or an ISO datetime like "1970-01-01T18:00:00.000-0500"
@@ -283,22 +304,36 @@ private Map parseHm(String t) {
 
 def setIRMode(String mode) {
   if (!(mode in ["Auto", "Off"])) { log.error "Reolink: invalid IR mode"; return }
-  def resp = sendCmd([[cmd: "SetIrLights", param: [IrLights: [channel: 0, state: mode]]]])
-  if (resp && resp[0]?.code == 0) sendEvent(name: "IRMode", value: mode)
+  sendCmd([[cmd: "SetIrLights", param: [IrLights: [channel: 0, state: mode]]]],
+      "setIRModeHandler", [mode: mode])
+}
+
+def setIRModeHandler(result, data) {
+  if (result && result[0]?.code == 0) sendEvent(name: "IRMode", value: data.mode)
+  else log.error "Reolink: setIRMode failed: ${result}"
 }
 
 def setDayNightMode(String mode) {
   if (!(mode in ["Auto", "Color", "Black&White"])) { log.error "Reolink: invalid day/night mode"; return }
-  def resp = sendCmd([[cmd: "SetIsp", param: [Isp: [channel: 0, dayNight: mode]]]])
-  if (resp && resp[0]?.code == 0) sendEvent(name: "dayNightMode", value: mode)
+  sendCmd([[cmd: "SetIsp", param: [Isp: [channel: 0, dayNight: mode]]]],
+      "setDayNightModeHandler", [mode: mode])
+}
+
+def setDayNightModeHandler(result, data) {
+  if (result && result[0]?.code == 0) sendEvent(name: "dayNightMode", value: data.mode)
+  else log.error "Reolink: setDayNightMode failed: ${result}"
 }
 
 def setMicrophone(String state) {
   if (!(state in ["On", "Off"])) { log.error "Reolink: invalid microphone state '${state}'"; return }
   Integer v = (state == "On") ? 1 : 0
-  def resp = sendCmd([[cmd: "SetEnc", param: [Enc: [channel: 0, audio: v]]]])
-  if (resp && resp[0]?.code == 0) sendEvent(name: "microphone", value: state)
-  else log.error "Reolink: setMicrophone failed: ${resp}"
+  sendCmd([[cmd: "SetEnc", param: [Enc: [channel: 0, audio: v]]]],
+      "setMicrophoneHandler", [state: state])
+}
+
+def setMicrophoneHandler(result, data) {
+  if (result && result[0]?.code == 0) sendEvent(name: "microphone", value: data.state)
+  else log.error "Reolink: setMicrophone failed: ${result}"
 }
 
 def setPowerLED(String state) {
@@ -307,9 +342,13 @@ def setPowerLED(String state) {
     log.warn "Reolink: this camera does not report a controllable power LED"
     return
   }
-  def resp = sendCmd([[cmd: "SetPowerLed", param: [PowerLed: [channel: 0, state: state]]]])
-  if (resp && resp[0]?.code == 0) sendEvent(name: "powerLED", value: state)
-  else log.error "Reolink: setPowerLED failed: ${resp}"
+  sendCmd([[cmd: "SetPowerLed", param: [PowerLed: [channel: 0, state: state]]]],
+      "setPowerLEDHandler", [state: state])
+}
+
+def setPowerLEDHandler(result, data) {
+  if (result && result[0]?.code == 0) sendEvent(name: "powerLED", value: data.state)
+  else log.error "Reolink: setPowerLED failed: ${result}"
 }
 
 // ---------------------------------------------------------------------------
@@ -318,7 +357,7 @@ def setPowerLED(String state) {
 
 def refresh() {
   if (debug) log.debug "Reolink: refresh()"
-  def resp = sendCmd([
+  sendCmd([
       [cmd: "GetDevInfo",   param: [:]],
       [cmd: "GetLocalLink", param: [:]],
       [cmd: "GetAbility",   param: [User: [userName: username]]],
@@ -329,10 +368,12 @@ def refresh() {
       [cmd: "GetRtspUrl",   param: [channel: 0]],
       [cmd: "GetHddInfo",   param: [:]],
       [cmd: "GetPowerLed",  param: [channel: 0]]
-  ])
-  if (!resp) return
+  ], "refreshHandler", [:])
+}
 
-  resp.each { r ->
+def refreshHandler(result, data) {
+  if (!result) return
+  result.each { r ->
     if (r.code != 0) {
       log.warn "Reolink: ${r.cmd} returned code ${r.code}"
       return
@@ -405,48 +446,85 @@ def refresh() {
 }
 
 def pollStatus() {
-  // Capture epoch at start; if initialize() runs while this poll is mid-flight
-  // it bumps state.pollEpoch and we bow out instead of double-scheduling.
-  def myEpoch = state.pollEpoch
+  Integer myEpoch = (state.pollEpoch ?: 0) as Integer
 
-  def cmds = [
-      [cmd: "GetMdState", param: [channel: 0]],
-      [cmd: "GetAiState", param: [channel: 0]]
-  ]
-  def resp = sendCmd(cmds)
-  if (resp) {
-    resp.each { r ->
-      if (r.code != 0) return
-      if (r.cmd == "GetMdState") {
-        sendEvent(name: "motion", value: r.value?.state == 1 ? "active" : "inactive")
-      } else if (r.cmd == "GetAiState") {
-        def v = r.value ?: [:]
-        // Gate each emission on the per-call `support` flag so unsupported AI
-        // types don't surface as perpetually-"inactive" clutter.
-        if (v.people?.support  == 1) sendEvent(name: "personDetected",  value: v.people.alarm_state  == 1 ? "active" : "inactive")
-        if (v.vehicle?.support == 1) sendEvent(name: "vehicleDetected", value: v.vehicle.alarm_state == 1 ? "active" : "inactive")
-        if (v.dog_cat?.support == 1) sendEvent(name: "animalDetected",  value: v.dog_cat.alarm_state == 1 ? "active" : "inactive")
-        if (v.face?.support    == 1) sendEvent(name: "faceDetected",    value: v.face.alarm_state    == 1 ? "active" : "inactive")
-      }
-    }
-  }
-
+  // Always schedule the next poll first, BEFORE firing the request. That way
+  // even if the camera is offline (response never arrives) the loop keeps
+  // ticking, and the next pollStatus runs at its normal cadence — not after
+  // a 10-second HTTP timeout.
   if (state.pollEpoch == myEpoch) {
     Integer delay = Math.max(5, ((pollInterval ?: 5) as Integer))
     runIn(delay, "pollStatus")
   }
+
+  sendCmd([
+      [cmd: "GetMdState", param: [channel: 0]],
+      [cmd: "GetAiState", param: [channel: 0]]
+  ], "pollStatusHandler", [epoch: myEpoch])
+}
+
+def pollStatusHandler(result, data) {
+  // If initialize() bumped the epoch while we were in flight, skip emissions.
+  if (((state.pollEpoch ?: 0) as Integer) != (data.epoch as Integer)) return
+  if (!result) return
+
+  result.each { r ->
+    if (r.code != 0) return
+    if (r.cmd == "GetMdState") {
+      sendEvent(name: "motion", value: r.value?.state == 1 ? "active" : "inactive")
+    } else if (r.cmd == "GetAiState") {
+      def v = r.value ?: [:]
+      // Gate each emission on the per-call `support` flag so unsupported AI
+      // types don't surface as perpetually-"inactive" clutter.
+      if (v.people?.support  == 1) sendEvent(name: "personDetected",  value: v.people.alarm_state  == 1 ? "active" : "inactive")
+      if (v.vehicle?.support == 1) sendEvent(name: "vehicleDetected", value: v.vehicle.alarm_state == 1 ? "active" : "inactive")
+      if (v.dog_cat?.support == 1) sendEvent(name: "animalDetected",  value: v.dog_cat.alarm_state == 1 ? "active" : "inactive")
+      if (v.face?.support    == 1) sendEvent(name: "faceDetected",    value: v.face.alarm_state    == 1 ? "active" : "inactive")
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Auth + HTTP
+// Auth + HTTP (async)
 // ---------------------------------------------------------------------------
 
-private boolean ensureToken() {
-  if (state.token && state.tokenExpiry && now() < (state.tokenExpiry as Long) - 60_000L) return true
-  return login()
+private boolean hasValidToken() {
+  return state.token && state.tokenExpiry && now() < (state.tokenExpiry as Long) - 60_000L
 }
 
-private boolean login() {
+// Public entry point for all camera commands.
+//   cmds            — list of {cmd, param} maps (action:0 added automatically)
+//   successCallback — method name (string) to invoke with (result, userData) on response
+//   userData        — opaque map preserved through the request/response round-trip
+//
+// If the session token is missing/expired we kick off login first, then resume
+// this sendCmd from inside loginResponseHandler. Pattern is async-safe — Hubitat
+// serializes per-device execution, so there's no concurrent-login race.
+private sendCmd(List cmds, String successCallback, Map userData = [:]) {
+  if (!hasValidToken()) {
+    loginAsync(cmds, successCallback, userData)
+    return
+  }
+
+  def body = cmds.collect { [cmd: it.cmd, action: 0, param: (it.param ?: [:])] }
+  String firstCmd = cmds[0].cmd
+  def params = [
+      uri: "http://${ip}/cgi-bin/api.cgi?cmd=${firstCmd}&token=${state.token}",
+      contentType: "application/json",
+      requestContentType: "application/json",
+      body: JsonOutput.toJson(body),
+      timeout: 10
+  ]
+  if (debug) log.debug "Reolink: POST ${firstCmd}"
+
+  asynchttpPost("sendCmdResponseHandler", params, [
+      cmds: cmds,
+      successCallback: successCallback,
+      userData: userData ?: [:]
+  ])
+}
+
+private loginAsync(List queuedCmds = null, String queuedCallback = null, Map queuedData = [:]) {
   state.token = null
   def body = [[cmd: "Login", action: 0, param: [User: [Version: "0", userName: username, password: password]]]]
   def params = [
@@ -456,61 +534,70 @@ private boolean login() {
       body: JsonOutput.toJson(body),
       timeout: 10
   ]
-  def ok = false
-  try {
-    httpPost(params) { resp ->
-      def data = parseBody(resp.data)
-      if (data && data[0]?.code == 0) {
-        state.token = data[0].value.Token.name
-        state.tokenExpiry = now() + ((data[0].value.Token.leaseTime as Long) * 1000L)
-        if (debug) log.debug "Reolink: login OK token=…${state.token?.takeRight(4)} leaseTime=${data[0].value.Token.leaseTime}s"
-        ok = true
-      } else {
-        log.error "Reolink: login failed: ${data}"
-      }
-    }
-  } catch (Exception e) {
-    log.error "Reolink: login exception: ${e.message}"
-  }
-  return ok
+  asynchttpPost("loginResponseHandler", params, [
+      queuedCmds: queuedCmds,
+      queuedCallback: queuedCallback,
+      queuedData: queuedData ?: [:]
+  ])
 }
 
-private List sendCmd(List cmds, boolean retried = false) {
-  if (!ensureToken()) return null
+def loginResponseHandler(response, data) {
+  def parsed = parseAsync(response, "Login")
+  if (!parsed || parsed[0]?.code != 0) {
+    log.error "Reolink: login failed: ${parsed}"
+    return
+  }
+  state.token = parsed[0].value.Token.name
+  state.tokenExpiry = now() + ((parsed[0].value.Token.leaseTime as Long) * 1000L)
+  if (debug) log.debug "Reolink: login OK token=…${state.token?.takeRight(4)} leaseTime=${parsed[0].value.Token.leaseTime}s"
 
-  def body = cmds.collect { [cmd: it.cmd, action: 0, param: (it.param ?: [:])] }
-  def firstCmd = cmds[0].cmd
-  def params = [
-      uri: "http://${ip}/cgi-bin/api.cgi?cmd=${firstCmd}&token=${state.token}",
-      contentType: "application/json",
-      requestContentType: "application/json",
-      body: JsonOutput.toJson(body),
-      timeout: 10
-  ]
-  if (debug) log.debug "Reolink: POST ${firstCmd} body=${params.body}"
+  // Resume the command that was waiting on this login.
+  if (data?.queuedCmds) {
+    sendCmd(data.queuedCmds, data.queuedCallback, data.queuedData ?: [:])
+  }
+}
 
-  def result = null
+def sendCmdResponseHandler(response, data) {
+  def cmds = data.cmds
+  def successCallback = data.successCallback
+  def userData = (data.userData ?: [:]) as Map
+  String firstCmd = cmds[0].cmd
+
+  def result = parseAsync(response, firstCmd)
+
+  // code:-6 means token expired between hasValidToken() and the actual request
+  // landing. Clear it and retry once. Use a flag on userData to bound recursion.
+  if (result?.any { (it?.code as Integer) == -6 } && !userData.retried) {
+    if (debug) log.debug "Reolink: token expired mid-request, re-auth and retry"
+    state.token = null
+    Map nextUserData = ([:] + userData)
+    nextUserData.retried = true
+    sendCmd(cmds, successCallback, nextUserData)
+    return
+  }
+
+  if (successCallback) {
+    "${successCallback}"(result, userData)
+  }
+}
+
+private parseAsync(response, String label) {
   try {
-    httpPost(params) { resp ->
-      result = parseBody(resp.data)
-      if (debug) log.debug "Reolink: <- ${firstCmd}: ${result}"
+    if (response?.hasError()) {
+      if (debug) log.debug "Reolink: ${label} HTTP error: ${response.getErrorMessage()}"
+      return null
     }
+    if (response.status != 200) {
+      log.warn "Reolink: ${label} HTTP ${response.status}"
+      return null
+    }
+    def body = response.data
+    if (body == null) return null
+    if (body instanceof List || body instanceof Map) return body
+    if (body instanceof String) return new JsonSlurper().parseText(body)
+    return new JsonSlurper().parseText(body.toString())
   } catch (Exception e) {
-    log.error "Reolink: sendCmd(${firstCmd}) exception: ${e.message}"
+    log.error "Reolink: parse failed for ${label}: ${e.message}"
     return null
   }
-
-  if (result?.any { (it?.code as Integer) == -6 } && !retried) {
-    if (debug) log.debug "Reolink: token expired, re-auth and retry"
-    state.token = null
-    return sendCmd(cmds, true)
-  }
-  return result
-}
-
-private parseBody(data) {
-  if (data == null) return null
-  if (data instanceof List || data instanceof Map) return data
-  if (data instanceof String) return new JsonSlurper().parseText(data)
-  try { return new JsonSlurper().parseText(data.toString()) } catch (Exception e) { return null }
 }
