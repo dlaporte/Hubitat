@@ -97,21 +97,6 @@ backward compatibility with any rules that already use it.
 Parts list, install instructions, and theory of operation are in the driver
 header.
 
-## Repository layout
-
-```
-.
-├── repository.json           # HPM index — points at each package's manifest
-├── <PackageName>/
-│   ├── packageManifest.json  # HPM package definition
-│   ├── app/                  # parent app(s), if any
-│   ├── device/               # driver(s)
-│   └── images/               # static assets, if any
-```
-
-Each package's `packageManifest.json` is the canonical source of truth for
-its version, supported Hubitat firmware floor, and driver/app file URLs.
-
 ## License
 
 Apache 2.0 — see individual file headers.
