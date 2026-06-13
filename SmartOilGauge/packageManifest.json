@@ -23,7 +23,7 @@
       "required": true
     }
   ],
-  "version": "0.0.5",
-  "releaseNotes": "Added per-tank refill detection, usage rate (gal/day), days-remaining estimate, low-fuel boolean, and accountNumber attributes. New preferences: low-fuel threshold, refill detection threshold, usage smoothing window. Also bumps appVersion() in sync with manifest.",
+  "version": "0.0.6",
+  "releaseNotes": "Robustness pass: explicit User-Agent header on all Droplet Fuel API calls (insulates against Mod Security tightening), token TTL now read from the API's expires_in field (was hardcoded 3600s) with 60s of refresh slack, and fixed `obs` script-level binding in both data-fetch call sites.",
   "communityLink": "https://community.hubitat.com/t/smart-oil-gauge-app-and-device/63078"
 }

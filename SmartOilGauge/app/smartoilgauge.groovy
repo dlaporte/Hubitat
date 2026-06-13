@@ -34,7 +34,7 @@ definition(
 	oauth:true
 )
 
-static String appVersion() { "0.0.5" }
+static String appVersion() { "0.0.6" }
 
 preferences {
 	page(name: "settings", title: "Settings", content: "settingsPage", install:true)
@@ -200,21 +200,22 @@ List getDevices(){
 	def Params = [
 		uri: SmartOilGaugeDataEndPoint(),
 		path: "/auto/get_tank_data.php",
+		headers: dropletHeaders(),
 		body: [
 			'access_token': state.APIToken,
             'start_index': 0,
             'max_results': 1000
 		],
 	]
-	
+
 	try {
 		httpPost(Params){ resp ->
 			if(resp.status == 200) {
-                obs = parseJson(resp.data.toString())
+                def obs = parseJson(resp.data.toString())
                 obs["data"].each { dev ->
 					LogAction("Found device ID: ${dev.sensor_id}", "debug", false)
                     devices += dev.sensor_id
-				}         
+				}
 			}else{
 				LogAction("Error from Smart Oil Gauge in getDevices - Return Code: ${resp.status} | Response: ${resp.data}", "error", true)
 				state.APIToken = null
@@ -242,17 +243,18 @@ private Map RefreshDeviceStatus(){
 	def Params = [
 		uri: SmartOilGaugeDataEndPoint(),
 		path: "/auto/get_tank_data.php",
+		headers: dropletHeaders(),
 		body: [
 			'access_token': state.APIToken,
             'start_index': 0,
             'max_results': 1000
 		]
     ]
-    
+
 	try {
 		httpPost(Params){ resp ->
             if(resp.status == 200) {
-                obs = parseJson(resp.data.toString())
+                def obs = parseJson(resp.data.toString())
                 obs["data"].each { dev ->
                     LogTrace("tank " + dev.tank_num)
                     String dni = [app.id, dev.sensor_id].join('.')
@@ -302,11 +304,11 @@ Boolean isTokenExpired(){
 }
 
 private Boolean getAPIToken(){
-	log.trace "getAPIToken()Requesting an API Token!"
+	log.trace "getAPIToken() requesting an API token"
 	def Params = [
 		uri: SmartOilGaugeAPIEndPoint(),
 		path: "/brand_token.php",
-		//headers: ['Authorization': "Basic ${getBase64AuthString()}"]
+		headers: dropletHeaders(),
         body: [
             'grant_type': 'client_credentials',
             'client_id': settings.ClientId,
@@ -320,16 +322,19 @@ private Boolean getAPIToken(){
 			if(resp.status == 200){
 				if (resp.data.access_token){
 					state.APIToken = resp?.data?.access_token
-					state.APITokenExpirationTime = now() + (60 * 60 * 1000)
-					LogAction("Token refresh Success. Token expires at ${state.APITokenExpirationTime}", "info", false)
+					// Use the server-supplied lease (defaults to 3600s) rather than a
+					// hardcoded 1-hour bucket. Subtract 60s of slack so we refresh
+					// before the camera-side expiry actually lands.
+					Integer ttlSec = (resp.data.expires_in ?: 3600) as Integer
+					state.APITokenExpirationTime = now() + ((ttlSec - 60) * 1000L)
+					LogAction("Token refresh success — lease ${ttlSec}s, refresh at ${state.APITokenExpirationTime}", "info", false)
 					state.lastErr=""
 					return true
-				} 
+				}
 			}
 			state.lastErr="Was not able to refresh API token ${resp.data.error}"
 		}
 	} catch (e){
-        
 		state.lastErr="Error in the getAPIToken method: $e"
 	}
 	if(state.lastErr){
@@ -339,6 +344,16 @@ private Boolean getAPIToken(){
 		return false
 	}
 	return true
+}
+
+// Droplet Fuel's edge sits behind Mod Security which 406s any request with a
+// curl-flavored or empty User-Agent. Hubitat's default UA happens to slip
+// through today, but an explicit value insulates the driver against future
+// rule-tightening on their end.
+private Map dropletHeaders() {
+	return [
+		"User-Agent": "Hubitat SmartOilGauge driver/${appVersion()} (+https://github.com/dlaporte/Hubitat)"
+	]
 }
 
 void pollChildren(Boolean updateData=true){
