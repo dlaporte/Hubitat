@@ -2,6 +2,9 @@
  *  Amcrest ASH26
  * Enable control of lights, night vision, motion detection, and other settings only available through Amcrest mobile app
  *
+ *  v0.3 - fixed two latent bugs: response.status NPE in set_camera_setting
+ *         success path, and params[uri] passing null into the digest-auth
+ *         HA2 hash (Amcrest's lax validator masked it).
  *  v0.2 - added debug logging option
  *  v0.1 - initial release
  *
@@ -108,7 +111,7 @@ def get_camera_settings() {
 
         digest_header = e1.response.getHeaders('WWW-Authenticate').toString()
         digest_map = stringToMap(digest_header.replaceAll("WWW-Authenticate: Digest ", "").replaceAll("=", ":").replaceAll("\"", ""))
-        params.put("headers", ["Authorization": calcDigestAuth(params[uri], "MD5", digest_map)])
+        params.put("headers", ["Authorization": calcDigestAuth(uri, "MD5", digest_map)])
         if (debug) log.debug "ASH26: get_camera_settings follow-up params: " + params
         try {
           httpGet(params) {
@@ -155,14 +158,14 @@ def set_camera_setting(setting, value) {
   try {
     httpGet(params) {
       resp ->
-        if (debug) log.debug "ASH26: get_camera_settings response status: " + response.status
+        if (debug) log.debug "ASH26: set_camera_setting response status: " + resp.status
     }
   } catch (groovyx.net.http.HttpResponseException e1) {
     if (e1.response.status == 401) {
 
       digest_header = e1.response.getHeaders('WWW-Authenticate').toString()
       digest_map = stringToMap(digest_header.replaceAll("WWW-Authenticate: Digest ", "").replaceAll("=", ":").replaceAll("\"", ""))
-      params.put("headers", ["Authorization": calcDigestAuth(params[uri], "MD5", digest_map)])
+      params.put("headers", ["Authorization": calcDigestAuth(uri, "MD5", digest_map)])
       if (debug) log.debug "ASH26: set_camera_settings follow-up params: " + params
       try {
         httpGet(params) {
