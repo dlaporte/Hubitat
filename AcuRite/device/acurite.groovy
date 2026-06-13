@@ -163,8 +163,7 @@ def get_acurite_data() {
 
 private fetch_acurite_data(boolean alreadyRetried) {
   def params = [
-    uri: "https://marapi.myacurite.com",
-    path: "/accounts/${state.acurite_account_id}/dashboard/hubs/${device_id}",
+    uri: "https://marapi.myacurite.com/accounts/${state.acurite_account_id}/dashboard/hubs/${device_id}",
     headers: ["x-one-vue-token": state.acurite_token],
     timeout: 15
   ]
@@ -205,8 +204,7 @@ private acurite_login(boolean fetchAfter) {
       password: acurite_password
   ])
   def params = [
-      uri: "https://marapi.myacurite.com",
-      path: "/users/login",
+      uri: "https://marapi.myacurite.com/users/login",
       contentType: "application/json",
       requestContentType: "application/json",
       body: body,
