@@ -1,7 +1,15 @@
 /*
  *  Amcrest ASH26
- * Enable control of lights, night vision, motion detection, and other settings only available through Amcrest mobile app
+ *  Enable control of lights, night vision, motion detection, and other settings
+ *  only available through Amcrest mobile app.
  *
+ *  v0.4 - converted all HTTP to asynchttpGet so the 1-minute refresh loop no
+ *         longer blocks the Hubitat scheduler for up to 10 seconds per call
+ *         when the camera is offline. Added installed()/updated() lifecycle
+ *         methods so preference saves actually re-schedule the poll. Replaced
+ *         the single-element setting loop with a direct call. Added `def` to
+ *         digest_header/digest_map so they're locals rather than script-level
+ *         bindings.
  *  v0.3 - fixed two latent bugs: response.status NPE in set_camera_setting
  *         success path, and params[uri] passing null into the digest-auth
  *         HA2 hash (Amcrest's lax validator masked it).
@@ -34,174 +42,232 @@ metadata {
     attribute "firmware_version", "string"
     attribute "mac_address", "string"
     attribute "wireless_ssid", "string"
-
   }
 
   preferences {
     input("ip", "text", title: "IP Address", required: true)
     input("username", "text", title: "ASH26 Username", required: true)
     input("password", "password", title: "ASH26 Password", required: true)
-    input "debug", "bool", required: true, defaultValue: false, title: "Debug Logging"
+    input "debug", "bool", required: false, defaultValue: false, title: "Debug Logging"
   }
 }
 
+// ---------------------------------------------------------------------------
+// Lifecycle
+// ---------------------------------------------------------------------------
+
+def installed() {
+  log.info "ASH26: installed()"
+  initialize()
+}
+
+def updated() {
+  log.info "ASH26: updated()"
+  initialize()
+}
+
+def initialize() {
+  unschedule()
+  if (!ip || !username || !password) {
+    log.error "ASH26: required fields not completed, please complete for proper operation."
+    return
+  }
+  runEvery1Minute("refresh")
+  refresh()
+}
+
+// ---------------------------------------------------------------------------
+// Switch + refresh entry points
+// ---------------------------------------------------------------------------
+
 def refresh() {
-  if (debug) log.debug "ASH26: refresh() called"
+  if (debug) log.debug "ASH26: refresh()"
   get_camera_settings()
 }
 
-def hash(algorithm, text) {
-  return new String(java.security.MessageDigest.getInstance(algorithm).digest(text.bytes).collect {
-    String.format("%02x", it)
-  }.join(''))
+def on() {
+  if (debug) log.debug "ASH26: on()"
+  set_camera_setting("AlarmLighting[0][0].Enable", "false")
+  set_camera_setting("Lighting_V2[0][0][1].Mode", "Manual")
 }
 
-private String calcDigestAuth(uri, algorithm, headers) {
+def off() {
+  if (debug) log.debug "ASH26: off()"
+  set_camera_setting("AlarmLighting[0][0].Enable", "true")
+  set_camera_setting("Lighting_V2[0][0][1].Mode", "Off")
+}
 
-  def HA1 = new String(username + ":" + headers.realm.trim() + ":" + password)
-  def HA1_hash = hash(algorithm, HA1)
+// ---------------------------------------------------------------------------
+// Camera operations (async)
+//
+// Pattern: every Amcrest CGI call returns 401 with WWW-Authenticate on the
+// first hit, then 200 once we resend with the digest Authorization header.
+// We model that as a two-step async flow:
+//   1. asynchttpGet(unauthRequestHandler, ...) — unauthenticated probe
+//   2. unauthRequestHandler computes digest, asynchttpGet(authedRequestHandler)
+//   3. authedRequestHandler dispatches to the per-operation parser via the
+//      finalCallback name passed through userData.
+// ---------------------------------------------------------------------------
 
-  def HA2 = new String("GET:" + uri)
-  def HA2_hash = hash(algorithm, HA2)
+private get_camera_settings() {
+  String uri = "/cgi-bin/configManager.cgi?action=getConfig&name=All"
+  def params = [
+      uri: "http://${ip}${uri}",
+      contentType: "text/plain",
+      timeout: 10
+  ]
+  asynchttpGet("unauthRequestHandler", params, [
+      uri: uri,
+      finalCallback: "parseCameraSettings"
+  ])
+}
 
-  // increase nc every request by one
-  if (!state.nc) {
-    state.nc = 1
-  } else {
-    state.nc = state.nc + 1
+private set_camera_setting(String name, String value) {
+  String uri = "/cgi-bin/configManager.cgi?action=setConfig&${name}=${value}"
+  def params = [
+      uri: "http://${ip}${uri}",
+      contentType: "text/plain",
+      timeout: 10
+  ]
+  asynchttpGet("unauthRequestHandler", params, [
+      uri: uri,
+      finalCallback: "verifySetResponse",
+      settingName: name,
+      settingValue: value
+  ])
+}
+
+// First callback: expects a 401, parses the WWW-Authenticate challenge,
+// then re-issues the same request with an Authorization header.
+def unauthRequestHandler(response, data) {
+  if (!response.hasError() && response.status == 200) {
+    // Unusual: a previously-cached connection let us through without auth.
+    // Hand straight off to the operation parser.
+    if (data.finalCallback) "${data.finalCallback}"(response, data)
+    return
+  }
+  if (response.status != 401) {
+    log.error "ASH26: unexpected status ${response.status} for ${data.uri}"
+    return
   }
 
-  def cnonce = java.util.UUID.randomUUID().toString().replaceAll('-', '').substring(0, 8)
-  def response = new String(HA1_hash + ":" + headers.nonce + ":" + state.nc + ":" + cnonce + ":" + "auth:" + HA2_hash)
-  def response_enc = new String(hash(algorithm, response))
+  def wwwAuth = extractHeader(response, "WWW-Authenticate")
+  if (!wwwAuth) {
+    log.error "ASH26: 401 without WWW-Authenticate header"
+    return
+  }
+  def digestMap = parseDigestChallenge(wwwAuth)
+  String authHeader = calcDigestAuth(data.uri, "MD5", digestMap)
 
-  def eol = " "
+  def params = [
+      uri: "http://${ip}${data.uri}",
+      contentType: "text/plain",
+      headers: ["Authorization": authHeader],
+      timeout: 10
+  ]
+  asynchttpGet("authedRequestHandler", params, data)
+}
 
-  return new String('Digest username="' + username + '",' + eol +
+// Second callback: dispatches the (now-authenticated) response to the
+// operation's parser by the name passed in through data.finalCallback.
+def authedRequestHandler(response, data) {
+  if (response.hasError() || response.status != 200) {
+    log.error "ASH26: authed request failed for ${data.uri}: HTTP ${response.status}"
+    return
+  }
+  if (data.finalCallback) {
+    "${data.finalCallback}"(response, data)
+  }
+}
+
+def parseCameraSettings(response, data) {
+  def camera_settings = [: ]
+  def text = response.data ?: ""
+  text.eachLine { line ->
+    def parts = line.split("=", 2)
+    if (parts.length == 2) {
+      camera_settings.put(parts[0].trim(), parts[1].trim())
+    }
+  }
+
+  sendEvent(name: "device_name",       value: camera_settings['table.All.General.MachineName'])
+  sendEvent(name: "serial_number",     value: camera_settings['table.All.VSP_PaaS.SN'])
+  sendEvent(name: "firmware_version",  value: camera_settings['table.All.PaaS_UPGRADE.LastVersion'])
+  sendEvent(name: "mac_address",       value: camera_settings['table.All.Network.eth2.PhysicalAddress'])
+  sendEvent(name: "wireless_ssid",     value: camera_settings['table.All.WLan.eth2.SSID'])
+
+  def mode = camera_settings['table.All.Lighting_V2[0][0][1].Mode']
+  if (mode == "Manual") {
+    sendEvent(name: "light_status", value: "on")
+    sendEvent(name: "switch",       value: "on")
+  } else if (mode == "Off") {
+    sendEvent(name: "light_status", value: "off")
+    sendEvent(name: "switch",       value: "off")
+  }
+}
+
+def verifySetResponse(response, data) {
+  String text = (response.data ?: "").toString().trim()
+  if (text == "OK") {
+    if (debug) log.debug "ASH26: set ${data.settingName} = ${data.settingValue}"
+  } else {
+    log.error "ASH26: set ${data.settingName} failed: ${text}"
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Digest auth helpers
+// ---------------------------------------------------------------------------
+
+private String extractHeader(response, String name) {
+  def headers = response.headers
+  if (!headers) return null
+  String lname = name.toLowerCase()
+  def entry = headers.find { it.key?.toLowerCase() == lname }
+  return entry?.value?.toString()
+}
+
+private Map parseDigestChallenge(String wwwAuth) {
+  // "Digest realm=\"foo\", nonce=\"bar\", qop=\"auth\", opaque=\"xyz\""
+  String stripped = wwwAuth.replaceFirst(/(?i)^\s*Digest\s+/, "")
+  Map result = [:]
+  stripped.split(",").each { part ->
+    def kv = part.split("=", 2)
+    if (kv.length == 2) {
+      result[kv[0].trim()] = kv[1].trim().replaceAll(/^"|"$/, "")
+    }
+  }
+  return result
+}
+
+private String hash(String algorithm, String text) {
+  return java.security.MessageDigest.getInstance(algorithm).digest(text.bytes).collect {
+    String.format("%02x", it)
+  }.join('')
+}
+
+private String calcDigestAuth(String uri, String algorithm, Map headers) {
+  String HA1 = "${username}:${headers.realm.trim()}:${password}"
+  String HA1_hash = hash(algorithm, HA1)
+
+  String HA2 = "GET:${uri}"
+  String HA2_hash = hash(algorithm, HA2)
+
+  state.nc = (state.nc ?: 0) + 1
+
+  String cnonce = java.util.UUID.randomUUID().toString().replaceAll('-', '').substring(0, 8)
+  String response = "${HA1_hash}:${headers.nonce}:${state.nc}:${cnonce}:auth:${HA2_hash}"
+  String response_enc = hash(algorithm, response)
+
+  String eol = " "
+  return 'Digest username="' + username + '",' + eol +
     'realm="' + headers.realm + '",' + eol +
     'qop="' + headers.qop + '",' + eol +
     'algorithm="' + algorithm + '",' + eol +
     'uri="' + uri + '",' + eol +
     'nonce="' + headers.nonce + '",' + eol +
     'cnonce="' + cnonce + '",' + eol +
-    'opaque="' + headers.opaque + '",' + eol +
+    'opaque="' + (headers.opaque ?: "") + '",' + eol +
     'nc=' + state.nc + ',' + eol +
-    'response="' + response_enc + '"')
-}
-
-def get_camera_settings() {
-
-  def camera_settings = [: ]
-  def url = "http://${ip}"
-  def uri = "/cgi-bin/configManager.cgi?action=getConfig&name="
-
-  for (setting in ["All"]) {
-    def params = [
-      uri: url + uri + setting,
-      contentType: 'text/plain'
-    ]
-    if (debug) log.debug "ASH26: params: " + params
-    try {
-      httpGet(params) {
-        resp ->
-          if (debug) log.debug "ASH26: get_camera_settings response status: ${resp.status}"
-      }
-    } catch (groovyx.net.http.HttpResponseException e1) {
-      if (e1.response.status == 401) {
-
-        digest_header = e1.response.getHeaders('WWW-Authenticate').toString()
-        digest_map = stringToMap(digest_header.replaceAll("WWW-Authenticate: Digest ", "").replaceAll("=", ":").replaceAll("\"", ""))
-        params.put("headers", ["Authorization": calcDigestAuth(uri, "MD5", digest_map)])
-        if (debug) log.debug "ASH26: get_camera_settings follow-up params: " + params
-        try {
-          httpGet(params) {
-            resp ->
-              if (debug) log.debug "ASH26: get_camera_settings follow-up response status: ${resp.status}"
-            resp.data.text.splitEachLine("=") {
-              items ->
-                if (items.size() == 2) {
-                  camera_settings.put(items[0].trim(), items[1].trim())
-                  //if (debug) log.debug "ASH26: get_camera_settings data: " + items[0].trim() + "=" + items[1].trim()
-                }
-            }
-          }
-        } catch (groovyx.net.http.HttpResponseException e2) {
-          log.error "ASH26: get_camera_settings failed: " + e2.response.status
-        }
-      }
-    }
-  }
-
-  sendEvent(name: "device_name", value: camera_settings['table.All.General.MachineName'])
-  sendEvent(name: "serial_number", value: camera_settings['table.All.VSP_PaaS.SN'])
-  sendEvent(name: "firmware_version", value: camera_settings['table.All.PaaS_UPGRADE.LastVersion'])
-  sendEvent(name: "mac_address", value: camera_settings['table.All.Network.eth2.PhysicalAddress'])
-  sendEvent(name: "wireless_ssid", value: camera_settings['table.All.WLan.eth2.SSID'])
-
-  if (camera_settings['table.All.Lighting_V2[0][0][1].Mode'] == "Manual") {
-    sendEvent(name: "light_status", value: "on")
-  } else if (camera_settings['table.All.Lighting_V2[0][0][1].Mode'] == "Off") {
-    sendEvent(name: "light_status", value: "off")
-  }
-}
-
-def set_camera_setting(setting, value) {
-
-  def url = "http://${ip}"
-  def uri = "/cgi-bin/configManager.cgi?action=setConfig&"
-
-  def params = [
-    uri: url + uri + setting + "=" + value,
-    contentType: 'text/plain'
-  ]
-
-  try {
-    httpGet(params) {
-      resp ->
-        if (debug) log.debug "ASH26: set_camera_setting response status: " + resp.status
-    }
-  } catch (groovyx.net.http.HttpResponseException e1) {
-    if (e1.response.status == 401) {
-
-      digest_header = e1.response.getHeaders('WWW-Authenticate').toString()
-      digest_map = stringToMap(digest_header.replaceAll("WWW-Authenticate: Digest ", "").replaceAll("=", ":").replaceAll("\"", ""))
-      params.put("headers", ["Authorization": calcDigestAuth(uri, "MD5", digest_map)])
-      if (debug) log.debug "ASH26: set_camera_settings follow-up params: " + params
-      try {
-        httpGet(params) {
-          resp ->
-            if (resp.data.text.trim() != ("OK")) {
-              log.error "ASH26: set_camera_setting: error setting " + setting + ": " + resp.data.text
-            } else {
-              if (debug) log.debug "ASH26: set_camera_setting: " + setting + "=" + value
-            }
-        }
-      } catch (groovyx.net.http.HttpResponseException e2) {
-        log.error "ASH26: set_camera_setting failed: " + e2.response.status
-      }
-    }
-  }
-}
-
-def on() {
-  if (debug) log.debug "ASH26: on() called"
-  set_camera_setting("AlarmLighting[0][0].Enable", "false")
-  set_camera_setting("Lighting_V2[0][0][1].Mode", "Manual")
-}
-
-def off() {
-  if (debug) log.debug "ASH26: off() called"
-  set_camera_setting("AlarmLighting[0][0].Enable", "true")
-  set_camera_setting("Lighting_V2[0][0][1].Mode", "Off")
-}
-
-def initialize() {
-  unschedule()
-  log.info "ASH26: initialize() called"
-
-  if (!ip || !username || !password) {
-    log.error "ASH26: required fields not completed, please complete for proper operation."
-    return
-  }
-  runEvery1Minute("refresh")
+    'response="' + response_enc + '"'
 }
