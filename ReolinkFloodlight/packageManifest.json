@@ -2,6 +2,7 @@
   "packageName": "Reolink Floodlight Camera",
   "author": "David LaPorte",
   "version": "0.7",
+  "releaseNotes": "Bug fixes and minor cleanup. Requires Hubitat 2.2.0+.",
   "minimumHEVersion": "2.2.0",
   "dateReleased": "2026-06-12",
   "drivers": [

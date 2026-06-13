@@ -10,25 +10,13 @@
  *
  *  Does NOT expose any siren/alarm-trigger commands by design.
  *
- *  v0.7 - bumped manifest minimumHEVersion to 2.2.0 to match the
- *         device.deleteCurrentState API the driver actually requires.
- *  v0.6 - snapshotURL attribute is now opt-in (new publishSnapshotURL pref,
- *         default off). It embeds the camera username/password, which would
- *         otherwise persist in event history, hub backups, and the Maker
- *         API. Disabling the pref also clears any previously-emitted value.
- *  v0.5 - converted all HTTP to asynchttpPost. The sync httpPost calls in the
- *         poll loop were blocking the Hubitat scheduler for up to 10s per
- *         request when the camera was offline; the async pattern eliminates
- *         that. User-visible behavior is identical when the camera is reachable.
- *  v0.4 - added powerLED toggle, RTSP URLs, SD-card health attributes,
- *         and snapshotURL (short-session JPEG endpoint for dashboards).
- *  v0.3 - added microphone enable/disable (SetEnc.audio);
- *         removed AI report toggles (the prefs were only filtering
- *         events driver-side, which was misleading — emission is now
- *         auto-gated on the camera's per-call AI support flags).
- *  v0.2 - UX pass: dropped redundant floodlightModeNum attribute,
- *         renamed cameraIp → cameraIP, shorter keepLightOn label,
- *         renamed flKeepOnSupported → floodlightKeepOnSupported.
+ *  v0.7 - manifest minimumHEVersion → 2.2.0.
+ *  v0.6 - snapshotURL is now opt-in (embeds plaintext credentials).
+ *  v0.5 - all HTTP converted to asynchttpPost.
+ *  v0.4 - added powerLED, RTSP URLs, SD-card health, snapshotURL.
+ *  v0.3 - microphone enable/disable; AI reporting auto-gated on
+ *         the camera's capability flags.
+ *  v0.2 - UX pass and attribute renames.
  *  v0.1 - initial release
  *
  *  Copyright 2026 David LaPorte

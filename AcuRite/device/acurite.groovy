@@ -16,35 +16,15 @@
  *
  *  Last Update 2026-06-12
  *
- *  v0.0.18 - lightning_strike_count parse now uses isDouble() so a
- *            float-formatted value ("3.0") doesn't silently disable the
- *            entire lightningActive feature.
- *  v0.0.17 - defensive parse of lightning_strike_count — a non-numeric API
- *            value would have thrown NumberFormatException and aborted the
- *            rest of process_acurite_data.
- *  v0.0.16 - no longer logs the params Map (which carried the live session
- *            token in the x-one-vue-token header) — debug log now shows only
- *            the URL.
- *  v0.0.15 - skip sendEvent on null sensor values (was setting attributes
- *            to the literal string "null" — e.g. lightning distances).
- *  v0.0.14 - swapped Polling capability for Refresh (modern Hubitat
- *            convention); poll() retained as a backward-compat alias.
- *  v0.0.13 - dropped poll_schedule() wrapper; runEvery uses "poll" directly.
- *  v0.0.12 - restored measured_light attribute; weatherSummary temp now
- *            renders with degree symbol.
- *  v0.0.11 - converted login + data fetch to asynchttpPost / asynchttpGet,
- *            so a poll cycle no longer blocks the scheduler when myacurite
- *            is slow or unreachable. Added derived `lightningActive` boolean
- *            (active when lightning_strike_count rose in the last N minutes;
- *            window configurable) and `weatherSummary` string (composed from
- *            temp + humidity + wind for dashboard tiles and TTS).
- *  v0.0.10 - cache the myacurite session token across polls instead of
- *            re-logging every 5 minutes (was ~288 logins/day). Dropped
- *            duplicate snake_case attributes (wind_direction, wind_speed,
- *            uv_index — the camelCase forms windDirection/windSpeed/
- *            ultravioletIndex are the canonical Hubitat names). Dropped
- *            unused measured_light attribute. Initialize() now cleans up
- *            legacy attribute names so upgraders don't see phantoms.
+ *  v0.0.18 - defensive parse of lightning_strike_count; debug log no
+ *            longer leaks the session token.
+ *  v0.0.15 - skip sendEvent for null sensor readings.
+ *  v0.0.14 - Polling capability → Refresh (poll() retained as alias).
+ *  v0.0.12 - restored measured_light; degree symbol in weatherSummary.
+ *  v0.0.11 - async HTTP; added lightningActive + weatherSummary.
+ *  v0.0.10 - session token cached across polls; dropped duplicate
+ *            snake_case attributes (windDirection/windSpeed/
+ *            ultravioletIndex are canonical now).
  *  v0.0.9 - suppressed password in debug logs
  *  v0.0.8 - added UltravioletIndex capability
  *  v0.0.7 - added windDirection (you're a machine, chad.andrews)

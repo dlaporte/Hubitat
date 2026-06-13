@@ -1,7 +1,8 @@
 {
   "packageName": "Radon Fan Sensor",
   "author": "David LaPorte",
-  "version": "0.8",
+  "version": "0.9",
+  "releaseNotes": "Fan alarm now survives hub reboots and accounts for elapsed time.",
   "minimumHEVersion": "2.1.9",
   "dateReleased": "2026-06-12",
   "drivers": [

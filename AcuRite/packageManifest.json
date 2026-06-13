@@ -2,6 +2,7 @@
   "packageName": "AcuRite Weather Station",
   "author": "David LaPorte",
   "version": "0.0.18",
+  "releaseNotes": "Bug fixes and minor cleanup. Requires Hubitat 2.2.0+.",
   "minimumHEVersion": "2.2.0",
   "dateReleased": "2026-06-12",
   "drivers": [

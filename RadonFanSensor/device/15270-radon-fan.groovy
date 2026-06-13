@@ -1,17 +1,9 @@
 /**
  *  Radon Fan Sensor
  *
- *  v0.8 - re-arm checkFanAlarm in initialize() if the fan is currently off,
- *         so a hub reboot doesn't silently defeat the safety alarm.
- *  v0.7 - three Z-Wave correctness fixes:
- *         - state.MSR now actually gets set (was only written to dataValue,
- *           which made every wake-up retransmit config forever)
- *         - BatteryReport no longer sends wakeUpNoMoreInformation
- *           (WakeUpNotification already owns the closing NOMI)
- *         - removed dead `description == "updated"` branch in parse()
- *           (a SmartThings platform artifact, never fires on Hubitat)
- *  v0.6 - removed cargo-cult Enerwave-motion MSR branch that does not
- *         apply to this Monoprice 15270 / WADWAZ-1.
+ *  v0.9 - fan alarm survives hub reboots and accounts for elapsed time.
+ *  v0.7 - Z-Wave correctness: state.MSR, NOMI, and parse() cleanup.
+ *  v0.6 - removed inapplicable Enerwave MSR branch.
  *  v0.5 - added ContactSensor capability (contact = closed when fan is
  *         running, open when off) alongside the existing switch attribute
  *         so the device matches the semantic Hubitat expects for a binary
@@ -261,10 +253,21 @@ def refresh() {
 void initialize() {
 	if (debug) log.debug "initialize() called"
 	refresh()
-	// Hub reboot loses any pending runIn. If the fan is currently off, re-arm
-	// the alarm timer so a hub restart doesn't silently defeat the safety net.
+	// Hub reboot loses any pending runIn. If the fan is currently off,
+	// re-arm the alarm timer for the *remaining* window — not a full new
+	// window. Otherwise a reboot 28 min into a 30-min alarm window resets
+	// the clock to a fresh 30, silently defeating the safety net.
 	if (device.currentValue("contact") == "open") {
-		Integer afterMin = (alarmAfterMinutes ?: 30) as Integer
-		runIn(afterMin * 60, "checkFanAlarm")
+		Integer afterSec = ((alarmAfterMinutes ?: 30) as Integer) * 60
+		Integer delaySec = afterSec
+		String stoppedAt = device.currentValue("lastStoppedAt")
+		if (stoppedAt) {
+			try {
+				Long stoppedMs = Date.parse("yyyy-MM-dd'T'HH:mm:ssZ", stoppedAt.toString()).time
+				Long elapsedSec = (now() - stoppedMs) / 1000
+				delaySec = Math.max(1, (afterSec - elapsedSec) as Integer)
+			} catch (Exception e) { /* unparseable — use full window */ }
+		}
+		runIn(delaySec, "checkFanAlarm")
 	}
 }

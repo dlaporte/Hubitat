@@ -3,27 +3,12 @@
  *  Enable control of lights, night vision, motion detection, and other settings
  *  only available through Amcrest mobile app.
  *
- *  v0.7 - reset state.nc on initialize() so the digest nonce counter
- *         doesn't accumulate in the serialized state map for the lifetime
- *         of the install (each request gets a fresh server nonce anyway).
- *  v0.6 - chain abandonment on a mid-sequence SetConfig failure now logs
- *         a loud error noting how many steps were skipped, instead of
- *         silently leaving the camera in a half-configured state.
- *  v0.5 - format digest `nc` as RFC 2617 8-digit hex (was decimal int, which
- *         Amcrest accepted but stricter servers would reject), and chain
- *         on()/off()'s two SetConfig calls sequentially via the response
- *         handler instead of firing them concurrently.
- *  v0.4 - converted all HTTP to asynchttpGet so the 1-minute refresh loop no
- *         longer blocks the Hubitat scheduler for up to 10 seconds per call
- *         when the camera is offline. Added installed()/updated() lifecycle
- *         methods so preference saves actually re-schedule the poll. Replaced
- *         the single-element setting loop with a direct call. Added `def` to
- *         digest_header/digest_map so they're locals rather than script-level
- *         bindings.
- *  v0.3 - fixed two latent bugs: response.status NPE in set_camera_setting
- *         success path, and params[uri] passing null into the digest-auth
- *         HA2 hash (Amcrest's lax validator masked it).
- *  v0.2 - added debug logging option
+ *  v0.7 - reset state.nc on initialize.
+ *  v0.6 - loudly log chain abandonment on mid-sequence set failure.
+ *  v0.5 - RFC 2617-compliant digest nc; on/off sequenced.
+ *  v0.4 - async HTTP; install/update lifecycle.
+ *  v0.3 - fixed two latent digest-auth bugs.
+ *  v0.2 - debug logging option.
  *  v0.1 - initial release
  *
  *  Copyright 2021 David LaPorte

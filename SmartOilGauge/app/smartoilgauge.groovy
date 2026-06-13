@@ -1,53 +1,18 @@
 /*
  *  Smart Oil Gauge (Connect)
  *
- *  v0.0.15 - third review round:
- *            - reverted the v0.0.14 Date.parse TZ change; it introduced
- *              an offset bug for hubs where the Droplet API's timezone
- *              didn't match the hub's.
- *            - state.tankHistory hard-capped at 720 entries regardless
- *              of windowHours setting.
- *  v0.0.14 - second review round fixes:
- *            - TEnergyTbl key changed from day-of-year (1-365) to "yyyy-DDD"
- *              so Jan 1 entries don't alias against a year-ago Jan 1.
- *            - Tile "refilled" threshold now uses refillThresholdPct
- *              (matching computeTankMetrics) instead of hardcoded -2 gal.
- *            - Date.parse in the tile renderer now uses the hub timezone
- *              instead of the JVM default.
- *            - initialize() reuses cached state.deviceData when present
- *              instead of synchronously re-fetching on every preference save.
- *  v0.0.13 - real-review fixes:
- *            - "Gallons used" condition was inverted after the v0.0.7
- *              subtraction-direction change; consumption was being labelled
- *              "refilled" and refills were going unlabelled.
- *            - daysRemaining: null no longer hits sendEvent (was storing
- *              the literal string "null" on the attribute).
- *            - Device labels html-escaped before interpolation into tile
- *              pages (XSS hardening).
- *            - installed()/updated() no longer log ${settings} (which
- *              contained ClientSecret in plaintext).
- *            - Dropped unused Power Meter capability on the child device.
- *            - Refill detection logs at unconditional log.info instead of
- *              gated logInfo, so the event surfaces without enabling debug.
- *  v0.0.12 - defensive `obs.data?.each` in fetchTankData; child device
- *            dropped dead parse() and empty installed() handlers.
- *  v0.0.11 - dropped the redundant Polling capability on the child device
- *            (Refresh covers it); poll() retained as a backward-compat alias.
- *  v0.0.10 - restored iconUrl/iconX2Url (Hubitat's definition() validator
- *            rejects empty/absent values) and the tank-3.png file they
- *            point at. The tile page itself remains zero-external.
- *  v0.0.9 - tile page now zero-external: dropped Bootstrap CDN, replaced
- *           the 5 tank PNGs with one inline SVG that fills dynamically.
- *  v0.0.8 - DRY'd getDevices + RefreshDeviceStatus into one fetchTankData().
- *  v0.0.7 - stripped nest-manager scaffolding (~660 lines); rewrote tile
- *           page with minimal inline CSS; external deps 11 → 2.
- *  v0.0.6 - explicit User-Agent, expires_in from OAuth response,
- *           fixed obs script-level binding.
- *  v0.0.5 - per-tank refill detection, usageRate, daysRemaining, lowFuel,
- *           accountNumber attributes.
- *  v0.0.4 - swapped dead rawgit URLs (since superseded), stopped
- *           force-enabling debug.
- *  v0.0.3 - earlier release.
+ *  v0.0.15 - reverted v0.0.14's broken TZ override; capped tankHistory at 720.
+ *  v0.0.14 - year-boundary fix for TEnergyTbl key; tile refill threshold
+ *            matches setting; settings save no longer blocks on API call.
+ *  v0.0.13 - fixed inverted Gallons-used label; XSS hardening; stopped
+ *            logging settings (had ClientSecret); dropped Power Meter cap.
+ *  v0.0.11 - dropped redundant Polling capability (Refresh covers it).
+ *  v0.0.9  - tile page is zero-external (inline SVG tank).
+ *  v0.0.7  - stripped nest-manager scaffolding (~660 lines).
+ *  v0.0.6  - User-Agent header; expires_in from OAuth response.
+ *  v0.0.5  - refill detection, usageRate, daysRemaining, lowFuel,
+ *            accountNumber attributes.
+ *  v0.0.3  - earlier release.
  *
  *  Modified by David LaPorte. Based on the Tank Utility app by EricS,
  *  itself based on Joshua Spain's work.
