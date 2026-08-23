@@ -10,6 +10,16 @@
  *
  *  Does NOT expose any siren/alarm-trigger commands by design.
  *
+ *  v0.8 - surface + manage the camera's per-AI floodlight triggers (wlAiDetectType).
+ *         Newer firmware arms these independently of the floodlight mode, so the
+ *         light can flash on person/vehicle/animal detection at night even with
+ *         floodlightMode Off. New attribute floodlightSmartTriggers, new command
+ *         setFloodlightSmartTriggers; setFloodlightMode("Off") now warns when
+ *         triggers remain armed. The poll loop now also tracks floodlightMode
+ *         and floodlightSmartTriggers, so changes made in the Reolink app show
+ *         up within one poll interval. NOTE: the firmware refuses to disarm
+ *         ALL triggers over the LAN API (it silently re-arms every one of
+ *         them); reaching all-off requires the Reolink app.
  *  v0.7 - manifest minimumHEVersion → 2.2.0.
  *  v0.6 - snapshotURL is now opt-in (embeds plaintext credentials).
  *  v0.5 - all HTTP converted to asynchttpPost.
@@ -52,6 +62,7 @@ metadata {
     attribute "cameraIP", "string"
 
     attribute "floodlightMode", "string"
+    attribute "floodlightSmartTriggers", "string"
     attribute "lightingSchedule", "string"
     attribute "IRMode", "string"
     attribute "dayNightMode", "string"
@@ -76,6 +87,14 @@ metadata {
     command "setFloodlightMode", [[name: "mode", type: "ENUM",
         description: "Off = fully disabled; other modes control auto-trigger behavior",
         constraints: ["Off", "NightSmart", "AlwaysAtNight", "Schedule"]]]
+    command "setFloodlightSmartTriggers", [
+        [name: "people", type: "ENUM", description: "Flash the floodlight on person detection at night",
+         constraints: ["On", "Off"]],
+        [name: "vehicle", type: "ENUM", description: "Flash the floodlight on vehicle detection at night",
+         constraints: ["On", "Off"]],
+        [name: "animal", type: "ENUM", description: "Flash the floodlight on animal detection at night",
+         constraints: ["On", "Off"]]
+    ]
     command "setLightingSchedule", [
         [name: "startTime", type: "STRING", description: "Lighting start time in 24-hour HH:mm (e.g. 18:00)"],
         [name: "endTime",   type: "STRING", description: "Lighting end time in 24-hour HH:mm (e.g. 06:00)"]
@@ -241,10 +260,13 @@ private boolean shouldKeepAlive() {
 // Custom commands
 // ---------------------------------------------------------------------------
 
-// Mode "Off" fully disables the floodlight — turns the light off NOW (state:0)
-// AND clears the auto-mode (mode:0) so it won't re-trigger from schedule, smart
-// detection, or always-at-night. The Reolink app does not expose mode:0; this
-// is the only path to a truly silent floodlight.
+// Mode "Off" turns the light off NOW (state:0) AND clears the auto-mode
+// (mode:0) so it won't re-trigger from schedule or always-at-night. The
+// Reolink app does not expose mode:0.
+// CAVEAT: on firmware with per-AI floodlight triggers (wlAiDetectType), those
+// triggers are independent of the mode and stay armed — the camera will still
+// flash the light on armed detections at night. The handler warns when that's
+// the case; see setFloodlightSmartTriggers.
 // Other modes only change the auto-behavior; they don't toggle the light off.
 def setFloodlightMode(String mode) {
   def m = ["Off": 0, "NightSmart": 1, "AlwaysAtNight": 2, "Schedule": 3][mode]
@@ -252,10 +274,15 @@ def setFloodlightMode(String mode) {
     log.error "Reolink: invalid floodlight mode '${mode}'"
     return
   }
-  def param = (m == 0)
-      ? [WhiteLed: [channel: 0, state: 0, mode: 0]]
-      : [WhiteLed: [channel: 0, mode: m]]
-  sendCmd([[cmd: "SetWhiteLed", param: param]], "setFloodlightModeHandler", [
+  def cmds
+  if (m == 0) {
+    // Read WhiteLed back in the same batch so we can warn about armed triggers
+    cmds = [[cmd: "SetWhiteLed", param: [WhiteLed: [channel: 0, state: 0, mode: 0]]],
+            [cmd: "GetWhiteLed", param: [channel: 0]]]
+  } else {
+    cmds = [[cmd: "SetWhiteLed", param: [WhiteLed: [channel: 0, mode: m]]]]
+  }
+  sendCmd(cmds, "setFloodlightModeHandler", [
       mode: mode,
       modeNum: m
   ])
@@ -270,7 +297,68 @@ def setFloodlightModeHandler(result, data) {
   if (data.modeNum == 0) {
     unschedule("keepAlive")
     sendEvent(name: "switch", value: "off")
+    def types = result.find { it.cmd == "GetWhiteLed" && it.code == 0 }?.value?.WhiteLed?.wlAiDetectType
+    if (types != null) {
+      emitSmartTriggers(types)
+      def armed = types.findAll { it.value == 1 }.collect { it.key }
+      if (armed) {
+        log.warn "Reolink: floodlight mode is Off, but AI triggers are still armed (${armed.join(', ')}) — " +
+            "the camera will flash the light on those detections at night. The firmware refuses to disarm " +
+            "ALL of them over the LAN API; use setFloodlightSmartTriggers to minimize (e.g. vehicle only), " +
+            "or the Reolink app to disable every trigger."
+      }
+    }
   }
+}
+
+// Newer firmware arms per-AI floodlight triggers (wlAiDetectType) independently
+// of the floodlight mode — factory default is all-off, but once armed (e.g. by
+// enabling Smart Mode in the Reolink app) the camera flashes the light on those
+// detections at night even with mode Off. This only affects the LIGHT; AI
+// detection/reporting itself is separate (GetAiCfg) and untouched here.
+// FIRMWARE LIMIT: a write that would leave zero triggers armed is rejected and
+// silently re-arms ALL of them, so all-Off is refused client-side; only the
+// Reolink app (proprietary protocol) can reach the all-off state.
+def setFloodlightSmartTriggers(String people, String vehicle, String animal) {
+  List supported = (device.getDataValue("floodlightAiTriggerTypes") ?: "").tokenize(",")
+  if (!supported) {
+    log.warn "Reolink: this camera does not report per-AI floodlight triggers (run Refresh first if it should)"
+    return
+  }
+  Map want = [people: people, vehicle: vehicle, dog_cat: animal]
+  Map flags = [:]
+  supported.each { t ->
+    if (want[t] != null) flags[t] = (want[t] == "On") ? 1 : 0
+  }
+  if (!flags) {
+    log.warn "Reolink: none of the requested trigger types (${want.keySet().join(', ')}) are supported by this camera (${supported.join(', ')})"
+    return
+  }
+  if (flags.every { it.value == 0 }) {
+    log.error "Reolink: the camera firmware refuses to disarm ALL floodlight triggers over the LAN API " +
+        "(it silently re-arms every one of them). Leave at least one On — vehicle is usually the " +
+        "quietest — or turn them all off in the Reolink app, which can reach that state."
+    return
+  }
+  sendCmd([[cmd: "SetWhiteLed", param: [WhiteLed: [channel: 0, wlAiDetectType: flags]]],
+           [cmd: "GetWhiteLed", param: [channel: 0]]],
+      "setFloodlightSmartTriggersHandler", [:])
+}
+
+def setFloodlightSmartTriggersHandler(result, data) {
+  if (!result || result[0]?.code != 0) {
+    log.error "Reolink: setFloodlightSmartTriggers failed: ${result}"
+    return
+  }
+  def types = result.find { it.cmd == "GetWhiteLed" && it.code == 0 }?.value?.WhiteLed?.wlAiDetectType
+  if (types != null) emitSmartTriggers(types)
+}
+
+// Publish the armed trigger set and remember which types this camera supports.
+private emitSmartTriggers(Map types) {
+  device.updateDataValue("floodlightAiTriggerTypes", types.keySet().join(","))
+  def armed = types.findAll { it.value == 1 }.collect { it.key }.join(",")
+  sendEvent(name: "floodlightSmartTriggers", value: armed ?: "none")
 }
 
 def setLightingSchedule(String startTime, String endTime) {
@@ -413,6 +501,7 @@ def refreshHandler(result, data) {
           sendEvent(name: "lightingSchedule",
               value: String.format("%02d:%02d-%02d:%02d", s.StartHour, s.StartMin, s.EndHour, s.EndMin))
         }
+        if (w.wlAiDetectType != null) emitSmartTriggers(w.wlAiDetectType)
         if (w.state == 1 && shouldKeepAlive()) {
           unschedule("keepAlive")
           runIn(120, "keepAlive")
@@ -461,7 +550,8 @@ def pollStatus() {
 
   sendCmd([
       [cmd: "GetMdState", param: [channel: 0]],
-      [cmd: "GetAiState", param: [channel: 0]]
+      [cmd: "GetAiState", param: [channel: 0]],
+      [cmd: "GetWhiteLed", param: [channel: 0]]
   ], "pollStatusHandler", [epoch: myEpoch])
 }
 
@@ -482,6 +572,19 @@ def pollStatusHandler(result, data) {
       if (v.vehicle?.support == 1) sendEvent(name: "vehicleDetected", value: v.vehicle.alarm_state == 1 ? "active" : "inactive")
       if (v.dog_cat?.support == 1) sendEvent(name: "animalDetected",  value: v.dog_cat.alarm_state == 1 ? "active" : "inactive")
       if (v.face?.support    == 1) sendEvent(name: "faceDetected",    value: v.face.alarm_state    == 1 ? "active" : "inactive")
+    } else if (r.cmd == "GetWhiteLed") {
+      // Track mode + smart triggers on the poll so changes made in the Reolink
+      // app show up in Hubitat within one poll interval. Deliberately does NOT
+      // touch switch/level: those interact with the keepAlive re-assert loop
+      // and are still owned by commands + refresh().
+      def w = r.value?.WhiteLed
+      if (w?.wlAiDetectType != null) emitSmartTriggers(w.wlAiDetectType)
+      if (w?.mode != null) {
+        def modeName = (w.mode >= 0 && w.mode <= 3)
+            ? ["Off", "NightSmart", "AlwaysAtNight", "Schedule"][w.mode as Integer]
+            : "Unknown"
+        sendEvent(name: "floodlightMode", value: modeName)
+      }
     }
   }
 }

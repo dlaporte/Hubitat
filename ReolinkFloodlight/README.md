@@ -53,7 +53,8 @@ Then create a device:
 
 **Floodlight:** `switch` (on/off), `level` (0–100 brightness),
 `floodlightMode` (Off / NightSmart / AlwaysAtNight / Schedule),
-`lightingSchedule`
+`floodlightSmartTriggers` (which AI detections flash the light at night,
+e.g. `people,vehicle,dog_cat` or `none`), `lightingSchedule`
 
 **Other camera config:** `IRMode` (Auto/Off), `dayNightMode` (Auto / Color /
 Black&White), `microphone` (On/Off), `powerLED` (On/Off)
@@ -74,7 +75,17 @@ SwitchLevel capabilities, plus:
 - `Set Brightness (level)` — friendlier alias for Set Level
 - `Set Floodlight Mode (mode)` — Off / NightSmart / AlwaysAtNight / Schedule.
   Picking **Off** turns the light off NOW and clears auto-mode in one call;
-  the Reolink app can't reach this state.
+  the Reolink app can't reach this state. On newer firmware the per-AI smart
+  triggers below survive this and keep flashing the light at night — the
+  driver logs a warning when that's the case.
+- `Set Floodlight Smart Triggers (people, vehicle, animal)` — arm/disarm the
+  camera's per-AI floodlight triggers (`wlAiDetectType`). These are separate
+  from the mode AND from detection itself: disarming a trigger stops the light
+  from flashing on that detection, but the detection attributes/notifications
+  keep working. **Firmware limit:** the camera refuses to disarm *all*
+  triggers over the LAN API (it silently re-arms every one); the driver
+  rejects all-Off with an explanation. Leave one armed (vehicle is usually
+  quietest) or use the Reolink app to reach fully off.
 - `Set Lighting Schedule (startTime, endTime)` — HH:mm format
 - `Set IR Mode (mode)` — Auto / Off
 - `Set Day Night Mode (mode)` — Auto / Color / Black&White
@@ -83,6 +94,12 @@ SwitchLevel capabilities, plus:
 
 ## Notes
 
+- **"The light still comes on at night with mode Off":** newer firmware arms
+  per-AI floodlight triggers (person/vehicle/animal) independently of the
+  floodlight mode. Check the `floodlightSmartTriggers` attribute — if it isn't
+  `none`, the camera itself flashes the light on those detections at night.
+  Use `Set Floodlight Smart Triggers` to trim them (see the firmware limit
+  above).
 - **No siren / alarm-trigger commands** are exposed by design. The
   `AudioAlarmPlay` API is intentionally not surfaced.
 - HTTP is used on the LAN; HTTPS works but most cameras ship with

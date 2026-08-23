@@ -1,10 +1,10 @@
 {
   "packageName": "Reolink Floodlight Camera",
   "author": "David LaPorte",
-  "version": "0.7",
-  "releaseNotes": "Bug fixes and minor cleanup. Requires Hubitat 2.2.0+.",
+  "version": "0.8",
+  "releaseNotes": "Surface and manage the camera's per-AI floodlight triggers (wlAiDetectType) — on newer firmware these keep flashing the light at night even with floodlight mode Off. New floodlightSmartTriggers attribute and setFloodlightSmartTriggers command.",
   "minimumHEVersion": "2.2.0",
-  "dateReleased": "2026-06-12",
+  "dateReleased": "2026-08-23",
   "drivers": [
     {
       "id": "c1f9a4d2-3e8b-4f5c-9d2e-7a1b6c4f0d3e",
