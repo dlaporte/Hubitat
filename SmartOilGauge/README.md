@@ -52,7 +52,9 @@ Then:
 **Derived:**
 
 - **`usageRate`** — gallons per day, smoothed over the configured window
-- **`daysRemaining`** — `gallons / usageRate`, rounded
+- **`daysRemaining`** — `gallons / usageRate`, rounded. When the window
+  shows no consumption (flat readings, or just after a refill), it uses the
+  last measured usage rate instead
 - **`lowFuel`** — `"true"` when level falls below the threshold
 - **`lastRefillAt`** / **`lastRefillGallons`** — emitted when a refill is
   detected (gallons rose by more than the threshold)

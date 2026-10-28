@@ -2,7 +2,7 @@
   "packageName": "Smart Oil Gauge",
   "author": "dlaporte",
   "minimumHEVersion": "2.2.0",
-  "dateReleased": "2026-06-12",
+  "dateReleased": "2026-10-28",
   "apps": [
     {
       "id": "22278792-e18b-4bc1-8b85-7de24b8e8832",
@@ -23,7 +23,7 @@
       "required": true
     }
   ],
-  "version": "0.0.15",
-  "releaseNotes": "Bug fixes and minor cleanup. Requires Hubitat 2.2.0+.",
+  "version": "0.0.16",
+  "releaseNotes": "Polling now recovers after a failed API call (previously it stopped until the app was re-saved). daysRemaining no longer goes stale when usage is flat or right after a refill. Requires Hubitat 2.2.0+.",
   "communityLink": "https://community.hubitat.com/t/smart-oil-gauge-app-and-device/63078"
 }

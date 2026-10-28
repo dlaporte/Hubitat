@@ -1,6 +1,8 @@
 /*
  *  Smart Oil Gauge (Connect)
  *
+ *  v0.0.16 - a failed API fetch no longer stops polling; daysRemaining
+ *            uses the last measured usage rate instead of going stale.
  *  v0.0.15 - reverted v0.0.14's broken TZ override; capped tankHistory at 720.
  *  v0.0.14 - year-boundary fix for TEnergyTbl key; tile refill threshold
  *            matches setting; settings save no longer blocks on API call.
@@ -39,7 +41,7 @@ definition(
 	oauth: true
 )
 
-static String appVersion() { "0.0.15" }
+static String appVersion() { "0.0.16" }
 
 preferences {
 	page(name: "settings", title: "Smart Oil Gauge", content: "settingsPage", install: true)
@@ -250,11 +252,12 @@ private boolean getAPIToken() {
 }
 
 // Single source of truth for the upstream call. Returns a Map keyed by
-// sensor_id, or [:] on any failure. Also keeps state.devices (list of
-// sensor_ids) and state.deviceData (the full Map) up to date.
+// sensor_id, or [:] on any failure. On success, also refreshes
+// state.devices (list of sensor_ids) and state.deviceData (the full Map).
 private Map fetchTankData() {
 	logTrace "fetchTankData()"
 	Map deviceData = [:]
+	boolean ok = false
 	if (!getToken()) return deviceData
 	def params = [
 		uri: DROPLET_API(),
@@ -276,14 +279,20 @@ private Map fetchTankData() {
 				return
 			}
 			obs.data?.each { dev -> deviceData[dev.sensor_id] = dev }
+			ok = true
 		}
 	} catch (Exception e) {
 		logError "fetchTankData exception: ${e.message}"
 		state.APIToken = null
 		state.APITokenExpirationTime = 0L
 	}
-	state.deviceData = deviceData
-	state.devices = deviceData.keySet() as List
+	// Keep the cached tank list on failure. Overwriting it with [:] emptied
+	// state.devices, and pollChildren() then bailed every hour until the app
+	// was re-saved.
+	if (ok) {
+		state.deviceData = deviceData
+		state.devices = deviceData.keySet() as List
+	}
 	return deviceData
 }
 
@@ -297,12 +306,14 @@ void pollChildren(boolean updateData = true) {
 		logInfo "pollChildren: skipping — no API token"
 		return
 	}
+	// Fetch before reading state.devices so an empty cached list (e.g. the
+	// first-install fetch failed) is retried on every poll.
+	Map deviceData = updateData ? fetchTankData() : (state.deviceData ?: [:])
 	List devices = state.devices ?: []
 	if (!devices) {
 		logInfo "pollChildren: no known devices"
 		return
 	}
-	Map deviceData = updateData ? fetchTankData() : (state.deviceData ?: [:])
 
 	devices.each { sensorId ->
 		try {
@@ -408,9 +419,16 @@ private Map computeTankMetrics(String sensorId, Float gallons, Float capacity) {
 		Float galConsumed = oldestGal - gallons
 		if (hours >= 1 && galConsumed > 0) {
 			usageRate = (galConsumed / hours * 24).round(2)
-			if (usageRate > 0) daysRemaining = (gallons / usageRate).round() as Integer
 		}
 	}
+
+	// With no measurable consumption in the window (flat readings, or right
+	// after a refill resets hist), estimate from the last measured rate so
+	// daysRemaining follows current gallons instead of freezing.
+	if (state.lastUsageRate == null) state.lastUsageRate = [:]
+	if (usageRate > 0) state.lastUsageRate[sensorId] = usageRate
+	Float estimateRate = usageRate > 0 ? usageRate : (state.lastUsageRate[sensorId] as Float)
+	if (estimateRate) daysRemaining = (gallons / estimateRate).round() as Integer
 
 	return [
 		usageRate: usageRate,
