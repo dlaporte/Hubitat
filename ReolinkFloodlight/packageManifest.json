@@ -1,10 +1,10 @@
 {
   "packageName": "Reolink Floodlight Camera",
   "author": "David LaPorte",
-  "version": "0.8",
-  "releaseNotes": "Surface and manage the camera's per-AI floodlight triggers (wlAiDetectType) — on newer firmware these keep flashing the light at night even with floodlight mode Off. New floodlightSmartTriggers attribute and setFloodlightSmartTriggers command.",
+  "version": "0.9",
+  "releaseNotes": "Clearer connection logging: an offline camera now logs one 'isn't answering' error (network problem) instead of a 'login failed: null' error every 5 seconds, a rejected password is reported as such, and recovery is logged with the outage length.",
   "minimumHEVersion": "2.2.0",
-  "dateReleased": "2026-08-23",
+  "dateReleased": "2026-11-07",
   "drivers": [
     {
       "id": "c1f9a4d2-3e8b-4f5c-9d2e-7a1b6c4f0d3e",

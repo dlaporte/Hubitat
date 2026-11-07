@@ -10,6 +10,11 @@
  *
  *  Does NOT expose any siren/alarm-trigger commands by design.
  *
+ *  v0.9 - connection-failure logging names the real cause: "camera isn't
+ *         answering" (network) vs. "camera rejected the login" (credentials),
+ *         instead of the misleading "login failed: null". Logs one ERROR when
+ *         a problem starts, an hourly reminder, and one INFO on recovery with
+ *         the outage length — previously every 5-second poll logged an error.
  *  v0.8 - surface + manage the camera's per-AI floodlight triggers (wlAiDetectType).
  *         Newer firmware arms these independently of the floodlight mode, so the
  *         light can flash on person/vehicle/animal detection at night even with
@@ -142,6 +147,9 @@ def initialize() {
   unschedule()
   state.token = null
   state.tokenExpiry = 0
+  // Let the next failure (if any) log again so Save gives fresh feedback;
+  // commFailSince is kept so the recovery line reports the full outage.
+  state.remove("commFailKey")
   // v0.2 cleanup: drop legacy state map, renamed/removed attributes, and stale dataValue keys
   state.remove("AISupport")
   state.remove("flKeepOnSupported") // v0.1 stored capability here; v0.2 moved to dataValue
@@ -647,11 +655,23 @@ private loginAsync(List queuedCmds = null, String queuedCallback = null, Map que
 }
 
 def loginResponseHandler(response, data) {
-  def parsed = parseAsync(response, "Login")
-  if (!parsed || parsed[0]?.code != 0) {
-    log.error "Reolink: login failed: ${parsed}"
+  // An HTTP-level error means the camera never answered, so the credentials
+  // were never checked; a rejected login comes back as a JSON error instead.
+  if (response?.hasError()) {
+    noteCommFailure("unreachable", httpErrorDetail(response))
     return
   }
+  def parsed = parseAsync(response, "Login")
+  if (!parsed) {
+    noteCommFailure("unreachable", "empty or unreadable reply to Login")
+    return
+  }
+  if (parsed[0]?.code != 0) {
+    def err = parsed[0]?.error
+    noteCommFailure("auth", err ? "${err.detail}, rspCode ${err.rspCode}" : "code ${parsed[0]?.code}")
+    return
+  }
+  noteCommSuccess()
   state.token = parsed[0].value.Token.name
   state.tokenExpiry = now() + ((parsed[0].value.Token.leaseTime as Long) * 1000L)
   if (debug) log.debug "Reolink: login OK token=…${state.token?.takeRight(4)} leaseTime=${parsed[0].value.Token.leaseTime}s"
@@ -667,6 +687,14 @@ def sendCmdResponseHandler(response, data) {
   def successCallback = data.successCallback
   def userData = (data.userData ?: [:]) as Map
   String firstCmd = cmds[0].cmd
+
+  // While a session token is still valid, polls skip Login entirely, so this
+  // is where an outage shows up first.
+  if (response?.hasError()) {
+    noteCommFailure("unreachable", httpErrorDetail(response))
+  } else {
+    noteCommSuccess()
+  }
 
   def result = parseAsync(response, firstCmd)
 
@@ -684,6 +712,61 @@ def sendCmdResponseHandler(response, data) {
   if (successCallback) {
     "${successCallback}"(result, userData)
   }
+}
+
+// ---------------------------------------------------------------------------
+// Connection-health logging
+// ---------------------------------------------------------------------------
+// The poll loop retries every few seconds, so logging each failure would write
+// ~700 identical lines an hour. Instead: one ERROR naming the cause when a
+// problem starts, a WARN reminder at most hourly, and one INFO on recovery.
+// The dedup key deliberately excludes the error text, which can alternate
+// between messages (e.g. connect timeout vs. no route) during one outage.
+
+private void noteCommFailure(String kind, String detail) {
+  String key = "${kind}|${ip}"
+  Long nowMs = now()
+  if (state.commFailSince == null) state.commFailSince = nowMs
+  if (state.commFailKey != key) {
+    state.commFailKey = key
+    state.commFailLastLog = nowMs
+    if (kind == "auth") {
+      log.error "Reolink: camera at ${ip} rejected the login (${detail}) — check the username/password " +
+          "in preferences. Repeats are suppressed; reminder hourly."
+    } else {
+      log.error "Reolink: camera at ${ip} isn't answering (${detail}) — it looks offline, off the network, " +
+          "or at a different IP. This is a connection problem, not a username/password problem. " +
+          "Repeats are suppressed; reminder hourly."
+    }
+  } else if (nowMs - ((state.commFailLastLog ?: 0L) as Long) >= 3_600_000L) {
+    state.commFailLastLog = nowMs
+    String what = (kind == "auth") ? "still rejecting the login" : "still not answering"
+    log.warn "Reolink: camera at ${ip} ${what} after ${formatDuration(nowMs - (state.commFailSince as Long))} (${detail})"
+  }
+}
+
+private void noteCommSuccess() {
+  if (state.commFailSince == null) return
+  log.info "Reolink: camera at ${ip} is responding again after ${formatDuration(now() - (state.commFailSince as Long))}"
+  state.remove("commFailSince")
+  state.remove("commFailKey")
+  state.remove("commFailLastLog")
+}
+
+private String httpErrorDetail(response) {
+  String msg = null
+  def status = null
+  try { msg = response?.getErrorMessage() } catch (Exception e) { /* no message available */ }
+  try { status = response?.status } catch (Exception e) { /* no status available */ }
+  return (msg ?: "no response") + (status ? ", HTTP ${status}" : "")
+}
+
+private String formatDuration(Long ms) {
+  Long totalMin = Math.max(0L, ms as long).intdiv(60_000L)
+  if (totalMin == 0) return "under a minute"
+  Long h = totalMin.intdiv(60L)
+  Long m = totalMin % 60L
+  return h > 0 ? "${h}h ${m}m" : "${m}m"
 }
 
 private parseAsync(response, String label) {

@@ -100,6 +100,11 @@ SwitchLevel capabilities, plus:
   `none`, the camera itself flashes the light on those detections at night.
   Use `Set Floodlight Smart Triggers` to trim them (see the firmware limit
   above).
+- **Connection problems** are logged once, not on every poll: an ERROR
+  that says whether the camera *isn't answering* (offline, off WiFi, wrong
+  IP — a network problem) or *rejected the login* (check username/password),
+  a reminder at most hourly while it persists, and an INFO line with the
+  outage length when the camera comes back.
 - **No siren / alarm-trigger commands** are exposed by design. The
   `AudioAlarmPlay` API is intentionally not surfaced.
 - HTTP is used on the LAN; HTTPS works but most cameras ship with
