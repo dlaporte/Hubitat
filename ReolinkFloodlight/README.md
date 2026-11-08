@@ -109,5 +109,5 @@ SwitchLevel capabilities, plus:
   `AudioAlarmPlay` API is intentionally not surfaced.
 - HTTP is used on the LAN; HTTPS works but most cameras ship with
   self-signed certs and the driver doesn't currently handle them.
-- Hub firmware floor: **2.2.0** (uses `device.deleteCurrentState` for
-  attribute cleanup on upgrade).
+- Hub firmware floor: **2.2.9** (the driver runs single-threaded, an option
+  added in 2.2.9).

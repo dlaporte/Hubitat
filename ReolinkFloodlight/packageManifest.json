@@ -1,9 +1,9 @@
 {
   "packageName": "Reolink Floodlight Camera",
   "author": "David LaPorte",
-  "version": "0.9",
-  "releaseNotes": "Clearer connection logging: an offline camera now logs one 'isn't answering' error (network problem) instead of a 'login failed: null' error every 5 seconds, a rejected password is reported as such, and recovery is logged with the outage length.",
-  "minimumHEVersion": "2.2.0",
+  "version": "0.9.1",
+  "releaseNotes": "Fixes a burst of duplicate 'isn't answering' errors when the camera loses power: the driver now runs single-threaded so overlapping polls can't race. Requires Hubitat 2.2.9+.",
+  "minimumHEVersion": "2.2.9",
   "dateReleased": "2026-11-07",
   "drivers": [
     {

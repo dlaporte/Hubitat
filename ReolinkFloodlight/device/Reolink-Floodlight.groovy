@@ -10,6 +10,9 @@
  *
  *  Does NOT expose any siren/alarm-trigger commands by design.
  *
+ *  v0.9.1 - driver now runs single-threaded, so overlapping polls can't race on
+ *           state; fixes a burst of duplicate "isn't answering" errors when the
+ *           camera loses power. Requires Hubitat 2.2.9+.
  *  v0.9 - connection-failure logging names the real cause: "camera isn't
  *         answering" (network) vs. "camera rejected the login" (credentials),
  *         instead of the misleading "login failed: null". Logs one ERROR when
@@ -51,7 +54,10 @@ import groovy.json.JsonSlurper
 
 metadata {
 
-  definition(name: "Reolink Floodlight Camera", namespace: "dlaporte", author: "dlaporte") {
+  // singleThreaded: polls overlap (5 s interval vs. 10 s HTTP timeout), and concurrent
+  // handlers would otherwise race on state — e.g. the connection-failure dedup keys.
+  definition(name: "Reolink Floodlight Camera", namespace: "dlaporte", author: "dlaporte",
+      singleThreaded: true) {
     capability "Initialize"
     capability "Refresh"
     capability "Switch"
