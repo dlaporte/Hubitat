@@ -96,6 +96,25 @@ backward compatibility with any rules that already use it.
 Parts list, install instructions, and theory of operation are in the driver
 header.
 
+### LG TV (Glasshouse)
+
+LAN driver for a rooted LG webOS TV running
+[Glasshouse](https://github.com/rorygallagher2024/glasshouse). Talks to
+Glasshouse's local HTTP API (typically port 8080, no authentication in
+the default configuration).
+
+Exposes, on the Preferences page:
+- Power (Wake-on-LAN plus Glasshouse `powerOn` / `powerOff`)
+- Volume slider, including HDMI ARC/eARC `volumeStep` behavior for a
+  soundbar or receiver that ignores the numeric volume
+- Mute, input and picture-mode dropdowns populated from the TV, screen
+  on/off, launch app, and send key
+- Configurable polling
+
+The Commands tab is intentionally just Initialize and Refresh. The
+driver does not declare `Switch` or `AudioVolume`, so dashboards,
+HomeKit, and Rule Machine cannot treat it as a switch.
+
 ## License
 
 Apache 2.0 — see individual file headers.
