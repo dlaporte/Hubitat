@@ -19,10 +19,20 @@
  *  Active Standby with Glasshouse still running. Deep sleep relies on
  *  WOL (the TV must have Wake-on-LAN enabled).
  *
- *  v0.8 - initial public release. Preference-page controls for power,
- *         volume (including HDMI ARC volumeStep), mute, input, picture
- *         mode, screen, launch app and send key. Commands tab is just
- *         Initialize and Refresh.
+ *  David LaPorte
+ *
+ *  Last Update 2026-11-11
+ *
+ *  v0.8 - 2026-11-11 - Commands tab trimmed to Initialize and Refresh;
+ *         added a TV section (power, launch app, send key).
+ *  v0.7 - 2026-11-11 - HDMI ARC volumeStep so a soundbar or receiver
+ *         that ignores the numeric volume still follows the slider.
+ *  v0.4 - 2026-11-11 - volume slider with live apply on release.
+ *  v0.3 - 2026-11-11 - grouped preference sections (Connection, Sound,
+ *         Picture, Hubitat).
+ *  v0.2 - 2026-11-11 - input and picture-mode dropdowns populated from
+ *         the TV.
+ *  v0.1 - 2026-11-11 - initial release.
  *
  *  Copyright 2026 David LaPorte
  *
