@@ -2,7 +2,7 @@
   "packageName": "LG TV (Glasshouse)",
   "author": "David LaPorte",
   "version": "0.8",
-  "releaseNotes": "Initial public release. Control a rooted LG webOS TV running Glasshouse: power, volume (including HDMI ARC volumeStep), mute, input, picture mode, screen, launch app, and send key from the Preferences page. Commands tab is just Initialize and Refresh. Requires Hubitat 2.2.0+.",
+  "releaseNotes": "Initial public release (v0.8, 2026-11-11). Control a rooted LG webOS TV running Glasshouse from the Preferences page: power, launch app, send key, a live-apply volume slider (including HDMI ARC volumeStep), mute, input and picture-mode dropdowns populated from the TV, and screen on/off, in grouped sections. Commands tab is just Initialize and Refresh. Requires Hubitat 2.2.0+.",
   "minimumHEVersion": "2.2.0",
   "dateReleased": "2026-11-11",
   "documentationLink": "https://github.com/dlaporte/Hubitat/blob/main/LGglasshouse/README.md",
