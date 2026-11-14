@@ -21,8 +21,10 @@
  *
  *  David LaPorte
  *
- *  Last Update 2026-11-11
+ *  Last Update 2026-11-14
  *
+ *  v0.9 - 2026-11-14 - Notification device: an optional child that
+ *         shows Hubitat notifications on the TV as an on-screen toast.
  *  v0.8 - 2026-11-11 - Commands tab trimmed to Initialize and Refresh;
  *         added a TV section (power, launch app, send key).
  *  v0.7 - 2026-11-11 - HDMI ARC volumeStep so a soundbar or receiver
@@ -158,6 +160,9 @@ metadata {
         input name: "hdrHubitat", type: "paragraph",
             title: groupHeaderTitle("lgtv-glasshouse-hdr-hubitat", "Hubitat"),
             description: "Hubitat options for this device."
+        input name: "notifierEnabled", type: "bool", title: "Notification device",
+            description: "Creates a child device that shows Hubitat notifications on the TV screen. Turning this off deletes that device, and any rules using it lose it.",
+            defaultValue: false
         input name: "debugLogging", type: "bool", title: "Enable debug logging",
             description: "Turns off automatically after 30 minutes",
             defaultValue: false
@@ -532,6 +537,7 @@ def updated() {
     applyPreferredMute()
     applyPreferredVolume()
     applyPreferredScreen()
+    syncNotifierChild()
     initialize()
 }
 
@@ -552,6 +558,57 @@ def initialize() {
 def logsOff() {
     log.info "Debug logging disabled"
     device.updateSetting("debugLogging", [value: "false", type: "bool"])
+}
+
+// ---------------------------------------------------------------------------
+// Notification device (child)
+// ---------------------------------------------------------------------------
+
+// Glasshouse cuts toast text at 120 characters (server/lib/controls.js).
+private Integer toastMaxLength() { return 120 }
+
+private String notifierDni() { return "${device.id}-notifier" }
+
+// Creates or deletes the Notifier child to match the preference. The label
+// is set only at creation, so a rename sticks across later saves. Errors
+// are caught so a missing Notifier driver cannot stop updated().
+private void syncNotifierChild() {
+    String dni = notifierDni()
+    def child = getChildDevice(dni)
+    boolean wanted = (notifierEnabled == true || notifierEnabled?.toString() == "true")
+    if (wanted && !child) {
+        String label = "${device.displayName} Notifier"
+        try {
+            addChildDevice("dlaporte", "LG TV (Glasshouse) Notifier", dni,
+                [name: "LG TV (Glasshouse) Notifier", label: label, isComponent: false])
+            log.info "Created notification device ${label}"
+        } catch (e) {
+            log.error "Could not create the notification device. Install the LG TV (Glasshouse) Notifier driver, then Save Preferences again. (${e.message})"
+        }
+    } else if (!wanted && child) {
+        try {
+            deleteChildDevice(dni)
+            log.info "Deleted notification device ${child.displayName}"
+        } catch (e) {
+            log.error "Could not delete the notification device ${child.displayName}: ${e.message}"
+        }
+    }
+}
+
+// Called by the Notifier child. Public so parent.sendToast() reaches it,
+// but not a command, so the Commands tab stays Initialize and Refresh.
+// A string value is LG's standard toast. Glasshouse shows "hello" for
+// empty text, so blank messages are dropped here.
+void sendToast(String text) {
+    String msg = text?.trim()
+    if (!msg) {
+        log.warn "Not sending an empty notification to the TV"
+        return
+    }
+    if (msg.length() > toastMaxLength()) {
+        log.warn "Notification is ${msg.length()} characters; the TV shows only the first ${toastMaxLength()}"
+    }
+    sendControl("toast", msg)
 }
 
 private void schedulePoll() {
@@ -981,6 +1038,10 @@ private void sendControl(String action, value = null) {
 
 void controlCallback(resp, data) {
     String action = data?.action ?: "control"
+    if (action == "toast") {
+        toastCallback(resp, data)
+        return
+    }
     if (!resp) {
         log.warn "Glasshouse ${action}: empty response"
         clearVolumeStepChain()
@@ -1013,6 +1074,25 @@ void controlCallback(resp, data) {
         applyOptimistic(data)
     }
     runIn(2, "refresh")
+}
+
+// Toast results are only logged: nothing on the TV changed, so no
+// refresh, and a toast must not reset an ARC volume-step chain.
+private void toastCallback(resp, data) {
+    if (!resp) {
+        log.warn "Glasshouse toast: empty response"
+        return
+    }
+    if (resp.hasError() || (resp.status && (resp.status as Integer) >= 400)) {
+        log.warn "Glasshouse toast failed (is the TV on?): ${safeError(resp)}"
+        return
+    }
+    def json = safeJson(resp)
+    if (json instanceof Map && json.ok == false) {
+        log.warn "Glasshouse toast rejected: ${json.error ?: json}"
+        return
+    }
+    log.info "Notification sent to the TV: ${data?.value}"
 }
 
 private void applyOptimistic(Map data) {

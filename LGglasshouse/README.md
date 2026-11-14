@@ -24,12 +24,16 @@ does not install or configure Glasshouse.
 
 In **Hubitat Package Manager → Install**, search for `LG TV (Glasshouse)`.
 
-To install the driver directly without HPM, open **Drivers code → New
-driver → Import** and paste:
+To install the drivers directly without HPM, open **Drivers code → New
+driver → Import** and import each of these:
 
 ```
 https://raw.githubusercontent.com/dlaporte/Hubitat/main/LGglasshouse/device/LGTV-Glasshouse.groovy
+https://raw.githubusercontent.com/dlaporte/Hubitat/main/LGglasshouse/device/LGTV-Glasshouse-Notifier.groovy
 ```
+
+The second one, LG TV (Glasshouse) Notifier, is only used by the
+optional [notification device](#notifications).
 
 Then create a device:
 
@@ -63,6 +67,8 @@ Then create a device:
   can be sent again.
 - **Polling** — Configurable interval (off, or 1–30 minutes; default every
   1 minute).
+- **Notifications** — An optional child device that shows Hubitat
+  notifications on the TV screen. See [Notifications](#notifications).
 
 ## Preferences
 
@@ -74,12 +80,33 @@ The device page is grouped into sections:
 | TV | Power toggle, Launch app, Send key |
 | Sound | Volume slider, Mute |
 | Picture | Input, Picture mode, Screen on |
-| Hubitat | Enable debug logging (plus Hubitat's own Show on Home page) |
+| Hubitat | Notification device, Enable debug logging (plus Hubitat's own Show on Home page) |
 
 Most preference actions (power, mute, input, picture mode, screen) are
 applied on **Save Preferences** only when the value differs from the TV.
 Launch app and Send key run on Save when a choice is selected. The volume
 slider is sent when you release it.
+
+## Notifications
+
+To show Hubitat notifications on the TV, turn on **Notification device**
+in the Hubitat section of the TV's Preferences page and click **Save
+Preferences**. This creates a child device named `<TV name> Notifier`
+(you can rename it). It is a standard Hubitat notification device, so
+Rule Machine, Notifier, Basic Rules, and HSM can send messages to it.
+
+- Each message appears as LG's standard toast: a bar at the bottom
+  centre of the screen, text only, which fades after a few seconds.
+- The TV shows at most 120 characters. Longer messages are cut off and
+  a warning is logged. Blank messages are not sent.
+- Nothing is queued. If the TV is in standby, the message is accepted
+  but not shown. If the TV is fully off, sending fails and a warning is
+  logged.
+- Turning **Notification device** off and saving deletes the child
+  device, and any rules that use it lose it.
+
+The Notifier has no connection settings of its own; the TV device sends
+each message to Glasshouse.
 
 ## Commands
 

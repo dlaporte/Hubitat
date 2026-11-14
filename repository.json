@@ -36,7 +36,7 @@
 			"name": "LG TV (Glasshouse)",
 			"category": "Integrations",
 			"location": "https://raw.githubusercontent.com/dlaporte/Hubitat/main/LGglasshouse/packageManifest.json",
-			"description": "Control a rooted LG webOS TV running Glasshouse (power, volume, mute, input, picture mode, screen, apps, and remote keys)"
+			"description": "Control a rooted LG webOS TV running Glasshouse (power, volume, mute, input, picture mode, screen, apps, and remote keys) and show Hubitat notifications on screen"
 		}
 	]
 }
