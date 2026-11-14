@@ -110,6 +110,8 @@ Exposes, on the Preferences page:
 - Mute, input and picture-mode dropdowns populated from the TV, screen
   on/off, launch app, and send key
 - Configurable polling
+- Optional notification device that shows Hubitat notifications on the
+  TV screen
 
 The Commands tab is intentionally just Initialize and Refresh. The
 driver does not declare `Switch` or `AudioVolume`, so dashboards,
