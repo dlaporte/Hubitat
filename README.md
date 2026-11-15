@@ -141,6 +141,11 @@ Kept here in case upstream disappears (upstream is unmaintained since 2022):
   branch; upstream's `hubitat` branch is the older v0.0.34.
 - A fork of the upstream repo, both branches:
   [dlaporte/mi_connector](https://github.com/dlaporte/mi_connector).
+- The Mi Connector **server** image, which has no published source:
+  `ghcr.io/dlaporte/mi-connector:0.0.7` (also tagged `latest`; private). It is
+  the linux/amd64 image of `fison67/mi-connector:0.0.7`, image ID
+  `sha256:b9c5b7b6ad37…`. To use it, run `docker login ghcr.io` with a token
+  that has `read:packages`, then point the compose service's `image:` at it.
 
 MIT license (fison67) — see the file headers.
 
