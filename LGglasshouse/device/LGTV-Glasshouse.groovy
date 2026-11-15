@@ -21,8 +21,11 @@
  *
  *  David LaPorte
  *
- *  Last Update 2026-11-14
+ *  Last Update 2026-11-15
  *
+ *  v0.10 - 2026-11-15 - A TV that is switched off (unreachable) is logged
+ *         as one info line when it goes and one when it is back, not
+ *         repeated warnings; new Warn when the TV can't be reached option.
  *  v0.9 - 2026-11-14 - Notification device: an optional child that
  *         shows Hubitat notifications on the TV as an on-screen toast.
  *  v0.8 - 2026-11-11 - Commands tab trimmed to Initialize and Refresh;
@@ -114,6 +117,9 @@ metadata {
                 "30": "Every 30 minutes"
             ],
             defaultValue: "1", required: true
+        input name: "warnUnreachable", type: "bool", title: "Warn when the TV can't be reached",
+            description: "Turn on only if Always Ready is on in Glasshouse, so the TV stays on the network when switched off with the remote. Otherwise a switched-off TV looks like a failure. The power button still switches the TV fully off. When off, an unreachable TV is logged once as info.",
+            defaultValue: false
         input name: "hdrTv", type: "paragraph",
             title: groupHeaderTitle("lgtv-glasshouse-hdr-tv", "TV"),
             description: "Power is applied on Save only if it differs from the TV. Launch app and Send key run on Save only when a choice is selected; Send key then resets so the same key can be sent again."
@@ -1083,6 +1089,14 @@ private void toastCallback(resp, data) {
         log.warn "Glasshouse toast: empty response"
         return
     }
+    if (isUnreachable(resp)) {
+        if (warnOnUnreachable()) {
+            log.warn "Glasshouse toast failed (${device.displayName} can't be reached): ${safeError(resp)}"
+        } else {
+            log.info "Notification not shown (${device.displayName} is off or unreachable): ${data?.value}"
+        }
+        return
+    }
     if (resp.hasError() || (resp.status && (resp.status as Integer) >= 400)) {
         log.warn "Glasshouse toast failed (is the TV on?): ${safeError(resp)}"
         return
@@ -1133,7 +1147,7 @@ private void applyOptimistic(Map data) {
 void statsCallback(resp, data) {
     def json = requireJson(resp, "stats")
     if (!(json instanceof Map)) return
-    state.failCount = 0
+    noteReachable()
     applyStats(json)
 }
 
@@ -1158,6 +1172,10 @@ void remoteKeysCallback(resp, data) {
 private def requireJson(resp, String label) {
     if (!resp) {
         notePollFailure("${label}: empty response")
+        return null
+    }
+    if (isUnreachable(resp)) {
+        noteUnreachable(label, safeError(resp))
         return null
     }
     if (resp.hasError() || (resp.status && (resp.status as Integer) >= 400)) {
@@ -1441,6 +1459,57 @@ private void notePollFailure(String reason) {
     } else {
         dbg "Glasshouse request failed (${n}): ${reason}"
     }
+}
+
+// The hub's HTTP client reports a request that never reached the TV (seen
+// on the hub: no route to host, connect timed out) as status 408. A read
+// timeout is also 408, so a TV that stops answering mid-request counts too.
+private boolean isUnreachable(resp) {
+    try {
+        return resp != null && resp.status != null && (resp.status as Integer) == 408
+    } catch (ignored) {
+        return false
+    }
+}
+
+private boolean warnOnUnreachable() {
+    return (warnUnreachable == true || warnUnreachable?.toString() == "true")
+}
+
+// A switched-off TV drops off the network, which is normal unless Always
+// Ready keeps it there. By default that is one info line when the TV goes
+// and one when it is back (noteReachable); with Warn when the TV can't be
+// reached on, it is a warning on the first miss and every 10th. Only the
+// stats request counts: all four poll requests fail together, and a
+// counter written from four concurrent callbacks loses updates.
+private void noteUnreachable(String label, String reason) {
+    if (label != "stats") {
+        dbg "Glasshouse ${label} unreachable: ${reason}"
+        return
+    }
+    Integer n = (state.unreachableCount ?: 0) + 1
+    state.unreachableCount = n
+    if (warnOnUnreachable()) {
+        if (n == 1 || (n % 10) == 0) {
+            log.warn "${device.displayName} can't be reached (${n} poll${n == 1 ? '' : 's'}): ${reason}"
+        } else {
+            dbg "${device.displayName} can't be reached (${n}): ${reason}"
+        }
+    } else if (n == 1) {
+        log.info "${device.displayName} is off or unreachable (${reason}); further misses are logged at debug only"
+    } else {
+        dbg "${device.displayName} is still off or unreachable (${n}): ${reason}"
+    }
+}
+
+// Called when stats answers.
+private void noteReachable() {
+    Integer n = (state.unreachableCount ?: 0) as Integer
+    if (n > 0) {
+        log.info "${device.displayName} is reachable again (after ${n} missed poll${n == 1 ? '' : 's'})"
+        state.remove("unreachableCount")
+    }
+    state.failCount = 0
 }
 
 private def safeJson(resp) {
