@@ -135,7 +135,14 @@ Changes from upstream:
 - Removed the call to an undefined `updateLastTime()` that made every
   refresh log a `MissingMethodException`.
 
-MIT license (fison67) — see the file header.
+Kept here in case upstream disappears (upstream is unmaintained since 2022):
+- `XiaomiVacuums/app/mi-connector.groovy`: the **Mi Connector** parent app
+  (v0.0.75) as installed on Hubitat, unmodified. It isn't in either upstream
+  branch; upstream's `hubitat` branch is the older v0.0.34.
+- A fork of the upstream repo, both branches:
+  [dlaporte/mi_connector](https://github.com/dlaporte/mi_connector).
+
+MIT license (fison67) — see the file headers.
 
 ## License
 
