@@ -1,9 +1,15 @@
 /**
- *  Xiaomi Vacuums (v.0.0.5)
+ *  Xiaomi Vacuums (v.0.0.6)
  *
  * MIT License
  *
  * Copyright (c) 2018 fison67@nate.com
+ *
+ * Modified by David LaPorte (https://github.com/dlaporte/Hubitat), forked from
+ * https://github.com/fison67/mi_connector (devicetypes/fison67/xiaomi-vacuums.src):
+ *   v.0.0.6 (2026-11-15): "Logging" preference (off / error / debug, default
+ *     error) that all of the driver's log output honors. Removed the call to the
+ *     undefined updateLastTime(), which made every refresh log an error.
  *
  * Permission is hereby granted, free of charge, to any person
  * obtaining a copy of this software and associated documentation
@@ -63,6 +69,7 @@ metadata {
 
     preferences {
         input name: "offOption", title:"OFF Option" , type: "enum", required: true, options: ["off", "return"], defaultValue: "off"
+        input name: "logLevel", title:"Logging" , type: "enum", required: true, options: ["off", "error", "debug"], defaultValue: "error"
 	}
 }
 
@@ -70,13 +77,31 @@ def installed(){
 
 }
 
+// Logging honors the "Logging" preference. Until preferences are saved the
+// setting is null, so fall back to the declared default.
+private String currentLogLevel(){
+    return settings?.logLevel ?: "error"
+}
+
+private void logDebug(msg){
+    if(currentLogLevel() == "debug"){
+        log.debug msg
+    }
+}
+
+private void logError(msg){
+    if(currentLogLevel() in ["error", "debug"]){
+        log.error msg
+    }
+}
+
 // parse events into attributes
 def parse(String description) {
-	log.debug "Parsing '${description}'"
+	logDebug "Parsing '${description}'"
 }
 
 def setInfo(String app_url, String id) {
-	log.debug "${app_url}, ${id}"
+	logDebug "${app_url}, ${id}"
 	state.app_url = app_url
     state.id = id
 }
@@ -96,7 +121,7 @@ def setFanSpeed(speed){
 }
 
 def setStatus(params){
-	log.debug "${params.key} >> ${params.data}"
+	logDebug "${params.key} >> ${params.data}"
     
  	switch(params.key){
     case "mode":
@@ -212,7 +237,7 @@ def refresh(){
 }
 
 def setVolume(volume){
-	log.debug "setVolume >> ${state.id}"
+	logDebug "setVolume >> ${state.id}"
     def body = [
         "id": state.id,
         "cmd": "volume",
@@ -223,7 +248,7 @@ def setVolume(volume){
 }
 
 def setVolumeWithTest(volume){
-	log.debug "setVolume >> ${state.id}"
+	logDebug "setVolume >> ${state.id}"
     def body = [
         "id": state.id,
         "cmd": "volumeWithTest",
@@ -302,7 +327,7 @@ def setRobotCleanerCleaningMode(mode){
 }
 
 def setRobotCleanerMovement(movement){
-	log.debug "setRobotCleanerMovement: ${movement}"
+	logDebug "setRobotCleanerMovement: ${movement}"
 	if(movemoent == "charging"){
     	charge()
     }else if(movement == "powerOff"){
@@ -360,10 +385,8 @@ def callback(hubitat.device.HubResponse hubResponse){
         	break;
         }
     	sendEvent(name:"fanSpeed_label", value: fanSpeed )
-        
-        updateLastTime()
     } catch (e) {
-        log.error "Exception caught while parsing data: "+e;
+        logError "Exception caught while parsing data: "+e;
     }
 }
 

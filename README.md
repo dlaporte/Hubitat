@@ -117,6 +117,27 @@ The Commands tab is intentionally just Initialize and Refresh. The
 driver does not declare `Switch` or `AudioVolume`, so dashboards,
 HomeKit, and Rule Machine cannot treat it as a switch.
 
+## Forks (not in HPM)
+
+### Xiaomi Vacuums (Mi Connector)
+
+Fork of fison67's [Mi Connector](https://github.com/fison67/mi_connector)
+**Xiaomi Vacuums** child driver, as ported to Hubitat. It keeps the original
+name and namespace (`fison67` / `Xiaomi Vacuums`) so Mi Connector keeps
+using it and existing vacuum devices need no driver change. To install,
+open **Drivers code → Xiaomi Vacuums → Import** and paste the raw URL of
+`XiaomiVacuums/device/xiaomi-vacuums.groovy`.
+
+Changes from upstream:
+- **Logging** preference (`off` / `error` / `debug`, default `error`) that
+  all of the driver's log output honors. Previously every status push and
+  HTTP response was logged at debug, unconditionally.
+- Removed the call to an undefined `updateLastTime()` that made every
+  refresh log a `MissingMethodException`.
+
+MIT license (fison67) — see the file header.
+
 ## License
 
-Apache 2.0 — see individual file headers.
+Apache 2.0 — see individual file headers, except the Xiaomi Vacuums fork
+(MIT).
