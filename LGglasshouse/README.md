@@ -76,7 +76,7 @@ The device page is grouped into sections:
 
 | Section | Controls |
 |---|---|
-| Connection | TV IP, Port, MAC for Wake-on-LAN, Poll interval |
+| Connection | TV IP, Port, MAC for Wake-on-LAN, Poll interval, Warn when the TV can't be reached |
 | TV | Power toggle, Launch app, Send key |
 | Sound | Volume slider, Mute |
 | Picture | Input, Picture mode, Screen on |
@@ -127,4 +127,12 @@ in rules.
   reach port 8080 can control the TV, so keep it on a trusted LAN.
 - Don't switch Power off and Save while you're watching; that turns the
   TV off.
+- A TV that is switched fully off drops off the network. The driver logs
+  that as one info line when the TV goes and one when it is back, not as
+  repeated warnings. If Always Ready is on in Glasshouse, the TV stays on
+  the network when switched off with the remote; then turn on **Warn when
+  the TV can't be reached** to get a warning on the first miss and every
+  10th. The power button still switches the TV fully off. Notifications
+  sent while the TV can't be reached follow the same setting. Other
+  failures, where the TV answers with an error, are always warnings.
 - Hub firmware floor: **2.2.0**.
