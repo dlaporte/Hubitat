@@ -177,6 +177,8 @@ class Driver {
             else { schedules.remove(method); unschedules << method }
         })
         binding.setVariable("response", { cmd -> "response:${cmd}".toString() })
+        binding.setVariable("updateDataValue", { String k, String v -> device.updateDataValue(k, v) })
+        binding.setVariable("getDataValue", { String k -> device.getDataValue(k) })
 
         // metadata { } DSL: record everything, run nested closures.
         def runNested = { Object[] args -> args.find { it instanceof Closure }?.call() }
@@ -212,6 +214,13 @@ class Driver {
     }
 
     void advance(long ms) { clock += ms }
+
+    /** Format a clock value the way our drivers stamp ISO timestamps (yyyy-MM-dd'T'HH:mm:ssZ). */
+    String iso(long ms) {
+        def fmt = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ")
+        fmt.setTimeZone(TimeZone.getTimeZone("America/New_York"))
+        fmt.format(new Date(ms))
+    }
 
     List<Map> eventsNamed(String name) { events.findAll { it.name == name } }
 

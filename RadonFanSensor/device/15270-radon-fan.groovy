@@ -36,47 +36,125 @@
  *  for the specific language governing permissions and limitations under the License.
  */
 
-metadata {
+import groovy.transform.Field
 
-    definition (name: "Radon Fan Sensor", namespace: "dlaporte", author: "dlaporte") {
+@Field static final String VERSION = "0.10.0"
+
+metadata {
+    definition(
+        name: "Radon Fan Sensor",
+        namespace: "dlaporte",
+        author: "David LaPorte",
+        importUrl: "https://raw.githubusercontent.com/dlaporte/Hubitat/main/RadonFanSensor/device/15270-radon-fan.groovy",
+        singleThreaded: true
+    ) {
         capability "Sensor"
         capability "Battery"
         capability "ContactSensor"
         capability "Refresh"
+        capability "Initialize"
 
         attribute "switch", "enum", ["on", "off"]    // backward compat with prior rules
         attribute "lastStartedAt", "string"           // ISO timestamp of last fan-on transition
         attribute "lastStoppedAt", "string"           // ISO timestamp of last fan-off transition
         attribute "fanAlarm", "string"                // "ok" or "alarm" — alarm if off too long
-
-        fingerprint deviceId: "0x2001", inClusters: "0x71, 0x85, 0x80, 0x72, 0x30, 0x86, 0x84"
     }
 
     preferences {
-        input "alarmAfterMinutes", "number", title: "Fire fanAlarm if fan has been off for (minutes)",
-            defaultValue: 30, required: false, range: "1..1440"
-        input "debug", "bool", title: "Debug logging", defaultValue: false
+        input name: "alarmAfterMinutes", type: "number", title: "Fire fanAlarm if fan has been off for (minutes)", defaultValue: 30, range: "1..1440"
+        input name: "logEnable", type: "bool", title: "Enable debug logging", description: "Turns itself off after 30 minutes", defaultValue: false
+        input name: "txtEnable", type: "bool", title: "Enable descriptionText logging", defaultValue: true
     }
 }
 
-def parse(String description) {
-    if (debug) log.debug "parse:${description}"
-    def result = null
-    if (description.startsWith("Err")) {
-        result = createEvent(descriptionText:description)
-    } else {
-        def cmd = zwave.parse(description, [0x20: 1, 0x25: 1, 0x30: 1, 0x31: 5, 0x80: 1, 0x84: 1, 0x71: 3, 0x9C: 1])
-        if (debug) log.debug "parse:cmd = ${cmd}"
-        if (cmd) {
-            result = zwaveEvent(cmd)
-        }
+// ---- Lifecycle ----
+
+void installed() {
+    initialize()
+}
+
+void updated() {
+    log.info "Preferences saved"
+    initialize()
+}
+
+// Runs at hub boot (Initialize capability), from the Initialize button, and on
+// every preferences save. A hub reboot drops pending runIn jobs, so everything
+// is re-armed here.
+void initialize() {
+    unschedule()
+    upgradeSettings()
+    if (settings.logEnable) runIn(1800, "logsOff")
+    rearmFanAlarm()
+}
+
+private void upgradeSettings() {
+    device.removeSetting("debug")          // replaced by logEnable in 0.10.0
+    device.updateDataValue("driverVersion", VERSION)
+}
+
+// If the fan is off, re-arm the alarm timer for the *remaining* window, not a
+// fresh one. Otherwise a reboot 28 min into a 30-min window resets the clock to
+// a full 30, silently defeating the safety net.
+private void rearmFanAlarm() {
+    if (device.currentValue("contact") != "open") return
+    Integer afterSec = alarmAfterSeconds()
+    Integer delaySec = afterSec
+    String stoppedAt = device.currentValue("lastStoppedAt")
+    if (stoppedAt) {
+        try {
+            Long stoppedMs = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ").parse(stoppedAt).time
+            Long elapsedSec = (now() - stoppedMs).intdiv(1000)
+            delaySec = Math.max(1, (afterSec - elapsedSec) as Integer)
+        } catch (Exception e) { /* unparseable — use the full window */ }
     }
-    return result
+    runIn(delaySec, "checkFanAlarm")
+}
+
+// ---- Commands ----
+
+def refresh() {
+    logDebug "refresh() called"
+    def commands = []
+
+    // Request current sensor state
+    commands << zwave.sensorBinaryV1.sensorBinaryGet()
+
+    // Request battery level if device supports it
+    if (!state.lastbat || now() - (state.lastbat as Long) > 53*60*60*1000L) {
+        commands << zwave.batteryV1.batteryGet()
+    }
+
+    // Return the commands to be sent
+    return commands.collect { response(it) }
+}
+
+// Called via runIn after the configured fan-off threshold. If the fan is still
+// off, fire the fanAlarm attribute → "alarm" so Rule Machine can notify.
+def checkFanAlarm() {
+    if (device.currentValue("contact") == "open") {
+        emitEvent(name: "fanAlarm", value: "alarm", isStateChange: true,
+            descriptionText: "${device.displayName} fan has been off for ${alarmAfterSeconds().intdiv(60)} minutes")
+    }
+}
+
+// ---- Z-Wave handlers ----
+
+def parse(String description) {
+    logDebug "parse: ${description}"
+    if (description.startsWith("Err")) {
+        log.warn "Z-Wave error from ${device.displayName}: ${description}"
+        return null
+    }
+    def cmd = zwave.parse(description, [0x20: 1, 0x25: 1, 0x30: 1, 0x31: 5, 0x80: 1, 0x84: 1, 0x71: 3, 0x9C: 1])
+    logDebug "parsed: ${cmd}"
+    if (!cmd) return null
+    return zwaveEvent(cmd)
 }
 
 def sensorValueEvent(value) {
-    if (debug) log.debug "sensorValueEvent:value = ${value}"
-    String ts = new Date().format("yyyy-MM-dd'T'HH:mm:ssZ", location.timeZone ?: TimeZone.getDefault())
+    logDebug "sensorValueEvent: value = ${value}"
+    String ts = isoNow()
     def result = null
     if (value) {
         // Fan started: switch=on, contact=closed, record timestamp, cancel pending alarm
@@ -90,19 +168,9 @@ def sensorValueEvent(value) {
         result = createEvent(name: "switch", value: "off", descriptionText: "$device.displayName is not running")
         sendEvent(name: "contact", value: "open", descriptionText: "fan stopped")
         sendEvent(name: "lastStoppedAt", value: ts)
-        Integer afterMin = (alarmAfterMinutes ?: 30) as Integer
-        runIn(afterMin * 60, "checkFanAlarm")
+        runIn(alarmAfterSeconds(), "checkFanAlarm")
     }
     return result
-}
-
-// Called via runIn after the configured fan-off threshold. If the fan is still
-// off, fire the fanAlarm attribute → "alarm" so Rule Machine can notify.
-def checkFanAlarm() {
-    if (device.currentValue("contact") == "open") {
-        sendEvent(name: "fanAlarm", value: "alarm", descriptionText: "fan has been off too long",
-            isStateChange: true)
-    }
 }
 
 def zwaveEvent(hubitat.zwave.commands.basicv1.BasicReport cmd) {
@@ -125,6 +193,8 @@ def zwaveEvent(hubitat.zwave.commands.sensoralarmv1.SensorAlarmReport cmd) {
     sensorValueEvent(cmd.sensorState)
 }
 
+// Dispatch kept as-is until a debug capture of fan start/stop and cover removal
+// shows which frames carry what (see docs backlog: type-7 dispatch).
 def zwaveEvent(hubitat.zwave.commands.notificationv3.NotificationReport cmd) {
     def result = []
     if (cmd.notificationType == 0x06 && cmd.event == 0x16) {
@@ -159,8 +229,9 @@ def zwaveEvent(hubitat.zwave.commands.notificationv3.NotificationReport cmd) {
 }
 
 def zwaveEvent(hubitat.zwave.commands.wakeupv1.WakeUpNotification cmd) {
-    def result = [createEvent(descriptionText: "${device.displayName} woke up", isStateChange: false)]
-    if (!state.lastbat || (new Date().time) - state.lastbat > 53*60*60*1000) {
+    logDebug "woke up"
+    def result = []
+    if (!state.lastbat || now() - (state.lastbat as Long) > 53*60*60*1000L) {
         result << response(zwave.batteryV1.batteryGet())
         result << response("delay 1200")
     }
@@ -174,33 +245,33 @@ def zwaveEvent(hubitat.zwave.commands.wakeupv1.WakeUpNotification cmd) {
 }
 
 def zwaveEvent(hubitat.zwave.commands.batteryv1.BatteryReport cmd) {
-    def map = [ name: "battery", unit: "%" ]
+    Map evt = [name: "battery", unit: "%"]
     if (cmd.batteryLevel == 0xFF) {
-        map.value = 1
-        map.descriptionText = "${device.displayName} has a low battery"
-        map.isStateChange = true
+        evt.value = 1
+        evt.descriptionText = "${device.displayName} has a low battery"
+        evt.isStateChange = true
     } else {
-        map.value = cmd.batteryLevel
+        evt.value = cmd.batteryLevel
+        evt.descriptionText = "${device.displayName} battery is ${cmd.batteryLevel}%"
     }
-    state.lastbat = new Date().time
+    state.lastbat = now()
     // Don't send wakeUpNoMoreInformation here — WakeUpNotification owns NOMI
     // as its final command. Sending it again from BatteryReport could put
     // the device to sleep before the controller finishes its command queue.
-    [createEvent(map)]
+    emitEvent(evt)
+    return []
 }
 
 def zwaveEvent(hubitat.zwave.commands.manufacturerspecificv2.ManufacturerSpecificReport cmd) {
     def result = []
 
     def msr = String.format("%04X-%04X-%04X", cmd.manufacturerId, cmd.productTypeId, cmd.productId)
-    if (debug) log.debug "msr: $msr"
+    logDebug "MSR: ${msr}"
     updateDataValue("MSR", msr)
     // All other handlers check `state.MSR` (not `device.data.MSR`), so we
     // have to set both — otherwise WakeUpNotification keeps re-running its
     // "do we have MSR?" config branch on every wake-up forever.
     state.MSR = msr
-
-    result << createEvent(descriptionText: "$device.displayName MSR: $msr", isStateChange: false)
 
     // Request battery on first MSR if we don't have one yet.
     if (!device.currentState("battery")) {
@@ -210,43 +281,42 @@ def zwaveEvent(hubitat.zwave.commands.manufacturerspecificv2.ManufacturerSpecifi
 }
 
 def zwaveEvent(hubitat.zwave.Command cmd) {
-    createEvent(descriptionText: "$device.displayName: $cmd", displayed: false)
+    logDebug "unhandled: ${cmd}"
+    return null
 }
 
-def refresh() {
-    if (debug) log.debug "refresh() called"
-    def commands = []
+// ---- Helpers ----
 
-    // Request current sensor state
-    commands << zwave.sensorBinaryV1.sensorBinaryGet()
-
-    // Request battery level if device supports it
-    if (!state.lastbat || (new Date().time) - state.lastbat > 53*60*60*1000) {
-        commands << zwave.batteryV1.batteryGet()
-    }
-
-    // Return the commands to be sent
-    return commands.collect{ response(it) }
+private Integer alarmAfterSeconds() {
+    return ((settings.alarmAfterMinutes ?: 30) as Integer) * 60
 }
 
-void initialize() {
-    if (debug) log.debug "initialize() called"
-    refresh()
-    // Hub reboot loses any pending runIn. If the fan is currently off,
-    // re-arm the alarm timer for the *remaining* window — not a full new
-    // window. Otherwise a reboot 28 min into a 30-min alarm window resets
-    // the clock to a fresh 30, silently defeating the safety net.
-    if (device.currentValue("contact") == "open") {
-        Integer afterSec = ((alarmAfterMinutes ?: 30) as Integer) * 60
-        Integer delaySec = afterSec
-        String stoppedAt = device.currentValue("lastStoppedAt")
-        if (stoppedAt) {
-            try {
-                Long stoppedMs = Date.parse("yyyy-MM-dd'T'HH:mm:ssZ", stoppedAt.toString()).time
-                Long elapsedSec = (now() - stoppedMs) / 1000
-                delaySec = Math.max(1, (afterSec - elapsedSec) as Integer)
-            } catch (Exception e) { /* unparseable — use full window */ }
-        }
-        runIn(delaySec, "checkFanAlarm")
-    }
+private String isoNow() {
+    def fmt = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ")
+    fmt.setTimeZone(location?.timeZone ?: TimeZone.getDefault())
+    return fmt.format(new Date(now()))
 }
+
+// ---- BEGIN standard logging (driver) v1: keep identical in every driver, see STYLE.md ----
+
+void logsOff() {
+    log.info "Debug logging turned off"
+    device.updateSetting("logEnable", [value: "false", type: "bool"])
+}
+
+private void logDebug(String msg) {
+    if (settings.logEnable) log.debug msg
+}
+
+private void logDesc(String msg) {
+    if (settings.txtEnable != false) log.info msg
+}
+
+// Sends the event; logs its descriptionText only when the value actually changes.
+private void emitEvent(Map evt) {
+    boolean changed = device.currentValue(evt.name as String)?.toString() != evt.value?.toString()
+    sendEvent(evt)
+    if (changed && evt.descriptionText) logDesc(evt.descriptionText as String)
+}
+
+// ---- END standard logging ----
