@@ -146,7 +146,7 @@ void checkFanAlarm() {
     if (fanRunning() != false) return
     if (device.currentValue("fanAlarm") == "alarm") return
     emitEvent(name: "fanAlarm", value: "alarm", isStateChange: true,
-        descriptionText: "${device.displayName} fan has been off for ${alarmAfterSeconds().intdiv(60)} minutes")
+        descriptionText: "${device.displayName} has been off for ${alarmAfterSeconds().intdiv(60)} minutes")
 }
 
 // Called via runIn when the sensor has missed two wake-ups (see offlineAfterSeconds).
@@ -192,13 +192,15 @@ def sensorValueEvent(value) {
     state.fanRunning = running
     if (running) {
         unschedule("checkFanAlarm")
-        emitEvent(name: "contact", value: "closed", descriptionText: "${device.displayName} fan is running")
-        sendEvent(name: "switch", value: "on")
+        String desc = "${device.displayName} is running"
+        emitEvent(name: "contact", value: "closed", descriptionText: desc)
+        sendEvent(name: "switch", value: "on", descriptionText: desc)
         sendEvent(name: "lastStartedAt", value: isoNow())
-        emitEvent(name: "fanAlarm", value: "ok", descriptionText: "${device.displayName} fan alarm cleared")
+        emitEvent(name: "fanAlarm", value: "ok", descriptionText: "${device.displayName} alarm cleared")
     } else {
-        emitEvent(name: "contact", value: "open", descriptionText: "${device.displayName} fan stopped")
-        sendEvent(name: "switch", value: "off")
+        String desc = "${device.displayName} is not running"
+        emitEvent(name: "contact", value: "open", descriptionText: desc)
+        sendEvent(name: "switch", value: "off", descriptionText: desc)
         sendEvent(name: "lastStoppedAt", value: isoNow())
         runIn(alarmAfterSeconds(), "checkFanAlarm")
     }
@@ -225,8 +227,10 @@ def zwaveEvent(hubitat.zwave.commands.sensoralarmv1.SensorAlarmReport cmd) {
     sensorValueEvent(cmd.sensorState)
 }
 
-// Dispatch kept as-is until a debug capture of fan start/stop and cover removal
-// shows which frames carry what (see docs backlog: type-7 dispatch).
+// Dispatch kept as-is for now. Per the WADWAZ-1 manual, the terminals, reed
+// switch and tamper switch all report as type 7, so the v1AlarmType branch may
+// treat a cover removal as "running". Changing it waits on a debug capture of a
+// fan stop, a fan start and a cover removal.
 def zwaveEvent(hubitat.zwave.commands.notificationv3.NotificationReport cmd) {
     def result = []
     if (cmd.notificationType == 0x06 && cmd.event == 0x16) {

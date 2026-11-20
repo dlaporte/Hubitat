@@ -169,7 +169,9 @@ test("stop report: open/off, lastStoppedAt, alarm check armed") {
     assert d.device.current.switch == "off"
     assert d.eventsNamed("lastStoppedAt").size() == 1
     assert d.schedules.checkFanAlarm == 1800
-    assert d.log.at("info").contains("Radon Fan fan stopped")
+    assert d.log.at("info") == ["Radon Fan is not running"]
+    // Rule 815 on the cabin hub triggers on switch; keep the wording it has always seen.
+    assert d.eventsNamed("switch").last().descriptionText == "Radon Fan is not running"
 }
 
 test("repeat stop report: no events, no new runIn") {
@@ -212,6 +214,7 @@ test("start report: closed/on, fanAlarm ok, alarm check cancelled") {
     assert d.device.current.fanAlarm == "ok"
     assert d.eventsNamed("lastStartedAt").size() == 1
     assert !d.schedules.containsKey("checkFanAlarm")
+    assert d.eventsNamed("switch").last().descriptionText == "Radon Fan is running"
 }
 
 test("BasicSet and type-7 notifications reach the same logic") {
@@ -255,6 +258,7 @@ test("checkFanAlarm while stopped sets alarm once") {
     d.call("sensorValueEvent", 0)
     d.call("checkFanAlarm")
     assert d.device.current.fanAlarm == "alarm"
+    assert d.log.at("info").last() == "Radon Fan has been off for 30 minutes"
     d.reset()
     d.call("checkFanAlarm")
     assert d.events.isEmpty()
