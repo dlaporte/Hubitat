@@ -92,4 +92,97 @@ test("no 'ASH26:' prefixes; debug only with logEnable") {
     assert !new File(DRIVER).text.contains('"ASH26: ')
 }
 
+// ---- Fixes: switch follows the camera's confirmation ----
+
+test("On sets switch on as soon as the camera confirms both steps") {
+    def d = fresh()
+    d.device.current.switch = "off"
+    d.call("on")
+    answer(d, "OK")                                  // AlarmLighting[0][0].Enable=false
+    assert d.device.current.switch == "off"          // not until the mode is set
+    assert d.http.size() == 1 && d.http[0].params.uri.contains("Lighting_V2[0][0][1].Mode=Manual")
+    answer(d, "OK")
+    assert d.device.current.switch == "on"
+    assert d.device.current.light_status == "on"
+    assert d.device.current.lightMode == "Manual"
+}
+
+test("Off sets switch off once confirmed") {
+    def d = fresh()
+    d.device.current.switch = "on"
+    d.call("off")
+    answer(d, "OK")
+    answer(d, "OK")
+    assert d.device.current.switch == "off" && d.device.current.lightMode == "Off"
+}
+
+test("a rejected step leaves switch alone and says the chain was abandoned") {
+    def d = fresh()
+    d.device.current.switch = "off"
+    d.call("on")
+    answer(d, "Error")
+    assert d.device.current.switch == "off"
+    assert d.http.isEmpty()
+    assert d.log.at("error").any { it.contains("chain abandoned") }
+}
+
+// ---- Fixes: lightMode ----
+
+test("lightMode shows modes other than Manual and Off; switch is left alone for them") {
+    def d = fresh()
+    d.device.current.switch = "off"
+    d.call("refresh")
+    answer(d, settingsText("Auto"))
+    assert d.device.current.lightMode == "Auto"
+    assert d.device.current.switch == "off"
+}
+
+test("lightMode and healthStatus are declared; old attributes kept") {
+    def names = fresh().attributes*.name
+    assert names.containsAll(["light_status", "device_name", "serial_number", "firmware_version", "mac_address",
+                              "wireless_ssid", "lightMode", "healthStatus"])
+}
+
+// ---- Fixes: outage handling ----
+
+test("an offline camera logs one error, then an hourly reminder, then a recovery line") {
+    def d = fresh()
+    d.call("refresh")
+    d.reply(d.http[0], status: 408, error: "connect timed out")
+    assert d.log.at("error").size() == 1
+    assert d.log.at("error")[0].contains("isn't answering")
+    assert d.device.current.healthStatus == "offline"
+    d.advance(60_000L)
+    d.call("refresh")
+    d.reply(d.http[0], status: 408, error: "No route to host")
+    assert d.log.at("error").size() == 1
+    assert d.log.at("warn").isEmpty()
+    d.advance(3_600_000L)
+    d.call("refresh")
+    d.reply(d.http[0], status: 408, error: "connect timed out")
+    assert d.log.at("warn").size() == 1 && d.log.at("warn")[0].contains("still not answering after 1h 1m")
+    d.advance(240_000L)
+    d.call("refresh")
+    answer(d, settingsText("Off"))
+    assert d.log.at("info").any { it.contains("responding again after 1h 5m") }
+    assert d.device.current.healthStatus == "online"
+}
+
+test("a rejected login is reported as a credentials problem") {
+    def d = fresh()
+    d.call("refresh")
+    d.reply(d.http[0], status: 401, headers: CHALLENGE)
+    d.reply(d.http[0], status: 401, headers: CHALLENGE)
+    assert d.log.at("error").size() == 1 && d.log.at("error")[0].contains("rejected the login")
+}
+
+test("a command that fails during an outage still says so") {
+    def d = fresh()
+    d.state.commFailKey = "unreachable|10.0.0.30"          // outage already logged
+    d.state.commFailSince = d.clock
+    d.call("on")
+    d.reply(d.http[0], status: 408, error: "connect timed out")
+    assert d.log.at("error").any { it.startsWith("set AlarmLighting[0][0].Enable failed") }
+}
+
 finish()
