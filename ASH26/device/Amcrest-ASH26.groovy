@@ -29,9 +29,20 @@
  *  for the specific language governing permissions and limitations under the License.
  */
 
-metadata {
+import groovy.transform.Field
 
-    definition(name: "Amcrest ASH26", namespace: "dlaporte", author: "dlaporte") {
+@Field static final String VERSION = "0.8.0"
+
+metadata {
+    definition(
+        name: "Amcrest ASH26",
+        namespace: "dlaporte",
+        author: "David LaPorte",
+        importUrl: "https://raw.githubusercontent.com/dlaporte/Hubitat/main/ASH26/device/Amcrest-ASH26.groovy",
+        // Each request is two async round trips (digest challenge, then the call),
+        // and the 1-minute poll can overlap a command; handlers share state.
+        singleThreaded: true
+    ) {
         capability "Initialize"
         capability "Refresh"
         capability "Switch"
@@ -45,53 +56,56 @@ metadata {
     }
 
     preferences {
-        input("ip", "text", title: "IP Address", required: true)
-        input("username", "text", title: "ASH26 Username", required: true)
-        input("password", "password", title: "ASH26 Password", required: true)
-        input "debug", "bool", required: false, defaultValue: false, title: "Debug Logging"
+        input name: "ip", type: "text", title: "IP address", required: true
+        input name: "username", type: "text", title: "ASH26 username", required: true
+        input name: "password", type: "password", title: "ASH26 password", required: true
+        input name: "logEnable", type: "bool", title: "Enable debug logging", description: "Turns itself off after 30 minutes", defaultValue: false
+        input name: "txtEnable", type: "bool", title: "Enable descriptionText logging", defaultValue: true
     }
 }
 
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
+// ---- Lifecycle ----
 
-def installed() {
-    log.info "ASH26: installed()"
+void installed() {
     initialize()
 }
 
-def updated() {
-    log.info "ASH26: updated()"
+void updated() {
+    log.info "Preferences saved"
     initialize()
 }
 
-def initialize() {
+void initialize() {
     unschedule()
+    upgradeSettings()
+    if (settings.logEnable) runIn(1800, "logsOff")
     // Reset the digest nonce counter so it doesn't accumulate forever in the
     // serialized state map. Each request gets a fresh server-side nonce, so
     // the counter's monotonic-increase isn't actually buying us replay
     // protection beyond what the server already guarantees.
     state.nc = 0
     if (!ip || !username || !password) {
-        log.error "ASH26: required fields not completed, please complete for proper operation."
+        log.error "required fields not completed, please complete for proper operation."
         return
     }
     runEvery1Minute("refresh")
     refresh()
 }
 
-// ---------------------------------------------------------------------------
-// Switch + refresh entry points
-// ---------------------------------------------------------------------------
+private void upgradeSettings() {
+    device.removeSetting("debug")          // replaced by logEnable in 0.8.0
+    device.updateDataValue("driverVersion", VERSION)
+}
+
+// ---- Switch + refresh entry points ----
 
 def refresh() {
-    if (debug) log.debug "ASH26: refresh()"
+    logDebug "refresh()"
     get_camera_settings()
 }
 
 def on() {
-    if (debug) log.debug "ASH26: on()"
+    logDebug "on()"
     // Order matters: disable alarm-lighting *first*, then set manual mode.
     // With the previous parallel firing, the camera could observe the two
     // sets in arbitrary order.
@@ -99,7 +113,7 @@ def on() {
 }
 
 def off() {
-    if (debug) log.debug "ASH26: off()"
+    logDebug "off()"
     setSequence([["AlarmLighting[0][0].Enable", "true"], ["Lighting_V2[0][0][1].Mode", "Off"]])
 }
 
@@ -162,13 +176,13 @@ def unauthRequestHandler(response, data) {
         return
     }
     if (response.status != 401) {
-        log.error "ASH26: unexpected status ${response.status} for ${data.uri}"
+        log.error "unexpected status ${response.status} for ${data.uri}"
         return
     }
 
     def wwwAuth = extractHeader(response, "WWW-Authenticate")
     if (!wwwAuth) {
-        log.error "ASH26: 401 without WWW-Authenticate header"
+        log.error "401 without WWW-Authenticate header"
         return
     }
     def digestMap = parseDigestChallenge(wwwAuth)
@@ -187,7 +201,7 @@ def unauthRequestHandler(response, data) {
 // operation's parser by the name passed in through data.finalCallback.
 def authedRequestHandler(response, data) {
     if (response.hasError() || response.status != 200) {
-        log.error "ASH26: authed request failed for ${data.uri}: HTTP ${response.status}"
+        log.error "authed request failed for ${data.uri}: HTTP ${response.status}"
         return
     }
     if (data.finalCallback) {
@@ -213,32 +227,30 @@ def parseCameraSettings(response, data) {
 
     def mode = camera_settings['table.All.Lighting_V2[0][0][1].Mode']
     if (mode == "Manual") {
-        sendEvent(name: "light_status", value: "on")
-        sendEvent(name: "switch",       value: "on")
+        emitEvent(name: "light_status", value: "on", descriptionText: "${device.displayName} light is on")
+        emitEvent(name: "switch",       value: "on", descriptionText: "${device.displayName} is on")
     } else if (mode == "Off") {
-        sendEvent(name: "light_status", value: "off")
-        sendEvent(name: "switch",       value: "off")
+        emitEvent(name: "light_status", value: "off", descriptionText: "${device.displayName} light is off")
+        emitEvent(name: "switch",       value: "off", descriptionText: "${device.displayName} is off")
     }
 }
 
 def verifySetResponse(response, data) {
     String text = (response.data ?: "").toString().trim()
     if (text == "OK") {
-        if (debug) log.debug "ASH26: set ${data.settingName} = ${data.settingValue}"
+        logDebug "set ${data.settingName} = ${data.settingValue}"
         if (data.chainRest) setSequence(data.chainRest as List)
     } else {
-        log.error "ASH26: set ${data.settingName} failed: ${text}"
+        log.error "set ${data.settingName} failed: ${text}"
         if (data.chainRest) {
             // Don't silently swallow the rest of the chain — for on()/off() this
             // means the camera ends up in a half-configured state. Loudly flag it.
-            log.error "ASH26: chain abandoned with ${(data.chainRest as List).size()} step(s) remaining; camera state may be inconsistent"
+            log.error "chain abandoned with ${(data.chainRest as List).size()} step(s) remaining; camera state may be inconsistent"
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Digest auth helpers
-// ---------------------------------------------------------------------------
+// ---- Digest auth helpers ----
 
 private String extractHeader(response, String name) {
     def headers = response.headers
@@ -296,3 +308,27 @@ private String calcDigestAuth(String uri, String algorithm, Map headers) {
         'nc=' + nc + ',' + eol +
         'response="' + response_enc + '"'
 }
+
+// ---- BEGIN standard logging (driver) v1: keep identical in every driver, see STYLE.md ----
+
+void logsOff() {
+    log.info "Debug logging turned off"
+    device.updateSetting("logEnable", [value: "false", type: "bool"])
+}
+
+private void logDebug(String msg) {
+    if (settings.logEnable) log.debug msg
+}
+
+private void logDesc(String msg) {
+    if (settings.txtEnable != false) log.info msg
+}
+
+// Sends the event; logs its descriptionText only when the value actually changes.
+private void emitEvent(Map evt) {
+    boolean changed = device.currentValue(evt.name as String)?.toString() != evt.value?.toString()
+    sendEvent(evt)
+    if (changed && evt.descriptionText) logDesc(evt.descriptionText as String)
+}
+
+// ---- END standard logging ----
