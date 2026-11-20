@@ -53,6 +53,8 @@ metadata {
         attribute "firmware_version", "string"
         attribute "mac_address", "string"
         attribute "wireless_ssid", "string"
+        attribute "lightMode", "string"     // the camera's Lighting_V2 mode (Manual, Off, Auto, ...)
+        attribute "healthStatus", "enum", ["online", "offline"]
     }
 
     preferences {
@@ -79,6 +81,9 @@ void initialize() {
     unschedule()
     upgradeSettings()
     if (settings.logEnable) runIn(1800, "logsOff")
+    // Let the next failure (if any) log again so Save gives fresh feedback;
+    // commFailSince is kept so the recovery line reports the full outage.
+    state.remove("commFailKey")
     // Reset the digest nonce counter so it doesn't accumulate forever in the
     // serialized state map. Each request gets a fresh server-side nonce, so
     // the counter's monotonic-increase isn't actually buying us replay
@@ -172,17 +177,18 @@ def unauthRequestHandler(response, data) {
     if (!response.hasError() && response.status == 200) {
         // Unusual: a previously-cached connection let us through without auth.
         // Hand straight off to the operation parser.
+        noteCommSuccess()
         if (data.finalCallback) "${data.finalCallback}"(response, data)
         return
     }
     if (response.status != 401) {
-        log.error "unexpected status ${response.status} for ${data.uri}"
+        requestFailed(data, failureKind(response), httpErrorDetail(response))
         return
     }
 
     def wwwAuth = extractHeader(response, "WWW-Authenticate")
     if (!wwwAuth) {
-        log.error "401 without WWW-Authenticate header"
+        requestFailed(data, "http", "401 without a WWW-Authenticate header")
         return
     }
     def digestMap = parseDigestChallenge(wwwAuth)
@@ -201,9 +207,12 @@ def unauthRequestHandler(response, data) {
 // operation's parser by the name passed in through data.finalCallback.
 def authedRequestHandler(response, data) {
     if (response.hasError() || response.status != 200) {
-        log.error "authed request failed for ${data.uri}: HTTP ${response.status}"
+        // A 401 to the digest-signed request means the credentials are wrong.
+        String kind = (response.status == 401) ? "auth" : failureKind(response)
+        requestFailed(data, kind, httpErrorDetail(response))
         return
     }
+    noteCommSuccess()
     if (data.finalCallback) {
         "${data.finalCallback}"(response, data)
     }
@@ -225,7 +234,14 @@ def parseCameraSettings(response, data) {
     sendEvent(name: "mac_address",       value: camera_settings['table.All.Network.eth2.PhysicalAddress'])
     sendEvent(name: "wireless_ssid",     value: camera_settings['table.All.WLan.eth2.SSID'])
 
-    def mode = camera_settings['table.All.Lighting_V2[0][0][1].Mode']
+    applyLightMode(camera_settings['table.All.Lighting_V2[0][0][1].Mode'])
+}
+
+// Manual = light on, Off = light off. Other modes (motion-triggered and so on)
+// only show in lightMode; switch keeps its last value, as before 0.8.0.
+private void applyLightMode(String mode) {
+    if (!mode) return
+    emitEvent(name: "lightMode", value: mode, descriptionText: "${device.displayName} light mode is ${mode}")
     if (mode == "Manual") {
         emitEvent(name: "light_status", value: "on", descriptionText: "${device.displayName} light is on")
         emitEvent(name: "switch",       value: "on", descriptionText: "${device.displayName} is on")
@@ -239,7 +255,12 @@ def verifySetResponse(response, data) {
     String text = (response.data ?: "").toString().trim()
     if (text == "OK") {
         logDebug "set ${data.settingName} = ${data.settingValue}"
-        if (data.chainRest) setSequence(data.chainRest as List)
+        if (data.chainRest) {
+            setSequence(data.chainRest as List)
+        } else if (data.settingName == "Lighting_V2[0][0][1].Mode") {
+            // The last step of On/Off: show the result now, not at the next poll.
+            applyLightMode(data.settingValue as String)
+        }
     } else {
         log.error "set ${data.settingName} failed: ${text}"
         if (data.chainRest) {
@@ -248,6 +269,81 @@ def verifySetResponse(response, data) {
             log.error "chain abandoned with ${(data.chainRest as List).size()} step(s) remaining; camera state may be inconsistent"
         }
     }
+}
+
+// ---- Connection health ----
+// The poll runs every minute, so each failure isn't logged: one ERROR naming
+// the cause when a problem starts, a WARN reminder at most hourly, and one INFO
+// on recovery. The dedup key leaves out the error text, which can change
+// during one outage. A failed command is always logged.
+
+private void requestFailed(Map data, String kind, String detail) {
+    noteCommFailure(kind, detail)
+    if (data?.settingName) {
+        log.error "set ${data.settingName} failed: ${detail}"
+        if (data.chainRest) {
+            log.error "chain abandoned with ${(data.chainRest as List).size()} step(s) remaining; camera state may be inconsistent"
+        }
+    }
+}
+
+// No status, or the hub's 408 for a connect/read timeout, means the camera
+// never answered; any other status is the camera answering with an error.
+private String failureKind(response) {
+    def status = null
+    try { status = response?.status } catch (Exception e) { /* none */ }
+    return (status == null || status == 408) ? "unreachable" : "http"
+}
+
+private void noteCommFailure(String kind, String detail) {
+    String key = "${kind}|${ip}"
+    Long nowMs = now()
+    if (state.commFailSince == null) state.commFailSince = nowMs
+    if (device.currentValue("healthStatus") != "offline") {
+        emitEvent(name: "healthStatus", value: "offline", descriptionText: "${device.displayName} is offline")
+    }
+    if (state.commFailKey != key) {
+        state.commFailKey = key
+        state.commFailLastLog = nowMs
+        if (kind == "auth") {
+            log.error "camera at ${ip} rejected the login (${detail}); check the username and password in preferences. Repeats are suppressed; reminder hourly."
+        } else if (kind == "http") {
+            log.error "camera at ${ip} answered with an error (${detail}). Repeats are suppressed; reminder hourly."
+        } else {
+            log.error "camera at ${ip} isn't answering (${detail}); it looks offline, off the network, or at a different IP. Repeats are suppressed; reminder hourly."
+        }
+    } else if (nowMs - ((state.commFailLastLog ?: 0L) as Long) >= 3_600_000L) {
+        state.commFailLastLog = nowMs
+        String what = (kind == "auth") ? "still rejecting the login" : (kind == "http" ? "still answering with an error" : "still not answering")
+        log.warn "camera at ${ip} ${what} after ${formatDuration(nowMs - (state.commFailSince as Long))} (${detail})"
+    }
+}
+
+private void noteCommSuccess() {
+    if (device.currentValue("healthStatus") != "online") {
+        emitEvent(name: "healthStatus", value: "online", descriptionText: "${device.displayName} is online")
+    }
+    if (state.commFailSince == null) return
+    log.info "camera at ${ip} is responding again after ${formatDuration(now() - (state.commFailSince as Long))}"
+    state.remove("commFailSince")
+    state.remove("commFailKey")
+    state.remove("commFailLastLog")
+}
+
+private String httpErrorDetail(response) {
+    String msg = null
+    def status = null
+    try { msg = response?.getErrorMessage() } catch (Exception e) { /* no message available */ }
+    try { status = response?.status } catch (Exception e) { /* no status available */ }
+    return (msg ?: "no response") + (status ? ", HTTP ${status}" : "")
+}
+
+private String formatDuration(Long ms) {
+    Long totalMin = Math.max(0L, ms as long).intdiv(60_000L)
+    if (totalMin == 0) return "under a minute"
+    Long h = totalMin.intdiv(60L)
+    Long m = totalMin % 60L
+    return h > 0 ? "${h}h ${m}m" : "${m}m"
 }
 
 // ---- Digest auth helpers ----
