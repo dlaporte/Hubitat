@@ -21,6 +21,10 @@
  *  for the specific language governing permissions and limitations under the License.
  */
 
+import groovy.transform.Field
+
+@Field static final String VERSION = "0.11.0"
+
 // Created from the TV device: turn on Notification device on its Preferences
 // page and Save. Turning that off deletes this device.
 metadata {
@@ -34,12 +38,14 @@ metadata {
     }
 }
 
-def installed() {
+void installed() {
     log.info "${device.displayName} installed"
+    device.updateDataValue("driverVersion", VERSION)
 }
 
-def updated() {
+void updated() {
     log.info "${device.displayName} updated"
+    device.updateDataValue("driverVersion", VERSION)
 }
 
 // The TV device checks the text (blank, over 120 characters) and sends it.
