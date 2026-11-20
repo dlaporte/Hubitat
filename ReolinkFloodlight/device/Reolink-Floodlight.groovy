@@ -54,6 +54,9 @@ import groovy.transform.Field
 
 @Field static final String VERSION = "0.10.0"
 
+// WhiteLed "mode" values, by index.
+@Field static final List<String> FLOODLIGHT_MODES = ["Off", "NightSmart", "AlwaysAtNight", "Schedule"]
+
 metadata {
     // singleThreaded: polls overlap (5 s interval vs. 10 s HTTP timeout), and concurrent
     // handlers would otherwise race on state — e.g. the connection-failure dedup keys.
@@ -98,6 +101,7 @@ metadata {
         attribute "vehicleDetected", "string"
         attribute "animalDetected", "string"
         attribute "faceDetected", "string"
+        attribute "healthStatus", "enum", ["online", "offline"]
 
         command "setBrightness", [[name: "level", type: "NUMBER",
                 description: "Floodlight brightness, 0-100 (0 turns the light off)"]]
@@ -153,18 +157,15 @@ void initialize() {
     unschedule()
     upgradeSettings()
     if (settings.logEnable) runIn(1800, "logsOff")
+    // Free the old camera session before starting a new one; Reolink caps sessions.
+    logoutIfLoggedIn()
     state.token = null
     state.tokenExpiry = 0
+    state.remove("loginStartedAt")
+    state.remove("loginQueue")
     // Let the next failure (if any) log again so Save gives fresh feedback;
     // commFailSince is kept so the recovery line reports the full outage.
     state.remove("commFailKey")
-    // v0.2 cleanup: drop legacy state map, renamed/removed attributes, and stale dataValue keys
-    state.remove("AISupport")
-    state.remove("flKeepOnSupported") // v0.1 stored capability here; v0.2 moved to dataValue
-    ["cameraIp", "irMode", "floodlightModeNum", "alarmEnabled"].each {
-        try { device.deleteCurrentState(it) } catch (Exception e) { /* older HE without API; ignore */ }
-    }
-    try { device.removeDataValue("flKeepOnSupported") } catch (Exception e) { /* fine if absent */ }
     // Bump epoch so any in-flight pollStatus from a previous initialize() bows out cleanly
     state.pollEpoch = ((state.pollEpoch ?: 0) as Integer) + 1
 
@@ -185,6 +186,7 @@ void initialize() {
         try { device.deleteCurrentState("snapshotURL") } catch (Exception e) { /* fine if absent */ }
     }
 
+    runEvery30Minutes("scheduledRefresh")
     refresh()
     runIn(1, "pollStatus")
 }
@@ -196,11 +198,13 @@ private void upgradeSettings() {
 
 void uninstalled() {
     unschedule()
-    if (hasValidToken()) {
-        // Fire-and-forget logout — no callback needed. Skipped if token is expired
-        // so we don't kick off a fresh login just to immediately invalidate it.
-        sendCmd([[cmd: "Logout", param: [:]]], null, [:])
-    }
+    logoutIfLoggedIn()
+}
+
+// Fire-and-forget logout, no callback. Skipped when the token has expired, so we
+// never log in just to log out.
+private void logoutIfLoggedIn() {
+    if (hasValidToken()) sendCmd([[cmd: "Logout", param: [:]]], null, [:])
 }
 
 // ---- Switch / SwitchLevel ----
@@ -253,10 +257,7 @@ def applyFloodlightHandler(result, data) {
     }
     emitDesc("switch", data.desiredState == 1 ? "on" : "off")
     if (data.brightness != null) emitDesc("level", data.brightness, "%")
-    if (data.desiredState == 1 && shouldKeepAlive()) {
-        unschedule("keepAlive")
-        runIn(120, "keepAlive")
-    }
+    if (data.desiredState == 1 && shouldKeepAlive()) armKeepAlive()
 }
 
 def keepAlive() {
@@ -269,6 +270,11 @@ def keepAlive() {
     if (shouldKeepAlive()) {
         runIn(120, "keepAlive")
     }
+}
+
+private void armKeepAlive() {
+    unschedule("keepAlive")
+    runIn(120, "keepAlive")
 }
 
 private boolean shouldKeepAlive() {
@@ -286,8 +292,8 @@ private boolean shouldKeepAlive() {
 // the case; see setFloodlightSmartTriggers.
 // Other modes only change the auto-behavior; they don't toggle the light off.
 def setFloodlightMode(String mode) {
-    def m = ["Off": 0, "NightSmart": 1, "AlwaysAtNight": 2, "Schedule": 3][mode]
-    if (m == null) {
+    Integer m = FLOODLIGHT_MODES.indexOf(mode)
+    if (m < 0) {
         log.error "invalid floodlight mode '${mode}'"
         return
     }
@@ -395,8 +401,7 @@ def setLightingScheduleHandler(result, data) {
         log.error "setLightingSchedule failed: ${result}"
         return
     }
-    def s = data.sched
-    emitDesc("lightingSchedule", String.format("%02d:%02d-%02d:%02d", s.StartHour, s.StartMin, s.EndHour, s.EndMin))
+    emitDesc("lightingSchedule", formatSchedule(data.sched))
 }
 
 // Accepts either "HH:mm" or an ISO datetime like "1970-01-01T18:00:00.000-0500"
@@ -415,8 +420,7 @@ def setIRMode(String mode) {
 }
 
 def setIRModeHandler(result, data) {
-    if (result && result[0]?.code == 0) emitDesc("IRMode", data.mode)
-    else log.error "setIRMode failed: ${result}"
+    applySetResult(result, "IRMode", data.mode, "setIRMode")
 }
 
 def setDayNightMode(String mode) {
@@ -426,8 +430,7 @@ def setDayNightMode(String mode) {
 }
 
 def setDayNightModeHandler(result, data) {
-    if (result && result[0]?.code == 0) emitDesc("dayNightMode", data.mode)
-    else log.error "setDayNightMode failed: ${result}"
+    applySetResult(result, "dayNightMode", data.mode, "setDayNightMode")
 }
 
 def setMicrophone(String value) {
@@ -438,8 +441,7 @@ def setMicrophone(String value) {
 }
 
 def setMicrophoneHandler(result, data) {
-    if (result && result[0]?.code == 0) emitDesc("microphone", data.value)
-    else log.error "setMicrophone failed: ${result}"
+    applySetResult(result, "microphone", data.value, "setMicrophone")
 }
 
 def setPowerLED(String value) {
@@ -453,33 +455,60 @@ def setPowerLED(String value) {
 }
 
 def setPowerLEDHandler(result, data) {
-    if (result && result[0]?.code == 0) emitDesc("powerLED", data.value)
-    else log.error "setPowerLED failed: ${result}"
+    applySetResult(result, "powerLED", data.value, "setPowerLED")
+}
+
+// Shared body of the simple setter callbacks above.
+private void applySetResult(result, String attr, value, String label) {
+    if (result && result[0]?.code == 0) emitDesc(attr, value)
+    else log.error "${label} failed: ${result}"
 }
 
 // ---- Refresh + poll ----
 
-def refresh() {
+void refresh() {
     logDebug "refresh()"
-    sendCmd([
+    requestInfo(true)
+}
+
+// Every 30 minutes, so SD-card space, IR/day-night, microphone, LED and firmware
+// stay current. It leaves out GetWhiteLed: that reply sets switch/level and starts
+// keepAlive, which only a command or a manual Refresh may do. A timed refresh could
+// catch a NightSmart flash and hold the light on, or catch the light between the
+// camera's timeout and keepAlive's re-assert and stop keepAlive.
+void scheduledRefresh() {
+    requestInfo(false)
+}
+
+private void requestInfo(boolean includeWhiteLed) {
+    List cmds = [
             [cmd: "GetDevInfo",   param: [:]],
             [cmd: "GetLocalLink", param: [:]],
-            [cmd: "GetAbility",   param: [User: [userName: username]]],
-            [cmd: "GetWhiteLed",  param: [channel: 0]],
+            [cmd: "GetAbility",   param: [User: [userName: username]]]
+    ]
+    if (includeWhiteLed) cmds << [cmd: "GetWhiteLed", param: [channel: 0]]
+    cmds += [
             [cmd: "GetIrLights",  param: [channel: 0]],
             [cmd: "GetIsp",       param: [channel: 0]],
             [cmd: "GetEnc",       param: [channel: 0]],
             [cmd: "GetRtspUrl",   param: [channel: 0]],
-            [cmd: "GetHddInfo",   param: [:]],
-            [cmd: "GetPowerLed",  param: [channel: 0]]
-    ], "refreshHandler", [:])
+            [cmd: "GetHddInfo",   param: [:]]
+    ]
+    // Skip the LED query once GetAbility has said there's no LED.
+    if (device.getDataValue("powerLEDSupported") != "false") cmds << [cmd: "GetPowerLed", param: [channel: 0]]
+    sendCmd(cmds, "refreshHandler", [:])
 }
 
 def refreshHandler(result, data) {
     if (!result) return
     result.each { r ->
         if (r.code != 0) {
-            log.warn "${r.cmd} returned code ${r.code}"
+            // Models without a status LED reject GetPowerLed; that's expected.
+            if (r.cmd == "GetPowerLed" && device.getDataValue("powerLEDSupported") != "true") {
+                logDebug "GetPowerLed not supported (code ${r.code})"
+            } else {
+                log.warn "${r.cmd} returned code ${r.code}"
+            }
             return
         }
         switch (r.cmd) {
@@ -506,19 +535,10 @@ def refreshHandler(result, data) {
                 def w = r.value.WhiteLed ?: [:]
                 emitDesc("switch", w.state == 1 ? "on" : "off")
                 emitDesc("level", w.bright != null ? w.bright : 0, "%")
-                def modeName = (w.mode != null && w.mode >= 0 && w.mode <= 3)
-                        ? ["Off", "NightSmart", "AlwaysAtNight", "Schedule"][w.mode as Integer]
-                        : "Unknown"
-                emitDesc("floodlightMode", modeName)
-                if (w.LightingSchedule) {
-                    def s = w.LightingSchedule
-                    emitDesc("lightingSchedule", String.format("%02d:%02d-%02d:%02d", s.StartHour, s.StartMin, s.EndHour, s.EndMin))
-                }
+                emitDesc("floodlightMode", floodlightModeName(w.mode))
+                if (w.LightingSchedule) emitDesc("lightingSchedule", formatSchedule(w.LightingSchedule))
                 if (w.wlAiDetectType != null) emitSmartTriggers(w.wlAiDetectType)
-                if (w.state == 1 && shouldKeepAlive()) {
-                    unschedule("keepAlive")
-                    runIn(120, "keepAlive")
-                }
+                if (w.state == 1 && shouldKeepAlive()) armKeepAlive()
                 break
             case "GetIrLights":
                 emitDesc("IRMode", r.value.IrLights?.state ?: "unknown")
@@ -592,12 +612,7 @@ def pollStatusHandler(result, data) {
             // and are still owned by commands + refresh().
             def w = r.value?.WhiteLed
             if (w?.wlAiDetectType != null) emitSmartTriggers(w.wlAiDetectType)
-            if (w?.mode != null) {
-                def modeName = (w.mode >= 0 && w.mode <= 3)
-                        ? ["Off", "NightSmart", "AlwaysAtNight", "Schedule"][w.mode as Integer]
-                        : "Unknown"
-                emitDesc("floodlightMode", modeName)
-            }
+            if (w?.mode != null) emitDesc("floodlightMode", floodlightModeName(w.mode))
         }
     }
 }
@@ -614,11 +629,14 @@ private boolean hasValidToken() {
 //   userData        — opaque map preserved through the request/response round-trip
 //
 // If the session token is missing/expired we kick off login first, then resume
-// this sendCmd from inside loginResponseHandler. Pattern is async-safe — Hubitat
-// serializes per-device execution, so there's no concurrent-login race.
+// this sendCmd from inside loginResponseHandler. singleThreaded serialises the
+// handlers, but a login is async: commands and polls that arrive while it's in
+// flight would each start their own, so they wait for it instead (see
+// queueBehindLogin).
 private sendCmd(List cmds, String successCallback, Map userData = [:]) {
     if (!hasValidToken()) {
-        loginAsync(cmds, successCallback, userData)
+        if (loginInFlight()) queueBehindLogin(cmds, successCallback, userData)
+        else loginAsync(cmds, successCallback, userData)
         return
     }
 
@@ -640,8 +658,29 @@ private sendCmd(List cmds, String successCallback, Map userData = [:]) {
     ])
 }
 
+// A login counts as in flight for 30 s; the request itself times out at 10 s.
+private boolean loginInFlight() {
+    Long started = state.loginStartedAt as Long
+    return started && now() - started < 30_000L
+}
+
+// One login at a time: every login opens a camera session, Reolink caps them, and
+// sessions are only freed by Logout or lease expiry. A poll is dropped (the next
+// one is seconds away); anything else waits and is sent once the login succeeds.
+private void queueBehindLogin(List cmds, String successCallback, Map userData) {
+    if (successCallback == "pollStatusHandler") {
+        logDebug "login in progress; skipping this poll"
+        return
+    }
+    List q = (state.loginQueue ?: []) as List
+    q << [cmds: cmds, successCallback: successCallback, userData: userData ?: [:]]
+    state.loginQueue = q.takeRight(10)
+    logDebug "login in progress; queued ${cmds[0].cmd}"
+}
+
 private loginAsync(List queuedCmds = null, String queuedCallback = null, Map queuedData = [:]) {
     state.token = null
+    state.loginStartedAt = now()
     def body = [[cmd: "Login", action: 0, param: [User: [Version: "0", userName: username, password: password]]]]
     def params = [
             uri: "http://${ip}/cgi-bin/api.cgi?cmd=Login",
@@ -658,18 +697,22 @@ private loginAsync(List queuedCmds = null, String queuedCallback = null, Map que
 }
 
 def loginResponseHandler(response, data) {
+    state.remove("loginStartedAt")
     // An HTTP-level error means the camera never answered, so the credentials
     // were never checked; a rejected login comes back as a JSON error instead.
     if (response?.hasError()) {
+        dropLoginQueue()
         noteCommFailure("unreachable", httpErrorDetail(response))
         return
     }
     def parsed = parseAsync(response, "Login")
     if (!parsed) {
+        dropLoginQueue()
         noteCommFailure("unreachable", "empty or unreadable reply to Login")
         return
     }
     if (parsed[0]?.code != 0) {
+        dropLoginQueue()
         def err = parsed[0]?.error
         noteCommFailure("auth", err ? "${err.detail}, rspCode ${err.rspCode}" : "code ${parsed[0]?.code}")
         return
@@ -679,10 +722,20 @@ def loginResponseHandler(response, data) {
     state.tokenExpiry = now() + ((parsed[0].value.Token.leaseTime as Long) * 1000L)
     logDebug "login OK token=…${state.token?.takeRight(4)} leaseTime=${parsed[0].value.Token.leaseTime}s"
 
-    // Resume the command that was waiting on this login.
+    // Resume the command that started this login, then any that queued behind it.
     if (data?.queuedCmds) {
         sendCmd(data.queuedCmds, data.queuedCallback, data.queuedData ?: [:])
     }
+    List q = (state.loginQueue ?: []) as List
+    state.remove("loginQueue")
+    q.each { sendCmd(it.cmds as List, it.successCallback as String, (it.userData ?: [:]) as Map) }
+}
+
+// The failure itself is logged by noteCommFailure; queued commands are abandoned.
+private void dropLoginQueue() {
+    List q = (state.loginQueue ?: []) as List
+    if (q) logDebug "login failed; dropping ${q.size()} queued command(s)"
+    state.remove("loginQueue")
 }
 
 def sendCmdResponseHandler(response, data) {
@@ -701,9 +754,12 @@ def sendCmdResponseHandler(response, data) {
 
     def result = parseAsync(response, firstCmd)
 
-    // code:-6 means token expired between hasValidToken() and the actual request
-    // landing. Clear it and retry once. Use a flag on userData to bound recursion.
-    if (result?.any { (it?.code as Integer) == -6 } && !userData.retried) {
+    // rspCode -6 ("please login first") means the camera no longer accepts the token:
+    // it expired in flight, or the camera rebooted. Reolink reports it as code 1 with
+    // error.rspCode -6, not as code -6. Clear the token and retry once (the retried
+    // flag bounds it); a Logout is never retried, since that would log in just to
+    // log out.
+    if (tokenRejected(result) && !userData.retried && firstCmd != "Logout") {
         logDebug "token expired mid-request, re-auth and retry"
         state.token = null
         Map nextUserData = ([:] + userData)
@@ -714,6 +770,13 @@ def sendCmdResponseHandler(response, data) {
 
     if (successCallback) {
         "${successCallback}"(result, userData)
+    }
+}
+
+private boolean tokenRejected(result) {
+    if (!(result instanceof List)) return false
+    return result.any { r ->
+        r instanceof Map && ((r.code as Integer) == -6 || (r.error instanceof Map && (r.error.rspCode as Integer) == -6))
     }
 }
 
@@ -728,6 +791,9 @@ private void noteCommFailure(String kind, String detail) {
     String key = "${kind}|${ip}"
     Long nowMs = now()
     if (state.commFailSince == null) state.commFailSince = nowMs
+    if (device.currentValue("healthStatus") != "offline") {
+        emitEvent(name: "healthStatus", value: "offline", descriptionText: "${device.displayName} is offline")
+    }
     if (state.commFailKey != key) {
         state.commFailKey = key
         state.commFailLastLog = nowMs
@@ -747,6 +813,9 @@ private void noteCommFailure(String kind, String detail) {
 }
 
 private void noteCommSuccess() {
+    if (device.currentValue("healthStatus") != "online") {
+        emitEvent(name: "healthStatus", value: "online", descriptionText: "${device.displayName} is online")
+    }
     if (state.commFailSince == null) return
     log.info "camera at ${ip} is responding again after ${formatDuration(now() - (state.commFailSince as Long))}"
     state.remove("commFailSince")
@@ -789,6 +858,15 @@ private parseAsync(response, String label) {
         log.error "parse failed for ${label}: ${e.message}"
         return null
     }
+}
+
+private String floodlightModeName(mode) {
+    Integer m = mode as Integer
+    return (m != null && m >= 0 && m < FLOODLIGHT_MODES.size()) ? FLOODLIGHT_MODES[m] : "Unknown"
+}
+
+private String formatSchedule(Map s) {
+    return String.format("%02d:%02d-%02d:%02d", s.StartHour, s.StartMin, s.EndHour, s.EndMin)
 }
 
 // User-facing attributes carry a descriptionText, logged on change when txtEnable is on.
