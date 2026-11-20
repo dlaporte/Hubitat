@@ -114,7 +114,7 @@ Exposes, on the Preferences page:
   soundbar or receiver that ignores the numeric volume
 - Mute, input and picture-mode dropdowns populated from the TV, screen
   on/off, launch app, and send key
-- Configurable polling
+- Configurable polling, and a `healthStatus` attribute
 - Optional notification device that shows Hubitat notifications on the
   TV screen
 
