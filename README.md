@@ -76,6 +76,7 @@ Per-tank attributes:
 - `lowFuel` (`true` / `false` vs. a configurable threshold)
 - `lastRefillAt` / `lastRefillGallons` (refills auto-detected from gallons
   jumping above the threshold)
+- `healthStatus` (offline when the API fails or the gauge stops uploading)
 
 Includes an OAuth-served web tile page (`/deviceTiles` and `/getTile/<dni>`)
 with an inline-SVG tank visualization — zero external assets except the
