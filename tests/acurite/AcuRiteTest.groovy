@@ -115,4 +115,131 @@ test("no 'AcuRite:' prefixes; the token never reaches the logs") {
     assert !new File(DRIVER).text.contains('"AcuRite: ')
 }
 
+// ---- Fixes: session handling ----
+
+test("an expired session logs in before fetching") {
+    def d = withSession(fresh())
+    d.state.acurite_token_expiry = d.clock - 1
+    d.call("refresh")
+    assert d.http.size() == 1 && d.http[0].callback == "loginHandler"
+}
+
+test("a live session fetches without logging in") {
+    def d = withSession(fresh())
+    d.call("refresh")
+    assert d.http.size() == 1 && d.http[0].callback == "fetchAcuriteDataHandler"
+    assert d.http[0].params.headers["x-one-vue-token"] == "tok-live"
+}
+
+[401, 403].each { int code ->
+    test("HTTP ${code} on the data call logs in again once and retries") {
+        def d = withSession(fresh())
+        d.call("refresh")
+        d.reply(d.http[0], status: code, error: "Unauthorized")
+        assert d.http.size() == 1 && d.http[0].callback == "loginHandler"
+        d.reply(d.http[0], json: loginOk)
+        assert d.http.size() == 1 && d.http[0].callback == "fetchAcuriteDataHandler" && d.http[0].data.retried == true
+        d.reply(d.http[0], status: code, error: "Unauthorized")
+        assert d.http.isEmpty()                                   // no loop
+        assert d.log.at("error").size() == 1
+    }
+}
+
+test("a timeout keeps the session and doesn't log in again") {
+    def d = withSession(fresh())
+    d.call("refresh")
+    d.reply(d.http[0], status: 408, error: "Read timed out")
+    assert d.http.isEmpty()
+    assert d.state.acurite_token == "tok-live"
+}
+
+test("a rejected login is reported as a credentials problem") {
+    def d = fresh()
+    d.call("refresh")
+    d.reply(d.http[0], status: 401, error: "Unauthorized")
+    assert d.log.at("error").size() == 1 && d.log.at("error")[0].contains("rejected the login")
+}
+
+// ---- Fixes: outage handling ----
+
+test("an outage logs once, reminds hourly, and logs the recovery with its length") {
+    def d = withSession(fresh())
+    d.state.acurite_token_expiry = d.clock + 10 * 3_600_000L
+    d.call("refresh")
+    d.reply(d.http[0], status: 503, error: "Service Unavailable")
+    assert d.log.at("warn").size() == 1 && d.log.at("warn")[0].contains("answered with an error")
+    assert d.device.current.healthStatus == "offline"
+    d.advance(300_000L)
+    d.call("refresh")
+    d.reply(d.http[0], status: 408, error: "Read timed out")
+    assert d.log.at("warn").size() == 1                       // same outage, error text changed
+    d.advance(3_600_000L)
+    d.call("refresh")
+    d.reply(d.http[0], status: 408, error: "Read timed out")
+    assert d.log.at("warn").size() == 2 && d.log.at("warn")[1].contains("after 1h 5m")
+    d.advance(300_000L)
+    d.call("refresh")
+    d.reply(d.http[0], json: dashboard(wired: []))
+    assert d.log.at("info").any { it.contains("responding again after 1h 10m") }
+    assert d.device.current.healthStatus == "online"
+}
+
+// ---- Fixes: parsing ----
+
+test("a station without wired_sensors still gets lightning and the summary") {
+    def d = withSession(fresh())
+    d.call("refresh")
+    d.reply(d.http[0], json: dashboard())                    // no wired_sensors key
+    assert d.log.at("error").isEmpty()
+    assert d.device.current.lightningActive == "false"
+    assert d.device.current.weatherSummary == "41.2°F, 80% RH, wind SW 5 mph"
+}
+
+test("sensor entries without a name are skipped") {
+    def d = withSession(fresh())
+    d.call("refresh")
+    d.reply(d.http[0], json: dashboard(wired: [null, [last_reading_value: "1"]]))
+    assert d.log.at("error").isEmpty()
+    assert d.device.current.weatherSummary
+}
+
+// ---- Fixes: lightningActive clears on time ----
+
+test("lightningActive turns on with a new strike and clears when the window ends") {
+    def d = withSession(fresh())
+    d.state.acurite_prev_strikes = 2
+    d.call("refresh")
+    d.reply(d.http[0], json: dashboard(wired: [], strikes: "3"))
+    assert d.device.current.lightningActive == "true"
+    assert d.schedules.lightningWindowEnded == 600
+    d.advance(600_000L)
+    d.call("lightningWindowEnded")
+    assert d.device.current.lightningActive == "false"
+}
+
+test("a timer that fires a moment early re-arms instead of leaving it on") {
+    def d = withSession(fresh())
+    d.state.acurite_prev_strikes = 2
+    d.call("refresh")
+    d.reply(d.http[0], json: dashboard(wired: [], strikes: "3"))
+    d.advance(599_500L)
+    d.call("lightningWindowEnded")
+    assert d.device.current.lightningActive == "true"
+    assert d.schedules.lightningWindowEnded == 1
+}
+
+// ---- Fixes: cleanup ----
+
+test("attributes the capabilities already provide aren't declared again") {
+    def names = fresh().attributes*.name
+    assert names.intersect(["temperature", "humidity", "pressure", "illuminance", "ultravioletIndex", "battery"]).isEmpty()
+    assert names.containsAll(["lightningActive", "weatherSummary", "windSpeed", "windDirection", "location_name", "healthStatus"])
+}
+
+test("initialize no longer deletes pre-0.0.10 attributes") {
+    def d = fresh()
+    d.call("initialize")
+    assert d.device.deletedStates.isEmpty()
+}
+
 finish()

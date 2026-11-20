@@ -82,7 +82,6 @@ metadata {
         attribute "device_status", "string"
 
         attribute "device_battery_level", "string"
-        attribute "battery", "number"
 
         attribute "device_signal_strength", "number"
         attribute "device_last_checkin", "string"
@@ -93,21 +92,20 @@ metadata {
         attribute "interference", "number"
         attribute "measured_light", "number"
         attribute "light_intensity", "number"
-        attribute "illuminance", "number"
-        attribute "ultravioletIndex", "number"
         attribute "wind_speed_average", "number"
         attribute "rainfall", "decimal"
-        attribute "pressure", "decimal"
         attribute "wind_chill", "decimal"
         attribute "dew_point", "number"
         attribute "wind_direction_abbreviation", "string"
         attribute "wind_direction_point", "string"
         attribute "windDirection", "string"
         attribute "windSpeed", "number"
-        attribute "humidity", "number"
-        attribute "temperature", "decimal"
 
         // v0.0.11 derived
+        attribute "healthStatus", "enum", ["online", "offline"]
+        // temperature, humidity, pressure, illuminance, ultravioletIndex and
+        // battery come from the capabilities above.
+
         attribute "lightningActive", "string"  // "true"/"false"
         attribute "lastStrikeAt", "string"     // ISO timestamp of most recent strike count increase
         attribute "weatherSummary", "string"   // composed dashboard string
@@ -141,14 +139,9 @@ void initialize() {
     unschedule()
     upgradeSettings()
     if (settings.logEnable) runIn(1800, "logsOff")
-
-    // Drop attribute names removed/renamed in earlier versions so upgraders
-    // don't see phantom entries in the Current States panel. measured_light
-    // was erroneously removed in v0.0.10 and restored in v0.0.12 — no longer
-    // listed here.
-    ["wind_direction", "wind_speed", "uv_index"].each {
-        try { device.deleteCurrentState(it) } catch (Exception e) { /* older HE without API; ignore */ }
-    }
+    // Let the next failure (if any) log again so Save gives fresh feedback;
+    // commFailSince is kept so the recovery line reports the full outage.
+    state.remove("commFailKey")
 
     if (!acurite_username || !acurite_password || !device_id) {
         log.error "required fields not completed.  Please complete for proper operation."
@@ -179,14 +172,22 @@ def refresh() {
 // old Polling capability keep working.
 def poll() { refresh() }
 
-// ---- HTTP — async with the same try-cached-then-relogin retry behavior as v0.0.10 ----
+// ---- HTTP (async) ----
+// A session is used until the expiry stored at login (an hour), or until the
+// API rejects it with 401/403; then the driver logs in again, once per poll.
+// Other errors (timeouts, 5xx) keep the session and wait for the next poll,
+// so an outage no longer means a failed login on every poll.
 
 def get_acurite_data() {
-    if (state.acurite_token && state.acurite_account_id) {
+    if (sessionValid()) {
         fetch_acurite_data(false)
     } else {
         acurite_login(true)
     }
+}
+
+private boolean sessionValid() {
+    return state.acurite_token && state.acurite_account_id && now() < ((state.acurite_token_expiry ?: 0) as Long)
 }
 
 private fetch_acurite_data(boolean alreadyRetried) {
@@ -203,24 +204,26 @@ private fetch_acurite_data(boolean alreadyRetried) {
 
 def fetchAcuriteDataHandler(response, data) {
     try {
-        if (response.hasError() || response.status == 401) {
-            // Token rejected — clear it and re-login once.
-            logDebug "data fetch 401/error, will re-login. retried=${data.retried}"
+        Integer status = statusOf(response)
+        if (status == 401 || status == 403) {
+            // Session rejected: drop it and log in again, once.
+            logDebug "data fetch HTTP ${status}; logging in again (retried=${data.retried})"
             state.acurite_token = null
             state.acurite_token_expiry = 0
             if (!data.retried) {
                 acurite_login(true)
             } else {
-                log.warn "data fetch failed even after re-login"
+                noteCommFailure("auth", "dashboard request rejected right after logging in (HTTP ${status})")
             }
             return
         }
-        if (response.status != 200) {
-            log.error "data failed: HTTP ${response.status}: ${response.data}"
+        if (response.hasError() || status != 200) {
+            noteCommFailure(failureKind(status), httpErrorDetail(response))
             return
         }
         def parsed = response.json
         if (parsed == null) parsed = new JsonSlurper().parseText(response.data.toString())
+        noteCommSuccess()
         process_acurite_data(parsed)
     } catch (Exception e) {
         log.error "fetchAcuriteDataHandler exception: ${e.message}"
@@ -245,8 +248,11 @@ private acurite_login(boolean fetchAfter) {
 
 def loginHandler(response, data) {
     try {
-        if (response.hasError() || response.status != 200) {
-            log.error "login failed: HTTP ${response.status}"
+        Integer status = statusOf(response)
+        if (response.hasError() || status != 200) {
+            // A 4xx means myAcuRite answered and refused the credentials.
+            String kind = (status != null && status >= 400 && status < 500 && status != 408) ? "auth" : failureKind(status)
+            noteCommFailure(kind, httpErrorDetail(response))
             return
         }
         def parsed = response.json
@@ -262,6 +268,90 @@ def loginHandler(response, data) {
     } catch (Exception e) {
         log.error "loginHandler exception: ${e.message}"
     }
+}
+
+// Runs when the lightning window ends (scheduled by armLightningClear).
+void lightningWindowEnded() {
+    if (now() >= lightningWindowEndMs()) {
+        emitEvent(name: "lightningActive", value: "false", descriptionText: "${device.displayName} lightningActive is false")
+    } else {
+        armLightningClear()      // fired a moment early (runIn has 1 s resolution)
+    }
+}
+
+private Long lightningWindowEndMs() {
+    Integer windowMin = (settings.lightningWindowMinutes ?: 10) as Integer
+    return ((state.acurite_last_strike_ms ?: 0L) as Long) + windowMin * 60_000L
+}
+
+private void armLightningClear() {
+    Long remainingMs = lightningWindowEndMs() - now()
+    runIn(Math.max(1L, (remainingMs + 999L).intdiv(1000L)) as Integer, "lightningWindowEnded")
+}
+
+// ---- Connection health ----
+// One line when a failure starts, a reminder at most hourly, one recovery line
+// with the outage length. The dedup key leaves out the error text, which can
+// change during one outage. A myAcuRite outage is a warning (it is retried);
+// rejected credentials are an error (the user has to fix them).
+
+private void noteCommFailure(String kind, String detail) {
+    Long nowMs = now()
+    if (state.commFailSince == null) state.commFailSince = nowMs
+    if (device.currentValue("healthStatus") != "offline") {
+        emitEvent(name: "healthStatus", value: "offline", descriptionText: "${device.displayName} is offline")
+    }
+    // A 5xx and a timeout are the same outage; only rejected credentials differ.
+    String key = (kind == "auth") ? "auth" : "down"
+    if (state.commFailKey != key) {
+        state.commFailKey = key
+        state.commFailLastLog = nowMs
+        if (kind == "auth") {
+            log.error "myAcuRite rejected the login (${detail}); check the username and password in preferences. Repeats are suppressed; reminder hourly."
+        } else if (kind == "http") {
+            log.warn "myAcuRite answered with an error (${detail}). Repeats are suppressed; reminder hourly."
+        } else {
+            log.warn "myAcuRite isn't answering (${detail}). Repeats are suppressed; reminder hourly."
+        }
+    } else if (nowMs - ((state.commFailLastLog ?: 0L) as Long) >= 3_600_000L) {
+        state.commFailLastLog = nowMs
+        log.warn "myAcuRite still failing after ${formatDuration(nowMs - (state.commFailSince as Long))} (${detail})"
+    }
+}
+
+private void noteCommSuccess() {
+    if (device.currentValue("healthStatus") != "online") {
+        emitEvent(name: "healthStatus", value: "online", descriptionText: "${device.displayName} is online")
+    }
+    if (state.commFailSince == null) return
+    log.info "myAcuRite is responding again after ${formatDuration(now() - (state.commFailSince as Long))}"
+    state.remove("commFailSince")
+    state.remove("commFailKey")
+    state.remove("commFailLastLog")
+}
+
+private Integer statusOf(response) {
+    try { return response?.status as Integer } catch (Exception e) { return null }
+}
+
+// No status, or the hub's 408 for a connect/read timeout, means no answer.
+private String failureKind(Integer status) {
+    return (status == null || status == 408) ? "unreachable" : "http"
+}
+
+private String httpErrorDetail(response) {
+    String msg = null
+    try { msg = response?.getErrorMessage() } catch (Exception e) { /* no message available */ }
+    Integer status = statusOf(response)
+    return (msg ?: "no response") + (status ? ", HTTP ${status}" : "")
+}
+
+private String formatDuration(Long ms) {
+    Long totalMin = Math.max(0L, ms as long).intdiv(60_000L)
+    if (totalMin == 0) return "under a minute"
+    Long h = totalMin.intdiv(60L)
+    Long m = totalMin % 60L
+    return h > 0 ? "${h}h ${m}m" : "${m}m"
 }
 
 // ---- Parsing + derived attributes ----
@@ -300,7 +390,9 @@ private void process_acurite_data(data) {
     // Cache values for the weather-summary composition below.
     Map snap = [:]
 
-    for (sensor in [dev.sensors, dev.wired_sensors].flatten()) {
+    // wired_sensors is missing on some stations; a null in the list used to
+    // throw here and skip the lightning and summary updates below.
+    for (sensor in [dev.sensors, dev.wired_sensors].flatten().findAll { it instanceof Map && it.sensor_name }) {
         def sensor_name = sensor.sensor_name.replaceAll(" ", "_").toLowerCase()
         def attr_name = rename[sensor_name] ?: sensor_name
         def sensor_value = sensor.last_reading_value
@@ -360,6 +452,8 @@ private void process_acurite_data(data) {
         Long cutoff = now() - (windowMin * 60L * 1000L)
         boolean active = (state.acurite_last_strike_ms ?: 0L) >= cutoff
         emitEvent(name: "lightningActive", value: active ? "true" : "false", descriptionText: "${device.displayName} lightningActive is ${active}")
+        // Clear it when the window ends, not at the first poll after.
+        if (active) armLightningClear()
     }
 
     // Derived: weatherSummary  ("72°F, 45% RH, wind SW 8 mph")
