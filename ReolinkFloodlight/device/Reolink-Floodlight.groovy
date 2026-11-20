@@ -50,13 +50,20 @@
 
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
+import groovy.transform.Field
+
+@Field static final String VERSION = "0.10.0"
 
 metadata {
-
     // singleThreaded: polls overlap (5 s interval vs. 10 s HTTP timeout), and concurrent
     // handlers would otherwise race on state — e.g. the connection-failure dedup keys.
-    definition(name: "Reolink Floodlight Camera", namespace: "dlaporte", author: "dlaporte",
-            singleThreaded: true) {
+    definition(
+        name: "Reolink Floodlight Camera",
+        namespace: "dlaporte",
+        author: "David LaPorte",
+        importUrl: "https://raw.githubusercontent.com/dlaporte/Hubitat/main/ReolinkFloodlight/device/Reolink-Floodlight.groovy",
+        singleThreaded: true
+    ) {
         capability "Initialize"
         capability "Refresh"
         capability "Switch"
@@ -120,36 +127,32 @@ metadata {
     }
 
     preferences {
-        input("ip", "text", title: "IP Address", required: true)
-        input("username", "text", title: "Username", required: true)
-        input("password", "password", title: "Password", required: true)
-        input("pollInterval", "number", title: "Motion/AI poll interval (seconds)",
-                defaultValue: 5, range: "5..300", required: true)
-        input("keepLightOn", "bool", title: "Keep floodlight on indefinitely (re-asserts state every 2 min)",
-                defaultValue: true)
-        input("publishSnapshotURL", "bool",
-                title: "Publish snapshotURL attribute (embeds username/password in plaintext — only enable if you use it in an image tile)",
-                defaultValue: false)
-        input("debug", "bool", title: "Debug logging", defaultValue: false)
+        input name: "ip", type: "text", title: "IP address", required: true
+        input name: "username", type: "text", title: "Username", required: true
+        input name: "password", type: "password", title: "Password", required: true
+        input name: "pollInterval", type: "number", title: "Motion/AI poll interval (seconds)", defaultValue: 5, range: "5..300", required: true
+        input name: "keepLightOn", type: "bool", title: "Keep floodlight on indefinitely (re-asserts state every 2 min)", defaultValue: true
+        input name: "publishSnapshotURL", type: "bool", title: "Publish snapshotURL attribute (embeds username/password in plaintext — only enable if you use it in an image tile)", defaultValue: false
+        input name: "logEnable", type: "bool", title: "Enable debug logging", description: "Turns itself off after 30 minutes", defaultValue: false
+        input name: "txtEnable", type: "bool", title: "Enable descriptionText logging", defaultValue: true
     }
 }
 
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
+// ---- Lifecycle ----
 
-def installed() {
-    log.info "Reolink: installed()"
+void installed() {
     initialize()
 }
 
-def updated() {
-    log.info "Reolink: updated()"
+void updated() {
+    log.info "Preferences saved"
     initialize()
 }
 
-def initialize() {
+void initialize() {
     unschedule()
+    upgradeSettings()
+    if (settings.logEnable) runIn(1800, "logsOff")
     state.token = null
     state.tokenExpiry = 0
     // Let the next failure (if any) log again so Save gives fresh feedback;
@@ -166,7 +169,7 @@ def initialize() {
     state.pollEpoch = ((state.pollEpoch ?: 0) as Integer) + 1
 
     if (!ip || !username || !password) {
-        log.error "Reolink: IP, username, and password are required"
+        log.error "IP, username, and password are required"
         return
     }
 
@@ -186,7 +189,12 @@ def initialize() {
     runIn(1, "pollStatus")
 }
 
-def uninstalled() {
+private void upgradeSettings() {
+    device.removeSetting("debug")          // replaced by logEnable in 0.10.0
+    device.updateDataValue("driverVersion", VERSION)
+}
+
+void uninstalled() {
     unschedule()
     if (hasValidToken()) {
         // Fire-and-forget logout — no callback needed. Skipped if token is expired
@@ -195,19 +203,17 @@ def uninstalled() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Switch / SwitchLevel
-// ---------------------------------------------------------------------------
+// ---- Switch / SwitchLevel ----
 
 def on() {
-    if (debug) log.debug "Reolink: on()"
+    logDebug "on()"
     def level = (device.currentValue("level") ?: 100) as Integer
     if (level <= 0) level = 100
     applyFloodlight(1, level)
 }
 
 def off() {
-    if (debug) log.debug "Reolink: off()"
+    logDebug "off()"
     unschedule("keepAlive")
     applyFloodlight(0, null)
 }
@@ -220,7 +226,7 @@ def setLevel(level, duration = null) {
 
 // Friendlier alias for setLevel — explicit "brightness" naming on the device page.
 def setBrightness(level) {
-    if (debug) log.debug "Reolink: setBrightness(${level})"
+    logDebug "setBrightness(${level})"
     Integer lvl = (level as BigDecimal).intValue()
     if (lvl < 0) lvl = 0
     if (lvl > 100) lvl = 100
@@ -242,11 +248,11 @@ private applyFloodlight(Integer desiredState, Integer brightness) {
 
 def applyFloodlightHandler(result, data) {
     if (!result || result[0]?.code != 0) {
-        log.error "Reolink: SetWhiteLed failed: ${result}"
+        log.error "SetWhiteLed failed: ${result}"
         return
     }
-    sendEvent(name: "switch", value: data.desiredState == 1 ? "on" : "off")
-    if (data.brightness != null) sendEvent(name: "level", value: data.brightness)
+    emitDesc("switch", data.desiredState == 1 ? "on" : "off")
+    if (data.brightness != null) emitDesc("level", data.brightness, "%")
     if (data.desiredState == 1 && shouldKeepAlive()) {
         unschedule("keepAlive")
         runIn(120, "keepAlive")
@@ -256,7 +262,7 @@ def applyFloodlightHandler(result, data) {
 def keepAlive() {
     if (device.currentValue("switch") != "on") return
     def level = (device.currentValue("level") ?: 100) as Integer
-    if (debug) log.debug "Reolink: keepAlive — re-asserting state:1 bright:${level}"
+    logDebug "keepAlive — re-asserting state:1 bright:${level}"
     applyFloodlight(1, level)
     // Reschedule eagerly; if applyFloodlight fails (camera offline) we still want
     // to keep trying so the light comes back on as soon as the camera returns.
@@ -269,9 +275,7 @@ private boolean shouldKeepAlive() {
     return keepLightOn && device.getDataValue("floodlightKeepOnSupported") != "true"
 }
 
-// ---------------------------------------------------------------------------
-// Custom commands
-// ---------------------------------------------------------------------------
+// ---- Custom commands ----
 
 // Mode "Off" turns the light off NOW (state:0) AND clears the auto-mode
 // (mode:0) so it won't re-trigger from schedule or always-at-night. The
@@ -284,7 +288,7 @@ private boolean shouldKeepAlive() {
 def setFloodlightMode(String mode) {
     def m = ["Off": 0, "NightSmart": 1, "AlwaysAtNight": 2, "Schedule": 3][mode]
     if (m == null) {
-        log.error "Reolink: invalid floodlight mode '${mode}'"
+        log.error "invalid floodlight mode '${mode}'"
         return
     }
     def cmds
@@ -303,19 +307,19 @@ def setFloodlightMode(String mode) {
 
 def setFloodlightModeHandler(result, data) {
     if (!result || result[0]?.code != 0) {
-        log.error "Reolink: setFloodlightMode failed: ${result}"
+        log.error "setFloodlightMode failed: ${result}"
         return
     }
-    sendEvent(name: "floodlightMode", value: data.mode)
+    emitDesc("floodlightMode", data.mode)
     if (data.modeNum == 0) {
         unschedule("keepAlive")
-        sendEvent(name: "switch", value: "off")
+        emitDesc("switch", "off")
         def types = result.find { it.cmd == "GetWhiteLed" && it.code == 0 }?.value?.WhiteLed?.wlAiDetectType
         if (types != null) {
             emitSmartTriggers(types)
             def armed = types.findAll { it.value == 1 }.collect { it.key }
             if (armed) {
-                log.warn "Reolink: floodlight mode is Off, but AI triggers are still armed (${armed.join(', ')}) — " +
+                log.warn "floodlight mode is Off, but AI triggers are still armed (${armed.join(', ')}) — " +
                         "the camera will flash the light on those detections at night. The firmware refuses to disarm " +
                         "ALL of them over the LAN API; use setFloodlightSmartTriggers to minimize (e.g. vehicle only), " +
                         "or the Reolink app to disable every trigger."
@@ -335,7 +339,7 @@ def setFloodlightModeHandler(result, data) {
 def setFloodlightSmartTriggers(String people, String vehicle, String animal) {
     List supported = (device.getDataValue("floodlightAiTriggerTypes") ?: "").tokenize(",")
     if (!supported) {
-        log.warn "Reolink: this camera does not report per-AI floodlight triggers (run Refresh first if it should)"
+        log.warn "this camera does not report per-AI floodlight triggers (run Refresh first if it should)"
         return
     }
     Map want = [people: people, vehicle: vehicle, dog_cat: animal]
@@ -344,11 +348,11 @@ def setFloodlightSmartTriggers(String people, String vehicle, String animal) {
         if (want[t] != null) flags[t] = (want[t] == "On") ? 1 : 0
     }
     if (!flags) {
-        log.warn "Reolink: none of the requested trigger types (${want.keySet().join(', ')}) are supported by this camera (${supported.join(', ')})"
+        log.warn "none of the requested trigger types (${want.keySet().join(', ')}) are supported by this camera (${supported.join(', ')})"
         return
     }
     if (flags.every { it.value == 0 }) {
-        log.error "Reolink: the camera firmware refuses to disarm ALL floodlight triggers over the LAN API " +
+        log.error "the camera firmware refuses to disarm ALL floodlight triggers over the LAN API " +
                 "(it silently re-arms every one of them). Leave at least one On — vehicle is usually the " +
                 "quietest — or turn them all off in the Reolink app, which can reach that state."
         return
@@ -360,7 +364,7 @@ def setFloodlightSmartTriggers(String people, String vehicle, String animal) {
 
 def setFloodlightSmartTriggersHandler(result, data) {
     if (!result || result[0]?.code != 0) {
-        log.error "Reolink: setFloodlightSmartTriggers failed: ${result}"
+        log.error "setFloodlightSmartTriggers failed: ${result}"
         return
     }
     def types = result.find { it.cmd == "GetWhiteLed" && it.code == 0 }?.value?.WhiteLed?.wlAiDetectType
@@ -371,14 +375,14 @@ def setFloodlightSmartTriggersHandler(result, data) {
 private emitSmartTriggers(Map types) {
     device.updateDataValue("floodlightAiTriggerTypes", types.keySet().join(","))
     def armed = types.findAll { it.value == 1 }.collect { it.key }.join(",")
-    sendEvent(name: "floodlightSmartTriggers", value: armed ?: "none")
+    emitDesc("floodlightSmartTriggers", armed ?: "none")
 }
 
 def setLightingSchedule(String startTime, String endTime) {
     def s = parseHm(startTime)
     def e = parseHm(endTime)
     if (s == null || e == null) {
-        log.error "Reolink: setLightingSchedule got unparseable time(s): start='${startTime}' end='${endTime}'"
+        log.error "setLightingSchedule got unparseable time(s): start='${startTime}' end='${endTime}'"
         return
     }
     def sched = [StartHour: s.hour, StartMin: s.minute, EndHour: e.hour, EndMin: e.minute]
@@ -388,12 +392,11 @@ def setLightingSchedule(String startTime, String endTime) {
 
 def setLightingScheduleHandler(result, data) {
     if (!result || result[0]?.code != 0) {
-        log.error "Reolink: setLightingSchedule failed: ${result}"
+        log.error "setLightingSchedule failed: ${result}"
         return
     }
     def s = data.sched
-    sendEvent(name: "lightingSchedule",
-            value: String.format("%02d:%02d-%02d:%02d", s.StartHour, s.StartMin, s.EndHour, s.EndMin))
+    emitDesc("lightingSchedule", String.format("%02d:%02d-%02d:%02d", s.StartHour, s.StartMin, s.EndHour, s.EndMin))
 }
 
 // Accepts either "HH:mm" or an ISO datetime like "1970-01-01T18:00:00.000-0500"
@@ -406,43 +409,43 @@ private Map parseHm(String t) {
 }
 
 def setIRMode(String mode) {
-    if (!(mode in ["Auto", "Off"])) { log.error "Reolink: invalid IR mode"; return }
+    if (!(mode in ["Auto", "Off"])) { log.error "invalid IR mode"; return }
     sendCmd([[cmd: "SetIrLights", param: [IrLights: [channel: 0, state: mode]]]],
             "setIRModeHandler", [mode: mode])
 }
 
 def setIRModeHandler(result, data) {
-    if (result && result[0]?.code == 0) sendEvent(name: "IRMode", value: data.mode)
-    else log.error "Reolink: setIRMode failed: ${result}"
+    if (result && result[0]?.code == 0) emitDesc("IRMode", data.mode)
+    else log.error "setIRMode failed: ${result}"
 }
 
 def setDayNightMode(String mode) {
-    if (!(mode in ["Auto", "Color", "Black&White"])) { log.error "Reolink: invalid day/night mode"; return }
+    if (!(mode in ["Auto", "Color", "Black&White"])) { log.error "invalid day/night mode"; return }
     sendCmd([[cmd: "SetIsp", param: [Isp: [channel: 0, dayNight: mode]]]],
             "setDayNightModeHandler", [mode: mode])
 }
 
 def setDayNightModeHandler(result, data) {
-    if (result && result[0]?.code == 0) sendEvent(name: "dayNightMode", value: data.mode)
-    else log.error "Reolink: setDayNightMode failed: ${result}"
+    if (result && result[0]?.code == 0) emitDesc("dayNightMode", data.mode)
+    else log.error "setDayNightMode failed: ${result}"
 }
 
 def setMicrophone(String value) {
-    if (!(value in ["On", "Off"])) { log.error "Reolink: invalid microphone state '${value}'"; return }
+    if (!(value in ["On", "Off"])) { log.error "invalid microphone state '${value}'"; return }
     Integer v = (value == "On") ? 1 : 0
     sendCmd([[cmd: "SetEnc", param: [Enc: [channel: 0, audio: v]]]],
             "setMicrophoneHandler", [value: value])
 }
 
 def setMicrophoneHandler(result, data) {
-    if (result && result[0]?.code == 0) sendEvent(name: "microphone", value: data.value)
-    else log.error "Reolink: setMicrophone failed: ${result}"
+    if (result && result[0]?.code == 0) emitDesc("microphone", data.value)
+    else log.error "setMicrophone failed: ${result}"
 }
 
 def setPowerLED(String value) {
-    if (!(value in ["On", "Off"])) { log.error "Reolink: invalid powerLED state '${value}'"; return }
+    if (!(value in ["On", "Off"])) { log.error "invalid powerLED state '${value}'"; return }
     if (device.getDataValue("powerLEDSupported") != "true") {
-        log.warn "Reolink: this camera does not report a controllable power LED"
+        log.warn "this camera does not report a controllable power LED"
         return
     }
     sendCmd([[cmd: "SetPowerLed", param: [PowerLed: [channel: 0, state: value]]]],
@@ -450,16 +453,14 @@ def setPowerLED(String value) {
 }
 
 def setPowerLEDHandler(result, data) {
-    if (result && result[0]?.code == 0) sendEvent(name: "powerLED", value: data.value)
-    else log.error "Reolink: setPowerLED failed: ${result}"
+    if (result && result[0]?.code == 0) emitDesc("powerLED", data.value)
+    else log.error "setPowerLED failed: ${result}"
 }
 
-// ---------------------------------------------------------------------------
-// Refresh + poll
-// ---------------------------------------------------------------------------
+// ---- Refresh + poll ----
 
 def refresh() {
-    if (debug) log.debug "Reolink: refresh()"
+    logDebug "refresh()"
     sendCmd([
             [cmd: "GetDevInfo",   param: [:]],
             [cmd: "GetLocalLink", param: [:]],
@@ -478,7 +479,7 @@ def refreshHandler(result, data) {
     if (!result) return
     result.each { r ->
         if (r.code != 0) {
-            log.warn "Reolink: ${r.cmd} returned code ${r.code}"
+            log.warn "${r.cmd} returned code ${r.code}"
             return
         }
         switch (r.cmd) {
@@ -503,16 +504,15 @@ def refreshHandler(result, data) {
                 break
             case "GetWhiteLed":
                 def w = r.value.WhiteLed ?: [:]
-                sendEvent(name: "switch", value: w.state == 1 ? "on" : "off")
-                sendEvent(name: "level",  value: w.bright != null ? w.bright : 0)
+                emitDesc("switch", w.state == 1 ? "on" : "off")
+                emitDesc("level", w.bright != null ? w.bright : 0, "%")
                 def modeName = (w.mode != null && w.mode >= 0 && w.mode <= 3)
                         ? ["Off", "NightSmart", "AlwaysAtNight", "Schedule"][w.mode as Integer]
                         : "Unknown"
-                sendEvent(name: "floodlightMode", value: modeName)
+                emitDesc("floodlightMode", modeName)
                 if (w.LightingSchedule) {
                     def s = w.LightingSchedule
-                    sendEvent(name: "lightingSchedule",
-                            value: String.format("%02d:%02d-%02d:%02d", s.StartHour, s.StartMin, s.EndHour, s.EndMin))
+                    emitDesc("lightingSchedule", String.format("%02d:%02d-%02d:%02d", s.StartHour, s.StartMin, s.EndHour, s.EndMin))
                 }
                 if (w.wlAiDetectType != null) emitSmartTriggers(w.wlAiDetectType)
                 if (w.state == 1 && shouldKeepAlive()) {
@@ -521,14 +521,14 @@ def refreshHandler(result, data) {
                 }
                 break
             case "GetIrLights":
-                sendEvent(name: "IRMode", value: r.value.IrLights?.state ?: "unknown")
+                emitDesc("IRMode", r.value.IrLights?.state ?: "unknown")
                 break
             case "GetIsp":
-                sendEvent(name: "dayNightMode", value: r.value.Isp?.dayNight ?: "unknown")
+                emitDesc("dayNightMode", r.value.Isp?.dayNight ?: "unknown")
                 break
             case "GetEnc":
                 def en = r.value.Enc?.audio
-                if (en != null) sendEvent(name: "microphone", value: en == 1 ? "On" : "Off")
+                if (en != null) emitDesc("microphone", en == 1 ? "On" : "Off")
                 break
             case "GetRtspUrl":
                 def u = r.value.rtspUrl ?: [:]
@@ -543,7 +543,7 @@ def refreshHandler(result, data) {
                 break
             case "GetPowerLed":
                 def s = r.value.PowerLed?.state
-                if (s != null) sendEvent(name: "powerLED", value: s)
+                if (s != null) emitDesc("powerLED", s)
                 break
         }
     }
@@ -576,15 +576,15 @@ def pollStatusHandler(result, data) {
     result.each { r ->
         if (r.code != 0) return
         if (r.cmd == "GetMdState") {
-            sendEvent(name: "motion", value: r.value?.state == 1 ? "active" : "inactive")
+            emitDesc("motion", r.value?.state == 1 ? "active" : "inactive")
         } else if (r.cmd == "GetAiState") {
             def v = r.value ?: [:]
             // Gate each emission on the per-call `support` flag so unsupported AI
             // types don't surface as perpetually-"inactive" clutter.
-            if (v.people?.support  == 1) sendEvent(name: "personDetected",  value: v.people.alarm_state  == 1 ? "active" : "inactive")
-            if (v.vehicle?.support == 1) sendEvent(name: "vehicleDetected", value: v.vehicle.alarm_state == 1 ? "active" : "inactive")
-            if (v.dog_cat?.support == 1) sendEvent(name: "animalDetected",  value: v.dog_cat.alarm_state == 1 ? "active" : "inactive")
-            if (v.face?.support    == 1) sendEvent(name: "faceDetected",    value: v.face.alarm_state    == 1 ? "active" : "inactive")
+            if (v.people?.support  == 1) emitDesc("personDetected", v.people.alarm_state  == 1 ? "active" : "inactive")
+            if (v.vehicle?.support == 1) emitDesc("vehicleDetected", v.vehicle.alarm_state == 1 ? "active" : "inactive")
+            if (v.dog_cat?.support == 1) emitDesc("animalDetected", v.dog_cat.alarm_state == 1 ? "active" : "inactive")
+            if (v.face?.support    == 1) emitDesc("faceDetected", v.face.alarm_state    == 1 ? "active" : "inactive")
         } else if (r.cmd == "GetWhiteLed") {
             // Track mode + smart triggers on the poll so changes made in the Reolink
             // app show up in Hubitat within one poll interval. Deliberately does NOT
@@ -596,15 +596,13 @@ def pollStatusHandler(result, data) {
                 def modeName = (w.mode >= 0 && w.mode <= 3)
                         ? ["Off", "NightSmart", "AlwaysAtNight", "Schedule"][w.mode as Integer]
                         : "Unknown"
-                sendEvent(name: "floodlightMode", value: modeName)
+                emitDesc("floodlightMode", modeName)
             }
         }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Auth + HTTP (async)
-// ---------------------------------------------------------------------------
+// ---- Auth + HTTP (async) ----
 
 private boolean hasValidToken() {
     return state.token && state.tokenExpiry && now() < (state.tokenExpiry as Long) - 60_000L
@@ -633,7 +631,7 @@ private sendCmd(List cmds, String successCallback, Map userData = [:]) {
             body: JsonOutput.toJson(body),
             timeout: 10
     ]
-    if (debug) log.debug "Reolink: POST ${firstCmd}"
+    logDebug "POST ${firstCmd}"
 
     asynchttpPost("sendCmdResponseHandler", params, [
             cmds: cmds,
@@ -679,7 +677,7 @@ def loginResponseHandler(response, data) {
     noteCommSuccess()
     state.token = parsed[0].value.Token.name
     state.tokenExpiry = now() + ((parsed[0].value.Token.leaseTime as Long) * 1000L)
-    if (debug) log.debug "Reolink: login OK token=…${state.token?.takeRight(4)} leaseTime=${parsed[0].value.Token.leaseTime}s"
+    logDebug "login OK token=…${state.token?.takeRight(4)} leaseTime=${parsed[0].value.Token.leaseTime}s"
 
     // Resume the command that was waiting on this login.
     if (data?.queuedCmds) {
@@ -706,7 +704,7 @@ def sendCmdResponseHandler(response, data) {
     // code:-6 means token expired between hasValidToken() and the actual request
     // landing. Clear it and retry once. Use a flag on userData to bound recursion.
     if (result?.any { (it?.code as Integer) == -6 } && !userData.retried) {
-        if (debug) log.debug "Reolink: token expired mid-request, re-auth and retry"
+        logDebug "token expired mid-request, re-auth and retry"
         state.token = null
         Map nextUserData = ([:] + userData)
         nextUserData.retried = true
@@ -719,9 +717,7 @@ def sendCmdResponseHandler(response, data) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Connection-health logging
-// ---------------------------------------------------------------------------
+// ---- Connection-health logging ----
 // The poll loop retries every few seconds, so logging each failure would write
 // ~700 identical lines an hour. Instead: one ERROR naming the cause when a
 // problem starts, a WARN reminder at most hourly, and one INFO on recovery.
@@ -736,23 +732,23 @@ private void noteCommFailure(String kind, String detail) {
         state.commFailKey = key
         state.commFailLastLog = nowMs
         if (kind == "auth") {
-            log.error "Reolink: camera at ${ip} rejected the login (${detail}) — check the username/password " +
+            log.error "camera at ${ip} rejected the login (${detail}) — check the username/password " +
                     "in preferences. Repeats are suppressed; reminder hourly."
         } else {
-            log.error "Reolink: camera at ${ip} isn't answering (${detail}) — it looks offline, off the network, " +
+            log.error "camera at ${ip} isn't answering (${detail}) — it looks offline, off the network, " +
                     "or at a different IP. This is a connection problem, not a username/password problem. " +
                     "Repeats are suppressed; reminder hourly."
         }
     } else if (nowMs - ((state.commFailLastLog ?: 0L) as Long) >= 3_600_000L) {
         state.commFailLastLog = nowMs
         String what = (kind == "auth") ? "still rejecting the login" : "still not answering"
-        log.warn "Reolink: camera at ${ip} ${what} after ${formatDuration(nowMs - (state.commFailSince as Long))} (${detail})"
+        log.warn "camera at ${ip} ${what} after ${formatDuration(nowMs - (state.commFailSince as Long))} (${detail})"
     }
 }
 
 private void noteCommSuccess() {
     if (state.commFailSince == null) return
-    log.info "Reolink: camera at ${ip} is responding again after ${formatDuration(now() - (state.commFailSince as Long))}"
+    log.info "camera at ${ip} is responding again after ${formatDuration(now() - (state.commFailSince as Long))}"
     state.remove("commFailSince")
     state.remove("commFailKey")
     state.remove("commFailLastLog")
@@ -777,11 +773,11 @@ private String formatDuration(Long ms) {
 private parseAsync(response, String label) {
     try {
         if (response?.hasError()) {
-            if (debug) log.debug "Reolink: ${label} HTTP error: ${response.getErrorMessage()}"
+            logDebug "${label} HTTP error: ${response.getErrorMessage()}"
             return null
         }
         if (response.status != 200) {
-            log.warn "Reolink: ${label} HTTP ${response.status}"
+            log.warn "${label} HTTP ${response.status}"
             return null
         }
         def body = response.data
@@ -790,7 +786,39 @@ private parseAsync(response, String label) {
         if (body instanceof String) return new JsonSlurper().parseText(body)
         return new JsonSlurper().parseText(body.toString())
     } catch (Exception e) {
-        log.error "Reolink: parse failed for ${label}: ${e.message}"
+        log.error "parse failed for ${label}: ${e.message}"
         return null
     }
 }
+
+// User-facing attributes carry a descriptionText, logged on change when txtEnable is on.
+private void emitDesc(String name, value, String unit = null) {
+    String text = (name == "switch") ? "${device.displayName} is ${value}" : "${device.displayName} ${name} is ${value}${unit ?: ''}"
+    Map evt = [name: name, value: value, descriptionText: text]
+    if (unit) evt.unit = unit
+    emitEvent(evt)
+}
+
+// ---- BEGIN standard logging (driver) v1: keep identical in every driver, see STYLE.md ----
+
+void logsOff() {
+    log.info "Debug logging turned off"
+    device.updateSetting("logEnable", [value: "false", type: "bool"])
+}
+
+private void logDebug(String msg) {
+    if (settings.logEnable) log.debug msg
+}
+
+private void logDesc(String msg) {
+    if (settings.txtEnable != false) log.info msg
+}
+
+// Sends the event; logs its descriptionText only when the value actually changes.
+private void emitEvent(Map evt) {
+    boolean changed = device.currentValue(evt.name as String)?.toString() != evt.value?.toString()
+    sendEvent(evt)
+    if (changed && evt.descriptionText) logDesc(evt.descriptionText as String)
+}
+
+// ---- END standard logging ----

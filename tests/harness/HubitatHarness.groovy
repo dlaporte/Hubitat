@@ -89,12 +89,26 @@ class FakeDevice {
     def currentState(String name) { current.containsKey(name) ? [value: current[name]] : null }
     String getDataValue(String key) { data[key] }
     void updateDataValue(String key, String value) { data[key] = value }
+    void removeDataValue(String key) { data.remove(key) }
+    List<String> deletedStates = []
+    void deleteCurrentState(String name) { deletedStates << name; current.remove(name) }
     void removeSetting(String name) { removedSettings << name; settings?.remove(name) }
     void updateSetting(String name, Map value) {
         settingUpdates << [name: name] + value
         def v = value.value
         settings?.put(name, value.type == "bool" ? (v.toString() == "true") : v)
     }
+}
+
+/** Stand-in for Hubitat's AsyncResponse. `data` is the raw body string, as on the hub. */
+class FakeResponse {
+    Integer status = 200
+    String data
+    String errorMessage
+    Map headers = [:]
+    boolean hasError() { errorMessage != null || (status != null && status >= 400) }
+    String getErrorMessage() { errorMessage }
+    def getJson() { data == null ? null : new groovy.json.JsonSlurper().parseText(data) }
 }
 
 class FakeLog {
@@ -137,6 +151,7 @@ class Driver {
     final Map<String, Number> schedules = [:]   // pending runIn: method -> seconds
     final List<List> runIns = []            // every runIn call: [seconds, method]
     final List<String> unschedules = []     // every unschedule call ("*" = all)
+    final List<Map> http = []               // every async HTTP call: [method, callback, params, data]
 
     // Recorded from metadata { }
     Map definition = [:]
@@ -176,6 +191,17 @@ class Driver {
             if (method == null) { schedules.clear(); unschedules << "*" }
             else { schedules.remove(method); unschedules << method }
         })
+        ["runEvery1Minute", "runEvery5Minutes", "runEvery10Minutes", "runEvery15Minutes",
+         "runEvery30Minutes", "runEvery1Hour", "runEvery3Hours"].each { String name ->
+            binding.setVariable(name, { String method, Map opts = null -> schedules[method] = name })
+        }
+        binding.setVariable("schedule", { Object cron, String method, Map opts = null -> schedules[method] = "cron:${cron}".toString() })
+        binding.setVariable("asynchttpPost", { String cb, Map params, Map data = null ->
+            http << [method: "POST", callback: cb, params: params, data: data]
+        })
+        binding.setVariable("asynchttpGet", { String cb, Map params, Map data = null ->
+            http << [method: "GET", callback: cb, params: params, data: data]
+        })
         binding.setVariable("response", { cmd -> "response:${cmd}".toString() })
         binding.setVariable("updateDataValue", { String k, String v -> device.updateDataValue(k, v) })
         binding.setVariable("getDataValue", { String k -> device.getDataValue(k) })
@@ -213,6 +239,21 @@ class Driver {
         obj
     }
 
+    /**
+     * Answer a recorded async HTTP call by invoking its callback, as the hub would.
+     * Pass json: (a List/Map, sent as a JSON string body), or error: "message".
+     */
+    def reply(Map opts, Map req) {
+        def resp = new FakeResponse(status: (opts.status ?: (opts.error ? null : 200)) as Integer,
+                errorMessage: opts.error as String,
+                data: opts.containsKey("json") ? groovy.json.JsonOutput.toJson(opts.json) : opts.body as String)
+        http.remove(req)
+        call(req.callback as String, resp, req.data)
+    }
+
+    /** Async HTTP calls whose first Reolink-style cmd (or URI) contains `text`. */
+    List<Map> httpMatching(String text) { http.findAll { it.params.toString().contains(text) } }
+
     void advance(long ms) { clock += ms }
 
     /** Format a clock value the way our drivers stamp ISO timestamps (yyyy-MM-dd'T'HH:mm:ssZ). */
@@ -226,6 +267,6 @@ class Driver {
 
     /** Forget recorded calls (keeps settings, state, device attributes and schedules). */
     void reset() {
-        events.clear(); runIns.clear(); unschedules.clear(); log.lines.clear()
+        events.clear(); runIns.clear(); unschedules.clear(); log.lines.clear(); http.clear()
     }
 }
