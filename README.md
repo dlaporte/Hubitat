@@ -30,7 +30,8 @@ Exposes:
 - Floodlight mode (`Off`, `NightSmart`, `AlwaysAtNight`, `Schedule`),
   lighting schedule, IR mode, day/night mode, microphone toggle, status LED
 - RTSP main/sub stream URLs and an optional snapshot URL for dashboard tiles
-- SD-card capacity / free / mounted attributes
+- SD-card capacity / free / mounted attributes, refreshed every 30 minutes
+- `healthStatus` (online/offline)
 
 Async HTTP throughout; 5-second poll loop for motion/AI with epoch-guarded
 self-rescheduling. Does **not** expose any siren or alarm-trigger commands
