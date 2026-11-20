@@ -59,8 +59,9 @@ Derived attributes:
 - `weatherSummary` — composed string like `"72°F, 45% RH, wind SW 8 mph"`
   for dashboard tiles and TTS.
 
-Session token cached across polls (~95% reduction in login API calls vs.
-the original).
+Session token cached across polls and renewed only on expiry or rejection,
+so a myAcuRite outage doesn't turn into a failed login every poll.
+`healthStatus` shows whether the cloud API is answering.
 
 ### Smart Oil Gauge
 
