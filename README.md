@@ -149,6 +149,12 @@ Kept here in case upstream disappears (upstream is unmaintained since 2022):
 
 MIT license (fison67) — see the file headers.
 
+## Contributing
+
+Conventions for headers, logging, lifecycle, versioning and manifests are in
+[STYLE.md](STYLE.md). `scripts/check_style.py` checks them, and CI runs it on
+every pull request.
+
 ## License
 
 Apache 2.0 — see individual file headers, except the Xiaomi Vacuums fork
