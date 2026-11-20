@@ -1,6 +1,16 @@
 /*
  *  Smart Oil Gauge (Connect)
  *
+ *  Cloud app for Smart Oil Gauge (https://www.smartoilgauge.com) tank monitors, through the
+ *  Droplet Fuel API (needs a Droplet Fuel monitoring subscription). Creates one Smart Oil
+ *  Gauge child device per tank and serves web tiles.
+ *  Documentation: https://github.com/dlaporte/Hubitat/blob/main/SmartOilGauge/README.md
+ *  Based on: the Tank Utility app by EricS, itself based on Joshua Spain's work.
+ *
+ *  Changelog:
+ *  v0.1.0 (2026-11-20) - Repeated readings no longer skew usage rate or refill timing; new tanks
+ *         get a device without re-saving; tile turns red at the low-fuel setting; API calls time
+ *         out; outage logging; healthStatus per tank; standard logging and lifecycle.
  *  v0.0.16 - a failed API fetch no longer stops polling; daysRemaining
  *            uses the last measured usage rate instead of going stale.
  *  v0.0.15 - reverted v0.0.14's broken TZ override; capped tankHistory at 720.
@@ -16,40 +26,42 @@
  *            accountNumber attributes.
  *  v0.0.3  - earlier release.
  *
- *  Modified by David LaPorte. Based on the Tank Utility app by EricS,
- *  itself based on Joshua Spain's work.
+ *  Copyright 2021 David LaPorte
  *
- *  Licensed under the Apache License, Version 2.0:
+ *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ *  in compliance with the License. You may obtain a copy of the License at:
+ *
  *      http://www.apache.org/licenses/LICENSE-2.0
  *
- *  For Smart Oil Gauge (https://www.smartoilgauge.com). Requires a
- *  Droplet Fuel monitoring subscription for API access.
+ *  Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
+ *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
+ *  for the specific language governing permissions and limitations under the License.
  */
 
 import groovy.json.*
 import java.text.SimpleDateFormat
 
 definition(
-	name: "Smart Oil Gauge (Connect)",
-	namespace: "dlaporte",
-	author: "David LaPorte",
-	description: "Virtual device handler for Smart Oil Gauge",
-	category: "My Apps",
-	iconUrl: "https://github.com/dlaporte/Hubitat/raw/main/SmartOilGauge/images/tank-3.png",
-	iconX2Url: "https://github.com/dlaporte/Hubitat/raw/main/SmartOilGauge/images/tank-3.png",
-	singleInstance: true,
-	oauth: true
+    name: "Smart Oil Gauge (Connect)",
+    namespace: "dlaporte",
+    author: "David LaPorte",
+    description: "Virtual device handler for Smart Oil Gauge",
+    category: "My Apps",
+    iconUrl: "https://github.com/dlaporte/Hubitat/raw/main/SmartOilGauge/images/tank-3.png",
+    iconX2Url: "https://github.com/dlaporte/Hubitat/raw/main/SmartOilGauge/images/tank-3.png",
+    singleInstance: true,
+    oauth: true
 )
 
 static String appVersion() { "0.0.16" }
 
 preferences {
-	page(name: "settings", title: "Smart Oil Gauge", content: "settingsPage", install: true)
+    page(name: "settings", title: "Smart Oil Gauge", content: "settingsPage", install: true)
 }
 
 mappings {
-	path("/deviceTiles") { action: [GET: "renderDeviceTiles"] }
-	path("/getTile/:dni") { action: [GET: "getTile"] }
+    path("/deviceTiles") { action: [GET: "renderDeviceTiles"] }
+    path("/getTile/:dni") { action: [GET: "getTile"] }
 }
 
 private static String DROPLET_API() { "https://api.dropletfuel.com" }
@@ -59,7 +71,7 @@ private static String CHILD_NAME() { "Smart Oil Gauge" }
 // curl-flavored or empty User-Agent. Hubitat's default UA slips through today,
 // but an explicit value insulates the driver against future rule-tightening.
 private Map dropletHeaders() {
-	return ["User-Agent": "Hubitat SmartOilGauge driver/${appVersion()} (+https://github.com/dlaporte/Hubitat)"]
+    return ["User-Agent": "Hubitat SmartOilGauge driver/${appVersion()} (+https://github.com/dlaporte/Hubitat)"]
 }
 
 // ---------------------------------------------------------------------------
@@ -67,57 +79,57 @@ private Map dropletHeaders() {
 // ---------------------------------------------------------------------------
 
 void installed() {
-	// Don't log ${settings} — it contains ClientSecret in plaintext.
-	log.info "Smart Oil Gauge installed"
-	initialize()
+    // Don't log ${settings} — it contains ClientSecret in plaintext.
+    log.info "Smart Oil Gauge installed"
+    initialize()
 }
 
 void updated() {
-	log.info "Smart Oil Gauge updated"
-	initialize()
+    log.info "Smart Oil Gauge updated"
+    initialize()
 }
 
 void uninstalled() {
-	getAllChildDevices().each { deleteChildDevice(it.deviceNetworkId) }
+    getAllChildDevices().each { deleteChildDevice(it.deviceNetworkId) }
 }
 
 void initialize() {
-	logTrace "initialize()"
-	unsubscribe()
-	unschedule()
+    logTrace "initialize()"
+    unsubscribe()
+    unschedule()
 
-	// v0.0.7 cleanup: drop legacy state from the nest-manager scaffolding so
-	// the device State Variables panel stops showing dead data.
-	[
-		"detailEventHistory", "evalExecutionHistory", "detailExecutionHistory",
-		"autoTyp", "autoDisabled", "autoDisabledDt", "lastEventData",
-		"autoRunDt", "autoRunInSchedDt", "evalSched", "evalSchedLastTime",
-		"autoExecMS", "dbgAppndName"
-	].each { state.remove(it) }
+    // v0.0.7 cleanup: drop legacy state from the nest-manager scaffolding so
+    // the device State Variables panel stops showing dead data.
+    [
+        "detailEventHistory", "evalExecutionHistory", "detailExecutionHistory",
+        "autoTyp", "autoDisabled", "autoDisabledDt", "lastEventData",
+        "autoRunDt", "autoRunInSchedDt", "evalSched", "evalSchedLastTime",
+        "autoExecMS", "dbgAppndName"
+    ].each { state.remove(it) }
 
-	// Only hit the API during initialize() on first install. Subsequent saves
-	// rely on the hourly pollChildren — fetching synchronously here on every
-	// preference save was making the settings page block for the duration of
-	// the HTTP round-trip.
-	Map tankData = (state.devices && state.deviceData) ? (state.deviceData as Map) : fetchTankData()
-	boolean newDeviceCreated = false
-	tankData.each { sensorId, tank ->
-		String dni = getDeviceDNI(sensorId)
-		def child = getChildDevice(dni)
-		if (!child) {
-			String label = tank?.tank_num ? "Tank ${tank.tank_num}" : "Tank ${sensorId}"
-			child = addChildDevice("dlaporte", CHILD_NAME(), dni, [name: label, label: label])
-			logInfo "Created ${child.displayName} (dni: ${dni})"
-			newDeviceCreated = true
-		}
-	}
-	if (newDeviceCreated) {
-		runIn(5, "updated", [overwrite: true])
-		return
-	}
+    // Only hit the API during initialize() on first install. Subsequent saves
+    // rely on the hourly pollChildren — fetching synchronously here on every
+    // preference save was making the settings page block for the duration of
+    // the HTTP round-trip.
+    Map tankData = (state.devices && state.deviceData) ? (state.deviceData as Map) : fetchTankData()
+    boolean newDeviceCreated = false
+    tankData.each { sensorId, tank ->
+        String dni = getDeviceDNI(sensorId)
+        def child = getChildDevice(dni)
+        if (!child) {
+            String label = tank?.tank_num ? "Tank ${tank.tank_num}" : "Tank ${sensorId}"
+            child = addChildDevice("dlaporte", CHILD_NAME(), dni, [name: label, label: label])
+            logInfo "Created ${child.displayName} (dni: ${dni})"
+            newDeviceCreated = true
+        }
+    }
+    if (newDeviceCreated) {
+        runIn(5, "updated", [overwrite: true])
+        return
+    }
 
-	runEvery1Hour("pollChildren")
-	pollChildren(false)
+    runEvery1Hour("pollChildren")
+    pollChildren(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -125,70 +137,70 @@ void initialize() {
 // ---------------------------------------------------------------------------
 
 private settingsPage() {
-	if (!state.access_token) { try { state.access_token = createAccessToken() } catch (Exception e) { /* OAuth not enabled */ } }
+    if (!state.access_token) { try { state.access_token = createAccessToken() } catch (Exception e) { /* OAuth not enabled */ } }
 
-	return dynamicPage(name: "settings", title: "Smart Oil Gauge Settings", nextPage: "", install: true, uninstall: true) {
+    return dynamicPage(name: "settings", title: "Smart Oil Gauge Settings", nextPage: "", install: true, uninstall: true) {
 
-		boolean haveToken = getToken()
+        boolean haveToken = getToken()
 
-		section("Authentication") {
-			if (!haveToken) {
-				paragraph "${state.lastErr ?: ''} Enter your Smart Oil Gauge Client ID and Secret."
-				input "ClientId", "string", title: "Smart Oil Gauge Client ID", required: true
-				input "ClientSecret", "string", title: "Smart Oil Gauge Client Secret", required: true, submitOnChange: true
-			} else {
-				paragraph "Authentication succeeded."
-			}
-		}
+        section("Authentication") {
+            if (!haveToken) {
+                paragraph "${state.lastErr ?: ''} Enter your Smart Oil Gauge Client ID and Secret."
+                input "ClientId", "string", title: "Smart Oil Gauge Client ID", required: true
+                input "ClientSecret", "string", title: "Smart Oil Gauge Client Secret", required: true, submitOnChange: true
+            } else {
+                paragraph "Authentication succeeded."
+            }
+        }
 
-		if (haveToken) {
-			List devs = state.devices ?: (fetchTankData().keySet() as List)
-			section("Tanks (${devs.size()})") {
-				if (state.access_token) {
-					if (devs.size() > 1) {
-						paragraph """<a href="${getAppEndpointUrl('deviceTiles')}" target="_blank">All Tanks</a> | <a href="${getLocalEndpointUrl('deviceTiles')}" target="_blank">(local)</a>"""
-					}
-					devs.each { sensorId ->
-						String dni = getDeviceDNI(sensorId)
-						def d = getChildDevice(dni)
-						if (d) {
-							paragraph """<a href="${getAppEndpointUrl('getTile/' + dni)}" target="_blank">${d.label ?: d.name}</a> | <a href="${getLocalEndpointUrl('getTile/' + dni)}" target="_blank">(local)</a>"""
-						}
-					}
-				} else {
-					paragraph "Web tile access requires OAuth. Enable it from Apps Code → Smart Oil Gauge (Connect) → OAuth → Enable OAuth in App."
-				}
-			}
+        if (haveToken) {
+            List devs = state.devices ?: (fetchTankData().keySet() as List)
+            section("Tanks (${devs.size()})") {
+                if (state.access_token) {
+                    if (devs.size() > 1) {
+                        paragraph """<a href="${getAppEndpointUrl('deviceTiles')}" target="_blank">All Tanks</a> | <a href="${getLocalEndpointUrl('deviceTiles')}" target="_blank">(local)</a>"""
+                    }
+                    devs.each { sensorId ->
+                        String dni = getDeviceDNI(sensorId)
+                        def d = getChildDevice(dni)
+                        if (d) {
+                            paragraph """<a href="${getAppEndpointUrl('getTile/' + dni)}" target="_blank">${d.label ?: d.name}</a> | <a href="${getLocalEndpointUrl('getTile/' + dni)}" target="_blank">(local)</a>"""
+                        }
+                    }
+                } else {
+                    paragraph "Web tile access requires OAuth. Enable it from Apps Code → Smart Oil Gauge (Connect) → OAuth → Enable OAuth in App."
+                }
+            }
 
-			section("Tank Alerts & Estimates") {
-				input "lowFuelThresholdPct", "number", title: "Low-fuel alert threshold (% of tank capacity)",
-					required: false, defaultValue: 25, range: "1..99"
-				input "refillThresholdPct", "number", title: "Minimum gallons increase to count as a refill (% of capacity)",
-					required: false, defaultValue: 5, range: "1..99"
-				input "usageWindowHours", "number", title: "Usage-rate smoothing window (hours)",
-					required: false, defaultValue: 168, range: "6..720"
-			}
+            section("Tank Alerts & Estimates") {
+                input "lowFuelThresholdPct", "number", title: "Low-fuel alert threshold (% of tank capacity)",
+                    required: false, defaultValue: 25, range: "1..99"
+                input "refillThresholdPct", "number", title: "Minimum gallons increase to count as a refill (% of capacity)",
+                    required: false, defaultValue: 5, range: "1..99"
+                input "usageWindowHours", "number", title: "Usage-rate smoothing window (hours)",
+                    required: false, defaultValue: 168, range: "6..720"
+            }
 
-			section("Application Security") {
-				input "resetAppAccessToken", "bool", title: "Reset web tile access token?",
-					required: false, defaultValue: false, submitOnChange: true,
-					description: "Resetting invalidates any URL you've shared and generates a new one. Any dashboards using the old URL will need to be updated."
-				resetAppAccessToken(settings.resetAppAccessToken == true)
-			}
-		}
+            section("Application Security") {
+                input "resetAppAccessToken", "bool", title: "Reset web tile access token?",
+                    required: false, defaultValue: false, submitOnChange: true,
+                    description: "Resetting invalidates any URL you've shared and generates a new one. Any dashboards using the old URL will need to be updated."
+                resetAppAccessToken(settings.resetAppAccessToken == true)
+            }
+        }
 
-		section("Logging") {
-			input "showDebug", "bool", title: "Enable debug logging", required: false, defaultValue: false
-		}
-	}
+        section("Logging") {
+            input "showDebug", "bool", title: "Enable debug logging", required: false, defaultValue: false
+        }
+    }
 }
 
 private void resetAppAccessToken(boolean reset) {
-	if (!reset) return
-	logInfo "Resetting web tile access token"
-	state.access_token = null
-	try { state.access_token = createAccessToken() } catch (Exception e) { logError "Could not regenerate access token: ${e.message}" }
-	app?.clearSetting("resetAppAccessToken")
+    if (!reset) return
+    logInfo "Resetting web tile access token"
+    state.access_token = null
+    try { state.access_token = createAccessToken() } catch (Exception e) { logError "Could not regenerate access token: ${e.message}" }
+    app?.clearSetting("resetAppAccessToken")
 }
 
 // ---------------------------------------------------------------------------
@@ -196,104 +208,104 @@ private void resetAppAccessToken(boolean reset) {
 // ---------------------------------------------------------------------------
 
 private boolean getToken() {
-	if (!settings.ClientId || !settings.ClientSecret) {
-		logTrace "getToken: no Client ID / Secret yet"
-		return false
-	}
-	if (isTokenExpired() || !state.APIToken) {
-		return getAPIToken()
-	}
-	return true
+    if (!settings.ClientId || !settings.ClientSecret) {
+        logTrace "getToken: no Client ID / Secret yet"
+        return false
+    }
+    if (isTokenExpired() || !state.APIToken) {
+        return getAPIToken()
+    }
+    return true
 }
 
 private boolean isTokenExpired() {
-	if (!state.APITokenExpirationTime) return true
-	return now() >= (state.APITokenExpirationTime as Long)
+    if (!state.APITokenExpirationTime) return true
+    return now() >= (state.APITokenExpirationTime as Long)
 }
 
 private boolean getAPIToken() {
-	logTrace "getAPIToken: requesting a new API token"
-	def params = [
-		uri: DROPLET_API(),
-		path: "/brand_token.php",
-		headers: dropletHeaders(),
-		body: [
-			grant_type: "client_credentials",
-			client_id: settings.ClientId,
-			client_secret: settings.ClientSecret
-		]
-	]
-	boolean ok = false
-	try {
-		httpPost(params) { resp ->
-			if (resp.status == 200 && resp.data?.access_token) {
-				state.APIToken = resp.data.access_token
-				// Use the server-supplied lease (defaults to 3600s) rather than a
-				// hardcoded 1-hour bucket. Subtract 60s of slack so we refresh
-				// before the server-side expiry actually lands.
-				Integer ttlSec = (resp.data.expires_in ?: 3600) as Integer
-				state.APITokenExpirationTime = now() + ((ttlSec - 60) * 1000L)
-				state.lastErr = ""
-				ok = true
-				logInfo "Token refresh OK — lease ${ttlSec}s"
-			} else {
-				state.lastErr = "Token request returned ${resp.status}: ${resp.data?.error ?: resp.data}"
-			}
-		}
-	} catch (Exception e) {
-		state.lastErr = "Token request exception: ${e.message}"
-	}
-	if (state.lastErr) {
-		logError "getAPIToken failed: ${state.lastErr}"
-		state.APIToken = null
-		state.APITokenExpirationTime = 0L
-	}
-	return ok
+    logTrace "getAPIToken: requesting a new API token"
+    def params = [
+        uri: DROPLET_API(),
+        path: "/brand_token.php",
+        headers: dropletHeaders(),
+        body: [
+            grant_type: "client_credentials",
+            client_id: settings.ClientId,
+            client_secret: settings.ClientSecret
+        ]
+    ]
+    boolean ok = false
+    try {
+        httpPost(params) { resp ->
+            if (resp.status == 200 && resp.data?.access_token) {
+                state.APIToken = resp.data.access_token
+                // Use the server-supplied lease (defaults to 3600s) rather than a
+                // hardcoded 1-hour bucket. Subtract 60s of slack so we refresh
+                // before the server-side expiry actually lands.
+                Integer ttlSec = (resp.data.expires_in ?: 3600) as Integer
+                state.APITokenExpirationTime = now() + ((ttlSec - 60) * 1000L)
+                state.lastErr = ""
+                ok = true
+                logInfo "Token refresh OK — lease ${ttlSec}s"
+            } else {
+                state.lastErr = "Token request returned ${resp.status}: ${resp.data?.error ?: resp.data}"
+            }
+        }
+    } catch (Exception e) {
+        state.lastErr = "Token request exception: ${e.message}"
+    }
+    if (state.lastErr) {
+        logError "getAPIToken failed: ${state.lastErr}"
+        state.APIToken = null
+        state.APITokenExpirationTime = 0L
+    }
+    return ok
 }
 
 // Single source of truth for the upstream call. Returns a Map keyed by
 // sensor_id, or [:] on any failure. On success, also refreshes
 // state.devices (list of sensor_ids) and state.deviceData (the full Map).
 private Map fetchTankData() {
-	logTrace "fetchTankData()"
-	Map deviceData = [:]
-	boolean ok = false
-	if (!getToken()) return deviceData
-	def params = [
-		uri: DROPLET_API(),
-		path: "/auto/get_tank_data.php",
-		headers: dropletHeaders(),
-		body: [access_token: state.APIToken, start_index: 0, max_results: 1000]
-	]
-	try {
-		httpPost(params) { resp ->
-			if (resp.status != 200) {
-				logError "fetchTankData: HTTP ${resp.status}"
-				state.APIToken = null
-				state.APITokenExpirationTime = 0L
-				return
-			}
-			def obs = parseJson(resp.data.toString())
-			if (obs?.result != "ok") {
-				logError "fetchTankData: API non-ok: ${obs?.error_msg ?: obs}"
-				return
-			}
-			obs.data?.each { dev -> deviceData[dev.sensor_id] = dev }
-			ok = true
-		}
-	} catch (Exception e) {
-		logError "fetchTankData exception: ${e.message}"
-		state.APIToken = null
-		state.APITokenExpirationTime = 0L
-	}
-	// Keep the cached tank list on failure. Overwriting it with [:] emptied
-	// state.devices, and pollChildren() then bailed every hour until the app
-	// was re-saved.
-	if (ok) {
-		state.deviceData = deviceData
-		state.devices = deviceData.keySet() as List
-	}
-	return deviceData
+    logTrace "fetchTankData()"
+    Map deviceData = [:]
+    boolean ok = false
+    if (!getToken()) return deviceData
+    def params = [
+        uri: DROPLET_API(),
+        path: "/auto/get_tank_data.php",
+        headers: dropletHeaders(),
+        body: [access_token: state.APIToken, start_index: 0, max_results: 1000]
+    ]
+    try {
+        httpPost(params) { resp ->
+            if (resp.status != 200) {
+                logError "fetchTankData: HTTP ${resp.status}"
+                state.APIToken = null
+                state.APITokenExpirationTime = 0L
+                return
+            }
+            def obs = parseJson(resp.data.toString())
+            if (obs?.result != "ok") {
+                logError "fetchTankData: API non-ok: ${obs?.error_msg ?: obs}"
+                return
+            }
+            obs.data?.each { dev -> deviceData[dev.sensor_id] = dev }
+            ok = true
+        }
+    } catch (Exception e) {
+        logError "fetchTankData exception: ${e.message}"
+        state.APIToken = null
+        state.APITokenExpirationTime = 0L
+    }
+    // Keep the cached tank list on failure. Overwriting it with [:] emptied
+    // state.devices, and pollChildren() then bailed every hour until the app
+    // was re-saved.
+    if (ok) {
+        state.deviceData = deviceData
+        state.devices = deviceData.keySet() as List
+    }
+    return deviceData
 }
 
 // ---------------------------------------------------------------------------
@@ -301,78 +313,78 @@ private Map fetchTankData() {
 // ---------------------------------------------------------------------------
 
 void pollChildren(boolean updateData = true) {
-	logTrace "pollChildren(updateData=${updateData})"
-	if (!getToken()) {
-		logInfo "pollChildren: skipping — no API token"
-		return
-	}
-	// Fetch before reading state.devices so an empty cached list (e.g. the
-	// first-install fetch failed) is retried on every poll.
-	Map deviceData = updateData ? fetchTankData() : (state.deviceData ?: [:])
-	List devices = state.devices ?: []
-	if (!devices) {
-		logInfo "pollChildren: no known devices"
-		return
-	}
+    logTrace "pollChildren(updateData=${updateData})"
+    if (!getToken()) {
+        logInfo "pollChildren: skipping — no API token"
+        return
+    }
+    // Fetch before reading state.devices so an empty cached list (e.g. the
+    // first-install fetch failed) is retried on every poll.
+    Map deviceData = updateData ? fetchTankData() : (state.deviceData ?: [:])
+    List devices = state.devices ?: []
+    if (!devices) {
+        logInfo "pollChildren: no known devices"
+        return
+    }
 
-	devices.each { sensorId ->
-		try {
-			String dni = getDeviceDNI(sensorId)
-			def d = getChildDevice(dni)
-			if (!d) {
-				logInfo "pollChildren: no child device for ${dni}"
-				return
-			}
-			Map devData = deviceData[sensorId]
-			if (!devData) {
-				logInfo "pollChildren: no API data for ${d.label}"
-				return
-			}
+    devices.each { sensorId ->
+        try {
+            String dni = getDeviceDNI(sensorId)
+            def d = getChildDevice(dni)
+            if (!d) {
+                logInfo "pollChildren: no child device for ${dni}"
+                return
+            }
+            Map devData = deviceData[sensorId]
+            if (!devData) {
+                logInfo "pollChildren: no API data for ${d.label}"
+                return
+            }
 
-			float gallons = devData.gallons.toFloat()
-			float capacity = devData.tank_volume.toFloat()
-			float level = ((gallons / capacity) * 100).round(2)
-			String lastReadTime = devData.last_read
-			String acctNum = devData.acct_num ?: ""
-			int battery = batteryToPercent(devData.battery)
-			Map derived = computeTankMetrics(sensorId, gallons, capacity)
-			recordDailyLevel(d.id, level)
+            float gallons = devData.gallons.toFloat()
+            float capacity = devData.tank_volume.toFloat()
+            float level = ((gallons / capacity) * 100).round(2)
+            String lastReadTime = devData.last_read
+            String acctNum = devData.acct_num ?: ""
+            int battery = batteryToPercent(devData.battery)
+            Map derived = computeTankMetrics(sensorId, gallons, capacity)
+            recordDailyLevel(d.id, level)
 
-			List events = [
-				[level: level],
-				[energy: level],
-				[humidity: level],
-				[capacity: capacity],
-				[gallons: gallons],
-				[lastreading: lastReadTime],
-				[battery: battery],
-				[accountNumber: acctNum],
-				[usageRate: derived.usageRate],
-				[lowFuel: derived.lowFuel ? "true" : "false"]
-			]
-			// Skip null derived metrics — sendEvent(value:null) stores the
-			// literal string "null" on the attribute.
-			if (derived.daysRemaining != null) events << [daysRemaining: derived.daysRemaining]
-			if (derived.refillDetected) {
-				events << [lastRefillAt: derived.refillAt]
-				events << [lastRefillGallons: derived.refillGallons]
-				log.info "SOG: refill detected on ${d.label} +${derived.refillGallons} gal"
-			}
-			events.each { evt -> d.generateEvent(evt) }
-		} catch (Exception e) {
-			logError "pollChildren: error for sensor ${sensorId}: ${e.message}"
-		}
-	}
+            List events = [
+                [level: level],
+                [energy: level],
+                [humidity: level],
+                [capacity: capacity],
+                [gallons: gallons],
+                [lastreading: lastReadTime],
+                [battery: battery],
+                [accountNumber: acctNum],
+                [usageRate: derived.usageRate],
+                [lowFuel: derived.lowFuel ? "true" : "false"]
+            ]
+            // Skip null derived metrics — sendEvent(value:null) stores the
+            // literal string "null" on the attribute.
+            if (derived.daysRemaining != null) events << [daysRemaining: derived.daysRemaining]
+            if (derived.refillDetected) {
+                events << [lastRefillAt: derived.refillAt]
+                events << [lastRefillGallons: derived.refillGallons]
+                log.info "SOG: refill detected on ${d.label} +${derived.refillGallons} gal"
+            }
+            events.each { evt -> d.generateEvent(evt) }
+        } catch (Exception e) {
+            logError "pollChildren: error for sensor ${sensorId}: ${e.message}"
+        }
+    }
 }
 
 private int batteryToPercent(String level) {
-	switch (level) {
-		case "Excellent": return 100
-		case "Good":      return 75
-		case "Fair":      return 50
-		case "Poor":      return 1
-		default:          return 0
-	}
+    switch (level) {
+        case "Excellent": return 100
+        case "Good":      return 75
+        case "Fair":      return 50
+        case "Poor":      return 1
+        default:          return 0
+    }
 }
 
 // Computes refill / usage-rate / days-remaining / low-fuel for one tank.
@@ -380,64 +392,64 @@ private int batteryToPercent(String level) {
 // within the smoothing window. Refill events break the chain so post-refill
 // usageRate isn't polluted by the jump.
 private Map computeTankMetrics(String sensorId, Float gallons, Float capacity) {
-	Long nowMs = now()
-	Integer windowHours = (settings.usageWindowHours ?: 168) as Integer
-	Float refillThresholdPct = (settings.refillThresholdPct ?: 5) as Float
-	Float lowFuelThresholdPct = (settings.lowFuelThresholdPct ?: 25) as Float
+    Long nowMs = now()
+    Integer windowHours = (settings.usageWindowHours ?: 168) as Integer
+    Float refillThresholdPct = (settings.refillThresholdPct ?: 5) as Float
+    Float lowFuelThresholdPct = (settings.lowFuelThresholdPct ?: 25) as Float
 
-	if (state.tankHistory == null) state.tankHistory = [:]
-	def hist = state.tankHistory[sensorId] ?: []
+    if (state.tankHistory == null) state.tankHistory = [:]
+    def hist = state.tankHistory[sensorId] ?: []
 
-	boolean refillDetected = false
-	Float refillGallons = 0
-	String refillAt = null
-	if (hist) {
-		Float prevGallons = hist.last()[0] as Float
-		Float jumpThreshold = capacity * refillThresholdPct / 100
-		if (gallons > prevGallons + jumpThreshold) {
-			refillDetected = true
-			refillGallons = (gallons - prevGallons).round(2)
-			refillAt = new Date(nowMs).format("yyyy-MM-dd HH:mm:ss", getTimeZone() ?: TimeZone.getDefault())
-			hist = []
-		}
-	}
+    boolean refillDetected = false
+    Float refillGallons = 0
+    String refillAt = null
+    if (hist) {
+        Float prevGallons = hist.last()[0] as Float
+        Float jumpThreshold = capacity * refillThresholdPct / 100
+        if (gallons > prevGallons + jumpThreshold) {
+            refillDetected = true
+            refillGallons = (gallons - prevGallons).round(2)
+            refillAt = new Date(nowMs).format("yyyy-MM-dd HH:mm:ss", getTimeZone() ?: TimeZone.getDefault())
+            hist = []
+        }
+    }
 
-	Long cutoff = nowMs - (windowHours * 3600L * 1000L)
-	hist = hist.findAll { (it[1] as Long) >= cutoff }
-	hist << [gallons, nowMs]
-	// Hard cap independent of windowHours so an aggressive window setting
-	// can't bloat state indefinitely. 720 = max window at 1-per-hour polling.
-	while (hist.size() > 720) hist.removeAt(0)
-	state.tankHistory[sensorId] = hist
+    Long cutoff = nowMs - (windowHours * 3600L * 1000L)
+    hist = hist.findAll { (it[1] as Long) >= cutoff }
+    hist << [gallons, nowMs]
+    // Hard cap independent of windowHours so an aggressive window setting
+    // can't bloat state indefinitely. 720 = max window at 1-per-hour polling.
+    while (hist.size() > 720) hist.removeAt(0)
+    state.tankHistory[sensorId] = hist
 
-	Float usageRate = 0
-	Integer daysRemaining = -1
-	if (hist.size() >= 2) {
-		Float oldestGal = hist.first()[0] as Float
-		Long oldestTime = hist.first()[1] as Long
-		Float hours = (nowMs - oldestTime) / (3600.0 * 1000.0)
-		Float galConsumed = oldestGal - gallons
-		if (hours >= 1 && galConsumed > 0) {
-			usageRate = (galConsumed / hours * 24).round(2)
-		}
-	}
+    Float usageRate = 0
+    Integer daysRemaining = -1
+    if (hist.size() >= 2) {
+        Float oldestGal = hist.first()[0] as Float
+        Long oldestTime = hist.first()[1] as Long
+        Float hours = (nowMs - oldestTime) / (3600.0 * 1000.0)
+        Float galConsumed = oldestGal - gallons
+        if (hours >= 1 && galConsumed > 0) {
+            usageRate = (galConsumed / hours * 24).round(2)
+        }
+    }
 
-	// With no measurable consumption in the window (flat readings, or right
-	// after a refill resets hist), estimate from the last measured rate so
-	// daysRemaining follows current gallons instead of freezing.
-	if (state.lastUsageRate == null) state.lastUsageRate = [:]
-	if (usageRate > 0) state.lastUsageRate[sensorId] = usageRate
-	Float estimateRate = usageRate > 0 ? usageRate : (state.lastUsageRate[sensorId] as Float)
-	if (estimateRate) daysRemaining = (gallons / estimateRate).round() as Integer
+    // With no measurable consumption in the window (flat readings, or right
+    // after a refill resets hist), estimate from the last measured rate so
+    // daysRemaining follows current gallons instead of freezing.
+    if (state.lastUsageRate == null) state.lastUsageRate = [:]
+    if (usageRate > 0) state.lastUsageRate[sensorId] = usageRate
+    Float estimateRate = usageRate > 0 ? usageRate : (state.lastUsageRate[sensorId] as Float)
+    if (estimateRate) daysRemaining = (gallons / estimateRate).round() as Integer
 
-	return [
-		usageRate: usageRate,
-		daysRemaining: daysRemaining < 0 ? null : daysRemaining,
-		lowFuel: (gallons / capacity * 100) <= lowFuelThresholdPct,
-		refillDetected: refillDetected,
-		refillAt: refillAt,
-		refillGallons: refillGallons
-	]
+    return [
+        usageRate: usageRate,
+        daysRemaining: daysRemaining < 0 ? null : daysRemaining,
+        lowFuel: (gallons / capacity * 100) <= lowFuelThresholdPct,
+        refillDetected: refillDetected,
+        refillAt: refillAt,
+        refillGallons: refillGallons
+    ]
 }
 
 // Daily level snapshot for the tile chart. Was a 70-line "automation eval"
@@ -447,13 +459,13 @@ private Map computeTankMetrics(String sensorId, Float gallons, Float capacity) {
 // Keys are "yyyy-DDD" (year + day-of-year) so Jan 1 entries don't alias
 // against the previous year's Jan 1. Daily dedup compares string keys.
 private void recordDailyLevel(devId, float level) {
-	String key = "TEnergyTbl${devId}"
-	List table = state[key] ?: []
-	String dayKey = new Date().format("yyyy-DDD", location.timeZone ?: TimeZone.getDefault())
-	if (table && table.last()[0] == dayKey) table = table.take(table.size() - 1)
-	table << [dayKey, level]
-	while (table.size() > 365) table.removeAt(0)
-	state[key] = table
+    String key = "TEnergyTbl${devId}"
+    List table = state[key] ?: []
+    String dayKey = new Date().format("yyyy-DDD", location.timeZone ?: TimeZone.getDefault())
+    if (table && table.last()[0] == dayKey) table = table.take(table.size() - 1)
+    table << [dayKey, level]
+    while (table.size() > 365) table.removeAt(0)
+    state[key] = table
 }
 
 // ---------------------------------------------------------------------------
@@ -461,27 +473,27 @@ private void recordDailyLevel(devId, float level) {
 // ---------------------------------------------------------------------------
 
 def getTile() {
-	String dni = "${params?.dni}"
-	if (!dni) {
-		render contentType: "text/html", data: "Invalid parameters"
-		return
-	}
-	def device = getChildDevice(dni)
-	if (!device) {
-		render contentType: "text/html", data: "Device '${dni}' not found"
-		return
-	}
-	return renderDeviceTiles(device)
+    String dni = "${params?.dni}"
+    if (!dni) {
+        render contentType: "text/html", data: "Invalid parameters"
+        return
+    }
+    def device = getChildDevice(dni)
+    if (!device) {
+        render contentType: "text/html", data: "Device '${dni}' not found"
+        return
+    }
+    return renderDeviceTiles(device)
 }
 
 def renderDeviceTiles(theDev = null) {
-	def allDevices = theDev ? [theDev] : app.getChildDevices(true).sort { it?.getLabel() }
-	String panelsHtml = allDevices.findAll { it?.typeName == CHILD_NAME() }.collect { dev ->
-		"""<div class="panel"><h2>${htmlEscape(dev?.getLabel())}</h2>${getEDeviceTile(dev)}</div>"""
-	}.join("\n")
+    def allDevices = theDev ? [theDev] : app.getChildDevices(true).sort { it?.getLabel() }
+    String panelsHtml = allDevices.findAll { it?.typeName == CHILD_NAME() }.collect { dev ->
+        """<div class="panel"><h2>${htmlEscape(dev?.getLabel())}</h2>${getEDeviceTile(dev)}</div>"""
+    }.join("\n")
 
-	String title = htmlEscape(theDev ? theDev.getLabel() : "All Tanks")
-	String html = """<!doctype html>
+    String title = htmlEscape(theDev ? theDev.getLabel() : "All Tanks")
+    String html = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -509,65 +521,65 @@ def renderDeviceTiles(theDev = null) {
 ${panelsHtml}
 </body>
 </html>"""
-	render contentType: "text/html", data: html
+    render contentType: "text/html", data: html
 }
 
 private String getEDeviceTile(dev) {
-	List table = state["TEnergyTbl${dev.id}"] ?: []
-	if (table.size() == 0) {
-		return """<div class="tank-body"><div>Waiting for data…</div></div>"""
-	}
+    List table = state["TEnergyTbl${dev.id}"] ?: []
+    if (table.size() == 0) {
+        return """<div class="tank-body"><div>Waiting for data…</div></div>"""
+    }
 
-	def gallons = dev.currentValue("gallons")
-	def capacity = dev.currentValue("capacity")
-	def level = dev.currentValue("level")
-	def lastReadTime = dev.currentValue("lastreading")
-	def usageRate = dev.currentValue("usageRate")
-	def daysRemaining = dev.currentValue("daysRemaining")
-	String lowFuel = dev.currentValue("lowFuel")
+    def gallons = dev.currentValue("gallons")
+    def capacity = dev.currentValue("capacity")
+    def level = dev.currentValue("level")
+    def lastReadTime = dev.currentValue("lastreading")
+    def usageRate = dev.currentValue("usageRate")
+    def daysRemaining = dev.currentValue("daysRemaining")
+    String lowFuel = dev.currentValue("lowFuel")
 
-	// "Gallons used" — penultimate vs. current in the daily snapshot table.
-	// Positive consumption when gallons dropped; "refilled" label uses the
-	// same percentage threshold as computeTankMetrics so the tile and the
-	// lastRefillAt event agree about what counts as a refill.
-	def yesterdayLevel = table.size() > 1 ? table[-2][1] : null
-	String used = "—"
-	if (yesterdayLevel != null && capacity) {
-		Float refillThresholdPct = (settings.refillThresholdPct ?: 5) as Float
-		Float refillCutoff = (capacity as Float) * refillThresholdPct / 100
-		float yesterdayGal = (capacity as Float) * (yesterdayLevel as Float) / 100
-		float consumed = yesterdayGal - (gallons as Float)   // positive = consumed
-		if (consumed < -refillCutoff) {
-			used = "+${(-consumed).round(2)} (refilled)"
-		} else {
-			used = "${consumed.round(2)}"
-		}
-	}
+    // "Gallons used" — penultimate vs. current in the daily snapshot table.
+    // Positive consumption when gallons dropped; "refilled" label uses the
+    // same percentage threshold as computeTankMetrics so the tile and the
+    // lastRefillAt event agree about what counts as a refill.
+    def yesterdayLevel = table.size() > 1 ? table[-2][1] : null
+    String used = "—"
+    if (yesterdayLevel != null && capacity) {
+        Float refillThresholdPct = (settings.refillThresholdPct ?: 5) as Float
+        Float refillCutoff = (capacity as Float) * refillThresholdPct / 100
+        float yesterdayGal = (capacity as Float) * (yesterdayLevel as Float) / 100
+        float consumed = yesterdayGal - (gallons as Float)   // positive = consumed
+        if (consumed < -refillCutoff) {
+            used = "+${(-consumed).round(2)} (refilled)"
+        } else {
+            used = "${consumed.round(2)}"
+        }
+    }
 
-	String formattedRead = "—"
-	if (lastReadTime) {
-		try {
-			// Droplet's API doesn't document the timezone of last_read, so we
-			// parse it in JVM default (which on Hubitat matches the hub's TZ in
-			// the common case) and format in the hub's TZ for display. v0.0.14
-			// tried to set the parser TZ explicitly but that introduced an
-			// offset bug whenever the API timezone didn't match the hub.
-			Date d = Date.parse("yyyy-MM-dd HH:mm:ss", lastReadTime.toString())
-			SimpleDateFormat fmt = new SimpleDateFormat("MMM d, yyyy h:mm a")
-			if (getTimeZone()) fmt.setTimeZone(getTimeZone())
-			formattedRead = fmt.format(d)
-		} catch (Exception e) { formattedRead = lastReadTime.toString() }
-	}
+    String formattedRead = "—"
+    if (lastReadTime) {
+        try {
+            // Droplet's API doesn't document the timezone of last_read, so we
+            // parse it in JVM default (which on Hubitat matches the hub's TZ in
+            // the common case) and format in the hub's TZ for display. v0.0.14
+            // tried to set the parser TZ explicitly but that introduced an
+            // offset bug whenever the API timezone didn't match the hub.
+            Date d = Date.parse("yyyy-MM-dd HH:mm:ss", lastReadTime.toString())
+            SimpleDateFormat fmt = new SimpleDateFormat("MMM d, yyyy h:mm a")
+            if (getTimeZone()) fmt.setTimeZone(getTimeZone())
+            formattedRead = fmt.format(d)
+        } catch (Exception e) { formattedRead = lastReadTime.toString() }
+    }
 
-	String lowFuelClass = (lowFuel == "true") ? " lowfuel" : ""
-	String usageLine = (usageRate && (usageRate as Float) > 0)
-		? "<br><b>Usage rate:</b> ${usageRate} gal/day"
-		: ""
-	String daysLine = (daysRemaining != null && daysRemaining.toString() != "null")
-		? "<br><b>Days remaining:</b> ${daysRemaining}"
-		: ""
+    String lowFuelClass = (lowFuel == "true") ? " lowfuel" : ""
+    String usageLine = (usageRate && (usageRate as Float) > 0)
+        ? "<br><b>Usage rate:</b> ${usageRate} gal/day"
+        : ""
+    String daysLine = (daysRemaining != null && daysRemaining.toString() != "null")
+        ? "<br><b>Days remaining:</b> ${daysRemaining}"
+        : ""
 
-	return """<div class="tank-body">
+    return """<div class="tank-body">
   <div class="tank-stats">
     <b>Capacity:</b> ${capacity ?: '—'} gal<br>
     <b>Tank level:</b> <span class="${lowFuelClass}">${level ?: '—'}%</span><br>
@@ -585,14 +597,14 @@ private String getEDeviceTile(dev) {
 // Inline SVG tank that fills from the bottom based on level (0..100).
 // Zero external assets — no PNGs, no CSS framework needed.
 private String renderTankSvg(def level) {
-	Float lvl = level != null ? (level as Float) : 0f
-	if (lvl < 0) lvl = 0f
-	if (lvl > 100) lvl = 100f
-	// Tank body interior: y=12..132 (height 120). Fill rises from bottom.
-	Float fillHeight = 120 * lvl / 100
-	Float fillY = 12 + (120 - fillHeight)
-	String fillColor = lvl <= 25 ? "#b94a48" : "#c69963"
-	return """<svg width="140" height="170" viewBox="0 0 100 150" xmlns="http://www.w3.org/2000/svg">
+    Float lvl = level != null ? (level as Float) : 0f
+    if (lvl < 0) lvl = 0f
+    if (lvl > 100) lvl = 100f
+    // Tank body interior: y=12..132 (height 120). Fill rises from bottom.
+    Float fillHeight = 120 * lvl / 100
+    Float fillY = 12 + (120 - fillHeight)
+    String fillColor = lvl <= 25 ? "#b94a48" : "#c69963"
+    return """<svg width="140" height="170" viewBox="0 0 100 150" xmlns="http://www.w3.org/2000/svg">
   <rect x="42" y="2" width="16" height="8" fill="#555" rx="1"/>
   <rect x="8" y="12" width="84" height="120" rx="6" fill="#f0f0f0" stroke="#333" stroke-width="2"/>
   <rect x="10" y="${fillY}" width="80" height="${fillHeight}" fill="${fillColor}" opacity="0.85"/>
@@ -608,31 +620,31 @@ private String renderTankSvg(def level) {
 // ---------------------------------------------------------------------------
 
 String getDeviceDNI(String DeviceID) {
-	return [app.id, DeviceID].join('.')
+    return [app.id, DeviceID].join('.')
 }
 
 // Minimal HTML entity escaping for values interpolated into rendered tiles.
 // Device labels are user-controlled and the tile URLs are OAuth-accessible.
 private String htmlEscape(s) {
-	if (s == null) return ""
-	return s.toString()
-		.replace("&", "&amp;")
-		.replace("<", "&lt;")
-		.replace(">", "&gt;")
-		.replace("\"", "&quot;")
-		.replace("'", "&#39;")
+    if (s == null) return ""
+    return s.toString()
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
+        .replace("'", "&#39;")
 }
 
 String getAppEndpointUrl(String subPath) {
-	return "${getFullApiServerUrl()}${subPath ? "/${subPath}" : ""}?access_token=${state.access_token}"
+    return "${getFullApiServerUrl()}${subPath ? "/${subPath}" : ""}?access_token=${state.access_token}"
 }
 
 String getLocalEndpointUrl(String subPath) {
-	return "${getFullLocalApiServerUrl()}${subPath ? "/${subPath}" : ""}?access_token=${state.access_token}"
+    return "${getFullLocalApiServerUrl()}${subPath ? "/${subPath}" : ""}?access_token=${state.access_token}"
 }
 
 private TimeZone getTimeZone() {
-	return location?.timeZone
+    return location?.timeZone
 }
 
 // ---------------------------------------------------------------------------
