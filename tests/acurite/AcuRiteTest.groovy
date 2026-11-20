@@ -12,13 +12,20 @@ def fresh = {
     d
 }
 
+// The station's check-in time in the API's format, minutes before the harness clock.
+def checkin = { long minutesAgo ->
+    def fmt = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX")
+    fmt.setTimeZone(TimeZone.getTimeZone("UTC"))
+    fmt.format(new Date(1_800_000_000_000L - minutesAgo * 60_000L))
+}
+
 def loginOk = [token_id: "tok-1234", user: [account_users: [[account_id: 77]]]]
 
 // A dashboard reply. `sensors` replaces the sensor list; wired_sensors is absent
 // unless given (the API omits it on some stations).
 def dashboard = { Map opts = [:] ->
     Map dev = [name: "Weather Station", model_code: "Atlas", status_code: "Active", battery_level: "Normal",
-               signal_strength: 4, last_check_in_at: "2026-11-20T19:00:00Z",
+               signal_strength: 4, last_check_in_at: opts.checkin ?: checkin(5),
                sensors: opts.sensors ?: [
                    [sensor_name: "Temperature", last_reading_value: "41.2", chart_unit: "F"],
                    [sensor_name: "Humidity", last_reading_value: "80", chart_unit: "%"],
@@ -240,6 +247,42 @@ test("initialize no longer deletes pre-0.0.10 attributes") {
     def d = fresh()
     d.call("initialize")
     assert d.device.deletedStates.isEmpty()
+}
+
+// ---- Fixes: a station that stopped reporting ----
+
+test("a station that hasn't checked in for over 2 hours is offline, with one warning") {
+    def d = withSession(fresh())
+    d.call("refresh")
+    d.reply(d.http[0], json: dashboard(wired: [], checkin: "2026-02-18T08:17:00.000+00:00"))
+    assert d.device.current.healthStatus == "offline"
+    assert d.log.at("warn").size() == 1 && d.log.at("warn")[0].contains("hasn't reported to myAcuRite since 2026-02-18T08:17:00.000+00:00")
+    d.call("refresh")
+    d.reply(d.http[0], json: dashboard(wired: [], checkin: "2026-02-18T08:17:00.000+00:00"))
+    assert d.log.at("warn").size() == 1
+    d.call("refresh")
+    d.reply(d.http[0], json: dashboard(wired: []))
+    assert d.device.current.healthStatus == "online"
+    assert d.log.at("info").contains("the station is reporting to myAcuRite again")
+}
+
+test("a stale station stays offline when the API recovers from an outage") {
+    def d = withSession(fresh())
+    d.state.acurite_token_expiry = d.clock + 10 * 3_600_000L
+    d.call("refresh")
+    d.reply(d.http[0], json: dashboard(wired: [], checkin: "2026-02-18T08:17:00.000+00:00"))
+    d.call("refresh")
+    d.reply(d.http[0], status: 503, error: "Service Unavailable")
+    d.call("refresh")
+    d.reply(d.http[0], json: dashboard(wired: [], checkin: "2026-02-18T08:17:00.000+00:00"))
+    assert d.device.current.healthStatus == "offline"
+}
+
+test("an unparseable check-in time doesn't mark the station stale") {
+    def d = withSession(fresh())
+    d.call("refresh")
+    d.reply(d.http[0], json: dashboard(wired: [], checkin: "yesterday"))
+    assert d.device.current.healthStatus == "online"
 }
 
 finish()
