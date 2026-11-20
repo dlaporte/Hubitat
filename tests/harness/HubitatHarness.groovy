@@ -47,6 +47,13 @@ class HubitatHarness {
             gcl.parseClass("package hubitat.zwave.commands.${pkg}\nclass ${cls} extends hubitat.zwave.Command {\n${fields}\n}",
                     "${cls}.groovy")
         }
+        gcl.parseClass("package hubitat.device\nenum Protocol { LAN, TELNET, RAW_LAN, ZWAVE, ZIGBEE }", "Protocol.groovy")
+        gcl.parseClass("""package hubitat.device
+            class HubAction {
+                def args
+                HubAction(Object... a) { args = a as List }
+                String toString() { "HubAction" + args }
+            }""", "HubAction.groovy")
         File file = new File(path)
         Class scriptClass = gcl.parseClass(file.getText("UTF-8"), file.name)
         Driver d = new Driver(gcl)
@@ -78,6 +85,7 @@ class DriverBinding extends Binding {
 }
 
 class FakeDevice {
+    Object id = 1
     String displayName = "Test Device"
     Map<String, Object> current = [:]       // attribute -> latest value
     Map<String, Object> staleValues = [:]   // attribute -> value currentValue() keeps returning (simulates lag)
@@ -156,6 +164,8 @@ class Driver {
     final List<List> runIns = []            // every runIn call: [seconds, method]
     final List<String> unschedules = []     // every unschedule call ("*" = all)
     final List<Map> http = []               // every async HTTP call: [method, callback, params, data]
+    final List hubCommands = []             // every sendHubCommand
+    final Map<String, Map> children = [:]   // child DNI -> [namespace, typeName, props]
 
     // Recorded from metadata { }
     Map definition = [:]
@@ -207,6 +217,13 @@ class Driver {
             http << [method: "GET", callback: cb, params: params, data: data]
         })
         binding.setVariable("response", { cmd -> "response:${cmd}".toString() })
+        binding.setVariable("sendHubCommand", { cmd -> hubCommands << cmd })
+        binding.setVariable("getChildDevice", { String dni -> children[dni] })
+        binding.setVariable("getChildDevices", { -> children.values() as List })
+        binding.setVariable("addChildDevice", { String ns, String type, String dni, Map props = [:] ->
+            children[dni] = [namespace: ns, typeName: type, displayName: props.label ?: type] + props
+        })
+        binding.setVariable("deleteChildDevice", { String dni -> children.remove(dni) })
         binding.setVariable("updateDataValue", { String k, String v -> device.updateDataValue(k, v) })
         binding.setVariable("getDataValue", { String k -> device.getDataValue(k) })
 
@@ -271,6 +288,6 @@ class Driver {
 
     /** Forget recorded calls (keeps settings, state, device attributes and schedules). */
     void reset() {
-        events.clear(); runIns.clear(); unschedules.clear(); log.lines.clear(); http.clear()
+        events.clear(); runIns.clear(); unschedules.clear(); log.lines.clear(); http.clear(); hubCommands.clear()
     }
 }
