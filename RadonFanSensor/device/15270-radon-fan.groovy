@@ -58,10 +58,12 @@ metadata {
         attribute "lastStartedAt", "string"           // ISO timestamp of last fan-on transition
         attribute "lastStoppedAt", "string"           // ISO timestamp of last fan-off transition
         attribute "fanAlarm", "string"                // "ok" or "alarm" — alarm if off too long
+        attribute "healthStatus", "enum", ["online", "offline"]
     }
 
     preferences {
         input name: "alarmAfterMinutes", type: "number", title: "Fire fanAlarm if fan has been off for (minutes)", defaultValue: 30, range: "1..1440"
+        input name: "invertSensor", type: "bool", title: "Invert sensor", description: "Turn on if Hubitat shows the fan running when it is off (pressure switch wired the other way)", defaultValue: false
         input name: "logEnable", type: "bool", title: "Enable debug logging", description: "Turns itself off after 30 minutes", defaultValue: false
         input name: "txtEnable", type: "bool", title: "Enable descriptionText logging", defaultValue: true
     }
@@ -76,6 +78,9 @@ void installed() {
 void updated() {
     log.info "Preferences saved"
     initialize()
+    // Re-derive the fan state from the last raw report so turning Invert
+    // sensor on or off takes effect immediately.
+    if (state.lastRaw != null) sensorValueEvent(state.lastRaw)
 }
 
 // Runs at hub boot (Initialize capability), from the Initialize button, and on
@@ -86,6 +91,7 @@ void initialize() {
     upgradeSettings()
     if (settings.logEnable) runIn(1800, "logsOff")
     rearmFanAlarm()
+    rearmOfflineTimer()
 }
 
 private void upgradeSettings() {
@@ -95,9 +101,11 @@ private void upgradeSettings() {
 
 // If the fan is off, re-arm the alarm timer for the *remaining* window, not a
 // fresh one. Otherwise a reboot 28 min into a 30-min window resets the clock to
-// a full 30, silently defeating the safety net.
+// a full 30, silently defeating the safety net. An alarm that already fired is
+// left alone, so a reboot doesn't send the notification again.
 private void rearmFanAlarm() {
-    if (device.currentValue("contact") != "open") return
+    if (fanRunning() != false) return
+    if (device.currentValue("fanAlarm") == "alarm") return
     Integer afterSec = alarmAfterSeconds()
     Integer delaySec = afterSec
     String stoppedAt = device.currentValue("lastStoppedAt")
@@ -111,31 +119,43 @@ private void rearmFanAlarm() {
     runIn(delaySec, "checkFanAlarm")
 }
 
+// Restart the offline timer for whatever is left of the window since the last
+// check-in. With no stored check-in (first run of 0.10.0) it starts a full
+// window; device.lastActivity isn't used because it can be stale.
+private void rearmOfflineTimer() {
+    Integer window = offlineAfterSeconds()
+    Integer delaySec = window
+    Long last = state.lastCheckinMs as Long
+    if (last) delaySec = Math.max(1, (window - (now() - last).intdiv(1000)) as Integer)
+    runIn(delaySec, "markOffline")
+}
+
 // ---- Commands ----
 
-def refresh() {
-    logDebug "refresh() called"
-    def commands = []
-
-    // Request current sensor state
-    commands << zwave.sensorBinaryV1.sensorBinaryGet()
-
-    // Request battery level if device supports it
-    if (!state.lastbat || now() - (state.lastbat as Long) > 53*60*60*1000L) {
-        commands << zwave.batteryV1.batteryGet()
-    }
-
-    // Return the commands to be sent
-    return commands.collect { response(it) }
+// The sensor sleeps, so nothing sent now would reach it. Queue the request for
+// its next wake-up instead. (sensorBinaryGet is not used: on a WADWAZ-1 it may
+// report the internal reed switch rather than the wired terminals.)
+void refresh() {
+    state.refreshPending = true
+    log.info "${device.displayName} is asleep; it will report its battery and wake-up interval when it next wakes up"
 }
 
 // Called via runIn after the configured fan-off threshold. If the fan is still
 // off, fire the fanAlarm attribute → "alarm" so Rule Machine can notify.
-def checkFanAlarm() {
-    if (device.currentValue("contact") == "open") {
-        emitEvent(name: "fanAlarm", value: "alarm", isStateChange: true,
-            descriptionText: "${device.displayName} fan has been off for ${alarmAfterSeconds().intdiv(60)} minutes")
-    }
+void checkFanAlarm() {
+    if (fanRunning() != false) return
+    if (device.currentValue("fanAlarm") == "alarm") return
+    emitEvent(name: "fanAlarm", value: "alarm", isStateChange: true,
+        descriptionText: "${device.displayName} fan has been off for ${alarmAfterSeconds().intdiv(60)} minutes")
+}
+
+// Called via runIn when the sensor has missed two wake-ups (see offlineAfterSeconds).
+void markOffline() {
+    if (device.currentValue("healthStatus") == "offline") return
+    Long last = state.lastCheckinMs as Long
+    Long hours = last ? (now() - last).intdiv(3_600_000L) : offlineAfterSeconds().intdiv(3600)
+    log.warn "${device.displayName} hasn't checked in for ${hours} hours; check its battery and Z-Wave connection"
+    emitEvent(name: "healthStatus", value: "offline", descriptionText: "${device.displayName} is offline")
 }
 
 // ---- Z-Wave handlers ----
@@ -146,31 +166,43 @@ def parse(String description) {
         log.warn "Z-Wave error from ${device.displayName}: ${description}"
         return null
     }
+    noteCheckin()
     def cmd = zwave.parse(description, [0x20: 1, 0x25: 1, 0x30: 1, 0x31: 5, 0x80: 1, 0x84: 1, 0x71: 3, 0x9C: 1])
     logDebug "parsed: ${cmd}"
     if (!cmd) return null
-    return zwaveEvent(cmd)
+    def result = zwaveEvent(cmd)
+    // Handlers may add nulls (sensorValueEvent sends its own events and returns null).
+    return (result instanceof List) ? result.flatten().findAll { it != null } : result
 }
 
+// Every fan report lands here. value is the raw sensor value: 0 = contact open,
+// anything else = closed. With the standard wiring, closed means the fan runs.
 def sensorValueEvent(value) {
     logDebug "sensorValueEvent: value = ${value}"
-    String ts = isoNow()
-    def result = null
-    if (value) {
-        // Fan started: switch=on, contact=closed, record timestamp, cancel pending alarm
-        result = createEvent(name: "switch", value: "on", descriptionText: "$device.displayName is running")
-        sendEvent(name: "contact", value: "closed", descriptionText: "fan running")
-        sendEvent(name: "lastStartedAt", value: ts)
-        sendEvent(name: "fanAlarm", value: "ok")
+    Integer raw = (value ?: 0) as Integer
+    state.lastRaw = raw
+    boolean running = (raw != 0) != (settings.invertSensor == true)
+    // Each transition arrives as two frames ~0.4 s apart. Dedup on state the
+    // driver owns (serialized by singleThreaded): the contact attribute can lag.
+    Boolean prev = fanRunning()
+    if (prev != null && prev == running) {
+        logDebug "repeat report (running=${running}) ignored"
+        return null
+    }
+    state.fanRunning = running
+    if (running) {
         unschedule("checkFanAlarm")
+        emitEvent(name: "contact", value: "closed", descriptionText: "${device.displayName} fan is running")
+        sendEvent(name: "switch", value: "on")
+        sendEvent(name: "lastStartedAt", value: isoNow())
+        emitEvent(name: "fanAlarm", value: "ok", descriptionText: "${device.displayName} fan alarm cleared")
     } else {
-        // Fan stopped: switch=off, contact=open, record timestamp, schedule alarm check
-        result = createEvent(name: "switch", value: "off", descriptionText: "$device.displayName is not running")
-        sendEvent(name: "contact", value: "open", descriptionText: "fan stopped")
-        sendEvent(name: "lastStoppedAt", value: ts)
+        emitEvent(name: "contact", value: "open", descriptionText: "${device.displayName} fan stopped")
+        sendEvent(name: "switch", value: "off")
+        sendEvent(name: "lastStoppedAt", value: isoNow())
         runIn(alarmAfterSeconds(), "checkFanAlarm")
     }
-    return result
+    return null
 }
 
 def zwaveEvent(hubitat.zwave.commands.basicv1.BasicReport cmd) {
@@ -231,7 +263,8 @@ def zwaveEvent(hubitat.zwave.commands.notificationv3.NotificationReport cmd) {
 def zwaveEvent(hubitat.zwave.commands.wakeupv1.WakeUpNotification cmd) {
     logDebug "woke up"
     def result = []
-    if (!state.lastbat || now() - (state.lastbat as Long) > 53*60*60*1000L) {
+    boolean refreshNow = state.refreshPending == true
+    if (refreshNow || !state.lastbat || now() - (state.lastbat as Long) > 53*60*60*1000L) {
         result << response(zwave.batteryV1.batteryGet())
         result << response("delay 1200")
     }
@@ -240,8 +273,21 @@ def zwaveEvent(hubitat.zwave.commands.wakeupv1.WakeUpNotification cmd) {
         result << response(zwave.manufacturerSpecificV2.manufacturerSpecificGet())
         result << response("delay 1200")
     }
+    // The offline threshold is based on the interval the sensor reports.
+    if (refreshNow || !wakeUpIntervalKnown()) {
+        result << response(zwave.wakeUpV1.wakeUpIntervalGet())
+        result << response("delay 1200")
+    }
+    state.remove("refreshPending")
     result << response(zwave.wakeUpV1.wakeUpNoMoreInformation())
     result
+}
+
+def zwaveEvent(hubitat.zwave.commands.wakeupv1.WakeUpIntervalReport cmd) {
+    logDebug "wake-up interval: ${cmd.seconds} s"
+    state.wakeUpIntervalSec = cmd.seconds as Integer
+    runIn(offlineAfterSeconds(), "markOffline")
+    return null
 }
 
 def zwaveEvent(hubitat.zwave.commands.batteryv1.BatteryReport cmd) {
@@ -286,6 +332,34 @@ def zwaveEvent(hubitat.zwave.Command cmd) {
 }
 
 // ---- Helpers ----
+
+// Driver-owned fan state; falls back to the contact attribute on the first
+// report after upgrading to 0.10.0. null means unknown.
+private Boolean fanRunning() {
+    if (state.fanRunning != null) return state.fanRunning as Boolean
+    def contact = device.currentValue("contact")
+    return contact == null ? null : contact == "closed"
+}
+
+// Any message from the sensor proves it's alive.
+private void noteCheckin() {
+    state.lastCheckinMs = now()
+    if (device.currentValue("healthStatus") != "online") {
+        emitEvent(name: "healthStatus", value: "online", descriptionText: "${device.displayName} is online")
+    }
+    runIn(offlineAfterSeconds(), "markOffline")
+}
+
+private boolean wakeUpIntervalKnown() {
+    return ((state.wakeUpIntervalSec ?: 0) as Integer) > 0
+}
+
+// Offline after two missed wake-ups plus an hour's grace. Until the sensor has
+// reported its interval (or if it reports 0), allow a week.
+private Integer offlineAfterSeconds() {
+    Integer interval = (state.wakeUpIntervalSec ?: 0) as Integer
+    return interval > 0 ? 2 * interval + 3600 : 7 * 24 * 3600
+}
 
 private Integer alarmAfterSeconds() {
     return ((settings.alarmAfterMinutes ?: 30) as Integer) * 60
