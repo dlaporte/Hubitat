@@ -43,9 +43,23 @@
 
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
+import groovy.transform.Field
+
+@Field static final String VERSION = "0.1.0"
+
+// Attributes whose changes get a descriptionText line (txtEnable).
+@Field static final List<String> DESC_ATTRS = ["temperature", "humidity", "pressure", "illuminance", "ultravioletIndex",
+        "windSpeed", "windDirection", "rainfall"]
 
 metadata {
-    definition(name: "AcuRite Weather Station", namespace: "dlaporte", author: "David LaPorte") {
+    definition(
+        name: "AcuRite Weather Station",
+        namespace: "dlaporte",
+        author: "David LaPorte",
+        importUrl: "https://raw.githubusercontent.com/dlaporte/Hubitat/main/AcuRite/device/acurite.groovy",
+        // The login and data callbacks share the cached session in state.
+        singleThreaded: true
+    ) {
         capability "Sensor"
         capability "Temperature Measurement"
         capability "Pressure Measurement"
@@ -101,39 +115,32 @@ metadata {
 
     preferences() {
         section("Query Inputs") {
-            input "acurite_username", "text", required: true, title: "AcuRite Username"
-            input "acurite_password", "password", required: true, title: "AcuRite Password"
-            input "device_id", "text", required: true, title: "Device ID", description: "Your Device ID can be found looking for 'hubs' in the Network section of Chrome's Developer Tools while loading the MyAcurite dashboard"
-            input "poll_interval", "enum", title: "Poll Interval:", required: false, defaultValue: "5 Minutes", options: ["5 Minutes", "10 Minutes", "15 Minutes", "30 Minutes", "1 Hour", "3 Hours"]
-            input "lightningWindowMinutes", "number", title: "Lightning-active window (minutes since last strike)",
-                    required: false, defaultValue: 10, range: "1..120"
-            input "debug", "bool", required: false, defaultValue: false, title: "Debug Logging"
+            input name: "acurite_username", type: "text", title: "AcuRite username", required: true
+            input name: "acurite_password", type: "password", title: "AcuRite password", required: true
+            input name: "device_id", type: "text", title: "Device ID", required: true, description: "Your Device ID can be found looking for 'hubs' in the Network section of Chrome's Developer Tools while loading the MyAcurite dashboard"
+            input name: "poll_interval", type: "enum", title: "Poll interval", required: false, defaultValue: "5 Minutes", options: ["5 Minutes", "10 Minutes", "15 Minutes", "30 Minutes", "1 Hour", "3 Hours"]
+            input name: "lightningWindowMinutes", type: "number", title: "Lightning-active window (minutes since last strike)", required: false, defaultValue: 10, range: "1..120"
+            input name: "logEnable", type: "bool", title: "Enable debug logging", description: "Turns itself off after 30 minutes", defaultValue: false
+            input name: "txtEnable", type: "bool", title: "Enable descriptionText logging", defaultValue: true
         }
     }
 }
 
-def installed() {
-    log.info "AcuRite: installed()"
+// ---- Lifecycle ----
+
+void installed() {
     initialize()
 }
 
-def updated() {
-    log.info "AcuRite: updated()"
+void updated() {
+    log.info "Preferences saved"
     initialize()
 }
 
-def refresh() {
-    if (debug) log.info "AcuRite: refresh() called"
-    get_acurite_data()
-}
-
-// Backward-compat alias — kept so rules that called poll() under the
-// old Polling capability keep working.
-def poll() { refresh() }
-
-def initialize() {
+void initialize() {
     unschedule()
-    if (debug) log.debug "AcuRite: initialize() called"
+    upgradeSettings()
+    if (settings.logEnable) runIn(1800, "logsOff")
 
     // Drop attribute names removed/renamed in earlier versions so upgraders
     // don't see phantom entries in the Current States panel. measured_light
@@ -144,17 +151,35 @@ def initialize() {
     }
 
     if (!acurite_username || !acurite_password || !device_id) {
-        log.error "AcuRite: required fields not completed.  Please complete for proper operation."
+        log.error "required fields not completed.  Please complete for proper operation."
         return
     }
     def poll_interval_cmd = (settings?.poll_interval ?: "5 Minutes").replace(" ", "")
     "runEvery${poll_interval_cmd}"("refresh")
-    if (debug) log.debug "AcuRite: scheduling as runEvery" + poll_interval_cmd
+    logDebug "scheduling as runEvery${poll_interval_cmd}"
+    // Start with a fresh session so new credentials take effect, and show data
+    // now instead of at the next poll.
+    state.acurite_token = null
+    refresh()
 }
 
-// ---------------------------------------------------------------------------
-// HTTP — async with the same try-cached-then-relogin retry behavior as v0.0.10
-// ---------------------------------------------------------------------------
+private void upgradeSettings() {
+    device.removeSetting("debug")          // replaced by logEnable in 0.1.0
+    device.updateDataValue("driverVersion", VERSION)
+}
+
+// ---- Commands ----
+
+def refresh() {
+    logDebug "refresh()"
+    get_acurite_data()
+}
+
+// Backward-compat alias — kept so rules that called poll() under the
+// old Polling capability keep working.
+def poll() { refresh() }
+
+// ---- HTTP — async with the same try-cached-then-relogin retry behavior as v0.0.10 ----
 
 def get_acurite_data() {
     if (state.acurite_token && state.acurite_account_id) {
@@ -172,7 +197,7 @@ private fetch_acurite_data(boolean alreadyRetried) {
     ]
     // Log the URL only — params.headers contains the live session token, and
     // debug-enabled logs are routinely shared in community support threads.
-    if (debug) log.debug "AcuRite: fetch_acurite_data ${params.uri}"
+    logDebug "fetch_acurite_data ${params.uri}"
     asynchttpGet("fetchAcuriteDataHandler", params, [retried: alreadyRetried])
 }
 
@@ -180,25 +205,25 @@ def fetchAcuriteDataHandler(response, data) {
     try {
         if (response.hasError() || response.status == 401) {
             // Token rejected — clear it and re-login once.
-            if (debug) log.debug "AcuRite: data fetch 401/error, will re-login. retried=${data.retried}"
+            logDebug "data fetch 401/error, will re-login. retried=${data.retried}"
             state.acurite_token = null
             state.acurite_token_expiry = 0
             if (!data.retried) {
                 acurite_login(true)
             } else {
-                log.warn "AcuRite: data fetch failed even after re-login"
+                log.warn "data fetch failed even after re-login"
             }
             return
         }
         if (response.status != 200) {
-            log.error "AcuRite: data failed: HTTP ${response.status}: ${response.data}"
+            log.error "data failed: HTTP ${response.status}: ${response.data}"
             return
         }
         def parsed = response.json
         if (parsed == null) parsed = new JsonSlurper().parseText(response.data.toString())
         process_acurite_data(parsed)
     } catch (Exception e) {
-        log.error "AcuRite: fetchAcuriteDataHandler exception: ${e.message}"
+        log.error "fetchAcuriteDataHandler exception: ${e.message}"
     }
 }
 
@@ -221,7 +246,7 @@ private acurite_login(boolean fetchAfter) {
 def loginHandler(response, data) {
     try {
         if (response.hasError() || response.status != 200) {
-            log.error "AcuRite: login failed: HTTP ${response.status}"
+            log.error "login failed: HTTP ${response.status}"
             return
         }
         def parsed = response.json
@@ -229,19 +254,17 @@ def loginHandler(response, data) {
         state.acurite_token = parsed.token_id
         state.acurite_account_id = parsed.user?.account_users?.getAt(0)?.account_id
         state.acurite_token_expiry = now() + (60 * 60 * 1000)
-        if (debug) log.debug "AcuRite: login OK, token cached for 1h"
+        logDebug "login OK, token cached for 1h"
 
         if (data?.fetchAfter && state.acurite_account_id) {
             fetch_acurite_data(true)
         }
     } catch (Exception e) {
-        log.error "AcuRite: loginHandler exception: ${e.message}"
+        log.error "loginHandler exception: ${e.message}"
     }
 }
 
-// ---------------------------------------------------------------------------
-// Parsing + derived attributes
-// ---------------------------------------------------------------------------
+// ---- Parsing + derived attributes ----
 
 private void process_acurite_data(data) {
     sendEvent(name: "location_name", value: data.name)
@@ -253,7 +276,7 @@ private void process_acurite_data(data) {
 
     def dev = data.devices ? data.devices[0] : null
     if (!dev) {
-        log.warn "AcuRite: response had no devices"
+        log.warn "response had no devices"
         return
     }
 
@@ -288,10 +311,13 @@ private void process_acurite_data(data) {
         // literal string "null". Lightning distance fields are often null
         // when there's been no recent strike.
         if (sensor_value != null) {
-            if (sensor_unit) {
-                sendEvent(name: attr_name, value: sensor_value, unit: sensor_unit)
+            Map evt = [name: attr_name, value: sensor_value]
+            if (sensor_unit) evt.unit = sensor_unit
+            if (attr_name in DESC_ATTRS) {
+                evt.descriptionText = "${device.displayName} ${attr_name} is ${sensor_value}${sensor_unit ? ' ' + sensor_unit : ''}"
+                emitEvent(evt)
             } else {
-                sendEvent(name: attr_name, value: sensor_value)
+                sendEvent(evt)
             }
         }
 
@@ -322,7 +348,9 @@ private void process_acurite_data(data) {
     if (currStrikesLong != null) {
         Long prevStrikes = (state.acurite_prev_strikes ?: 0L) as Long
         if (currStrikesLong > prevStrikes) {
-            String ts = new Date().format("yyyy-MM-dd'T'HH:mm:ssZ", location.timeZone ?: TimeZone.getDefault())
+            def fmt = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ")
+            fmt.setTimeZone(location?.timeZone ?: TimeZone.getDefault())
+            String ts = fmt.format(new Date(now()))
             state.acurite_last_strike_ms = now()
             sendEvent(name: "lastStrikeAt", value: ts)
         }
@@ -331,7 +359,7 @@ private void process_acurite_data(data) {
         Integer windowMin = (settings.lightningWindowMinutes ?: 10) as Integer
         Long cutoff = now() - (windowMin * 60L * 1000L)
         boolean active = (state.acurite_last_strike_ms ?: 0L) >= cutoff
-        sendEvent(name: "lightningActive", value: active ? "true" : "false")
+        emitEvent(name: "lightningActive", value: active ? "true" : "false", descriptionText: "${device.displayName} lightningActive is ${active}")
     }
 
     // Derived: weatherSummary  ("72°F, 45% RH, wind SW 8 mph")
@@ -356,3 +384,27 @@ private void process_acurite_data(data) {
     }
     if (parts) sendEvent(name: "weatherSummary", value: parts.join(", "))
 }
+
+// ---- BEGIN standard logging (driver) v1: keep identical in every driver, see STYLE.md ----
+
+void logsOff() {
+    log.info "Debug logging turned off"
+    device.updateSetting("logEnable", [value: "false", type: "bool"])
+}
+
+private void logDebug(String msg) {
+    if (settings.logEnable) log.debug msg
+}
+
+private void logDesc(String msg) {
+    if (settings.txtEnable != false) log.info msg
+}
+
+// Sends the event; logs its descriptionText only when the value actually changes.
+private void emitEvent(Map evt) {
+    boolean changed = device.currentValue(evt.name as String)?.toString() != evt.value?.toString()
+    sendEvent(evt)
+    if (changed && evt.descriptionText) logDesc(evt.descriptionText as String)
+}
+
+// ---- END standard logging ----
