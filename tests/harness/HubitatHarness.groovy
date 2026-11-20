@@ -262,12 +262,14 @@ class Driver {
 
     /**
      * Answer a recorded async HTTP call by invoking its callback, as the hub would.
-     * Pass json: (a List/Map, sent as a JSON string body), or error: "message".
+     * Pass json: (a List/Map, sent as a JSON string body) or body: (text), or
+     * error: "message"; optionally status: and headers:.
      */
     def reply(Map opts, Map req) {
         def resp = new FakeResponse(status: (opts.status ?: (opts.error ? null : 200)) as Integer,
                 errorMessage: opts.error as String,
-                data: opts.containsKey("json") ? groovy.json.JsonOutput.toJson(opts.json) : opts.body as String)
+                data: opts.containsKey("json") ? groovy.json.JsonOutput.toJson(opts.json) : opts.body as String,
+                headers: (opts.headers ?: [:]) as Map)
         http.remove(req)
         call(req.callback as String, resp, req.data)
     }
