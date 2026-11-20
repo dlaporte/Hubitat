@@ -42,7 +42,7 @@ Then:
 | Refill detection threshold (% of capacity) | 5 | Minimum jump in gallons to count as a refill |
 | Usage-rate smoothing window (hours) | 168 (7 days) | How far back `usageRate` is computed from |
 | Reset web tile access token | off | Invalidate OAuth URL and generate a new one |
-| Enable debug logging | off | Verbose logging |
+| Enable debug logging | off | Verbose logging; turns itself off after 30 minutes |
 
 ## Per-tank attributes
 
@@ -57,7 +57,12 @@ Then:
   last measured usage rate instead
 - **`lowFuel`** — `"true"` when level falls below the threshold
 - **`lastRefillAt`** / **`lastRefillGallons`** — emitted when a refill is
-  detected (gallons rose by more than the threshold)
+  detected (gallons rose by more than the threshold). `lastRefillAt` is
+  `yyyy-MM-dd HH:mm:ss` in the hub's time zone
+
+**Health:** `healthStatus` — `offline` while the Droplet Fuel API is
+failing, or when the tank's last reading is more than 96 hours old (the
+gauge has stopped uploading; one warning is logged). `online` otherwise.
 
 **Capability-mandated, also populated:** `humidity`, `energy` (both carry
 the tank level percentage so they can be used as data slots in dashboards).
@@ -81,8 +86,17 @@ web tile access token** in the app settings.
 ## Notes
 
 - The driver caches the Droplet API token across polls (1-hour lease).
+- The gauge uploads less often than the hourly poll. A usage sample is
+  recorded only when the gauge's `last_read` changes, so repeated readings
+  don't skew the usage rate or refill timing.
+- A tank added to your account later gets its device at the next hourly
+  poll.
+- **Connection problems** are logged once, not every hour: a warning when
+  the API fails (an error if it rejects the Client ID / Secret), a reminder
+  at most hourly, and an info line with the outage length when it recovers.
+- The tile's tank turns red at the low-fuel threshold you set.
 - Refills are auto-detected when gallons rise by more than
   `refillThresholdPct` of capacity since the last poll. On a 275-gallon
   tank with the default 5%, that's any jump of 13.75 gallons or more —
   enough to ignore gauge jitter but catch any real fill.
-- Hub firmware floor: **2.2.0**.
+- Hub firmware floor: **2.2.9**.
