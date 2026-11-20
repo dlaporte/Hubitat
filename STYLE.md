@@ -133,6 +133,11 @@ same pull request.
 - No hard-coded driver prefixes such as `Reolink:`; the Logs page already
   names the source.
 - descriptionText starts with `${device.displayName}` (Hubitat convention).
+- A `logDebug` message is built even when debug is off. Keep it cheap, and
+  don't call anything that might throw. The hub's Groovy lacks some GDK
+  methods the local Groovy has, for example `String.takeRight`; use plain
+  Java such as `substring`. An `if (debug) log.debug` that becomes
+  `logDebug` now runs its string on every call.
 - Never log secrets: passwords, client secrets or tokens. If a token has to
   appear, show only its last 4 characters.
 - `log.warn` and `log.error` are called directly. Wrapping them adds

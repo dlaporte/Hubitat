@@ -674,7 +674,7 @@ private void queueBehindLogin(List cmds, String successCallback, Map userData) {
     }
     List q = (state.loginQueue ?: []) as List
     q << [cmds: cmds, successCallback: successCallback, userData: userData ?: [:]]
-    state.loginQueue = q.takeRight(10)
+    state.loginQueue = new ArrayList(q.subList(Math.max(0, q.size() - 10), q.size()))
     logDebug "login in progress; queued ${cmds[0].cmd}"
 }
 
@@ -720,7 +720,7 @@ def loginResponseHandler(response, data) {
     noteCommSuccess()
     state.token = parsed[0].value.Token.name
     state.tokenExpiry = now() + ((parsed[0].value.Token.leaseTime as Long) * 1000L)
-    logDebug "login OK token=…${state.token?.takeRight(4)} leaseTime=${parsed[0].value.Token.leaseTime}s"
+    logDebug "login OK token=…${lastFour(state.token as String)} leaseTime=${parsed[0].value.Token.leaseTime}s"
 
     // Resume the command that started this login, then any that queued behind it.
     if (data?.queuedCmds) {
@@ -858,6 +858,11 @@ private parseAsync(response, String label) {
         log.error "parse failed for ${label}: ${e.message}"
         return null
     }
+}
+
+// Plain Java substring: the hub's Groovy has no String.takeRight.
+private String lastFour(String s) {
+    return s ? s.substring(Math.max(0, s.length() - 4)) : ""
 }
 
 private String floodlightModeName(mode) {
