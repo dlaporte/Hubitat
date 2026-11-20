@@ -38,13 +38,14 @@ Then create a device:
 
 | Name | Default | What it does |
 |---|---|---|
-| IP Address | required | The camera's LAN IP |
+| IP address | required | The camera's LAN IP |
 | Username | required | Local camera account |
 | Password | required | Local camera password |
 | Motion/AI poll interval | 5 sec | How often to poll for motion / AI events |
 | Keep floodlight on indefinitely | on | Re-asserts state every 2 min (firmware auto-off workaround on models without native keep-on) |
 | Publish snapshotURL attribute | **off** | When on, exposes a `Snap` URL with embedded credentials — convenient for image tiles but leaks the password into event history / hub backups. |
-| Debug logging | off | Verbose logging for ~30 min |
+| Enable debug logging | off | Verbose logging; turns itself off after 30 minutes |
+| Enable descriptionText logging | on | Logs one line when a user-facing attribute changes (light, motion, AI detections, modes, health) |
 
 ## Attributes
 
@@ -67,10 +68,13 @@ support for each AI type.
 
 **Storage:** `sdCardCapacityMB`, `sdCardFreeMB`, `sdCardMounted`
 
+**Health:** `healthStatus` (online/offline): offline while the camera isn't
+answering or is rejecting the login, online again on the first good reply.
+
 ## Commands
 
 Standard `On`, `Off`, `Set Level (level, duration)` from the Switch /
-SwitchLevel capabilities, plus:
+SwitchLevel capabilities, `Initialize` and `Refresh`, plus:
 
 - `Set Brightness (level)` — friendlier alias for Set Level
 - `Set Floodlight Mode (mode)` — Off / NightSmart / AlwaysAtNight / Schedule.
@@ -93,6 +97,16 @@ SwitchLevel capabilities, plus:
 - `Set Power LED (state)` — On / Off (only on models with a controllable status LED)
 
 ## Notes
+
+- **Refresh:** device info, SD card, IR, day/night, microphone and LED
+  refresh every 30 minutes on their own. The timed refresh leaves the
+  floodlight's `switch`/`level` alone (see the keepAlive note in the code);
+  click **Refresh** to re-read those. Motion, AI detections, floodlight mode
+  and smart triggers are polled every few seconds.
+- **After a camera reboot** the driver logs in again on the first rejected
+  request. It never runs more than one login at a time, since the camera
+  limits concurrent sessions, and it logs out when you click
+  **Initialize** or save preferences.
 
 - **"The light still comes on at night with mode Off":** newer firmware arms
   per-AI floodlight triggers (person/vehicle/animal) independently of the
