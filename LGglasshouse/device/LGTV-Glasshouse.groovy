@@ -1,28 +1,14 @@
 /*
  *  LG TV (Glasshouse)
  *
- *  Control a rooted LG webOS TV through the Glasshouse JSON API
- *  (typically on port 8080, no authentication). The dashboard itself
- *  uses POST /api/control with {"action":"...","value":...} and reads
- *  live state from GET /api/stats.
+ *  LAN driver for a rooted LG webOS TV running Glasshouse, through its local JSON API
+ *  (typically port 8080). Power, volume, mute, input, picture mode, screen, apps and keys.
+ *  Documentation: https://github.com/dlaporte/Hubitat/blob/main/LGglasshouse/README.md
  *
- *  Picture-mode choices come from GET /api/picture (the pictureMode
- *  row; they change with the current content, e.g. Dolby Vision vs
- *  SDR). Inputs come from GET /api/hdmi. Both are shown as preference
- *  pull-downs, which Hubitat can fill at page-render time from state
- *  saved at refresh. Command-parameter ENUMs cannot do this - they are
- *  fixed at compile time - so setInput and setPictureMode stay free
- *  text and still work from rules and Maker API.
- *
- *  Power on sends a Wake-on-LAN magic packet from the hub and also
- *  POSTs the Glasshouse powerOn action, which works while the TV is in
- *  Active Standby with Glasshouse still running. Deep sleep relies on
- *  WOL (the TV must have Wake-on-LAN enabled).
- *
- *  David LaPorte
- *
- *  Last Update 2026-11-15
- *
+ *  Changelog:
+ *  v0.11.0 (2026-11-20) - Send key offers only keys Glasshouse accepts; optional API token;
+ *         healthStatus; runs single-threaded; ARC volume steps log at debug; standard
+ *         logging and lifecycle; unused toggle and volume step methods removed.
  *  v0.10 - 2026-11-15 - A TV that is switched off (unreachable) is logged
  *         as one info line when it goes and one when it is back, not
  *         repeated warnings; new Warn when the TV can't be reached option.
@@ -421,6 +407,12 @@ if(fromSlider){
 // ---------------------------------------------------------------------------
 // Dynamic preference options (evaluated when the device page is drawn)
 // ---------------------------------------------------------------------------
+
+// Picture-mode choices come from GET /api/picture (the pictureMode row; they
+// change with the content, e.g. Dolby Vision vs SDR). Inputs come from
+// GET /api/hdmi. Both are preference pull-downs, which Hubitat fills at
+// page-render time from state saved at refresh. Command-parameter ENUMs can't
+// do this, since they are fixed at compile time.
 
 def getInputPrefOptions() {
     Map opts = [(prefUnchanged()): "(don't change)"]
@@ -837,6 +829,11 @@ private boolean pictureModeIsCurrent(String resolved) {
 // Commands: power and screen
 // ---------------------------------------------------------------------------
 
+// Power on sends a Wake-on-LAN magic packet from the hub and also POSTs the
+// Glasshouse powerOn action, which works while the TV is in Active Standby with
+// Glasshouse still running. Deep sleep relies on WOL (the TV must have
+// Wake-on-LAN enabled).
+
 def on() {
     log.info "Power on"
     sendWol()
@@ -978,6 +975,10 @@ def refresh() {
 // ---------------------------------------------------------------------------
 // HTTP helpers
 // ---------------------------------------------------------------------------
+
+// The Glasshouse dashboard itself uses POST /api/control with
+// {"action":"...","value":...} and reads live state from GET /api/stats; this
+// driver does the same.
 
 private String apiUrl(String path) {
     String ip = tvIp?.toString()?.trim()

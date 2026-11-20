@@ -1,18 +1,12 @@
 /*
  *  LG TV (Glasshouse) Notifier
  *
- *  Child device of LG TV (Glasshouse). Shows each Hubitat notification
- *  (Rule Machine, Notifier, Basic Rules, HSM) on the TV screen as LG's
- *  standard toast: the bar at the bottom centre, text only. It has no
- *  connection settings of its own; the TV device sends the message.
+ *  Child of LG TV (Glasshouse): shows each Hubitat notification on the TV as LG's
+ *  standard toast. It has no settings of its own; the TV device sends the message.
+ *  Documentation: https://github.com/dlaporte/Hubitat/blob/main/LGglasshouse/README.md
  *
- *  Create it from the TV device: turn on Notification device on its
- *  Preferences page and Save. Turning that off deletes this device.
- *
- *  David LaPorte
- *
- *  Last Update 2026-11-14
- *
+ *  Changelog:
+ *  v0.11.0 (2026-11-20) - Version aligned with LG TV (Glasshouse); standard header.
  *  v0.9 - 2026-11-14 - initial release.
  *
  *  Copyright 2026 David LaPorte
@@ -27,6 +21,8 @@
  *  for the specific language governing permissions and limitations under the License.
  */
 
+// Created from the TV device: turn on Notification device on its Preferences
+// page and Save. Turning that off deletes this device.
 metadata {
     definition(
         name: "LG TV (Glasshouse) Notifier",
