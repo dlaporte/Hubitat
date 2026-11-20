@@ -9,7 +9,8 @@
  *  Changelog:
  *  v0.1.0 (2026-11-20) - Logs in again only when the session expires or is rejected, not on
  *         every error; fetches on Initialize; a missing sensor list no longer stops a poll;
- *         lightningActive clears on time; outage logging and healthStatus; standard logging.
+ *         lightningActive clears on time; outage logging; healthStatus (also offline when
+ *         the station stops reporting); standard logging.
  *  v0.0.18 - defensive parse of lightning_strike_count; debug log no
  *            longer leaks the session token.
  *  v0.0.15 - skip sendEvent for null sensor readings.
@@ -223,8 +224,8 @@ def fetchAcuriteDataHandler(response, data) {
         }
         def parsed = response.json
         if (parsed == null) parsed = new JsonSlurper().parseText(response.data.toString())
-        noteCommSuccess()
         process_acurite_data(parsed)
+        noteCommSuccess()
     } catch (Exception e) {
         log.error "fetchAcuriteDataHandler exception: ${e.message}"
     }
@@ -298,9 +299,7 @@ private void armLightningClear() {
 private void noteCommFailure(String kind, String detail) {
     Long nowMs = now()
     if (state.commFailSince == null) state.commFailSince = nowMs
-    if (device.currentValue("healthStatus") != "offline") {
-        emitEvent(name: "healthStatus", value: "offline", descriptionText: "${device.displayName} is offline")
-    }
+    updateHealth()
     // A 5xx and a timeout are the same outage; only rejected credentials differ.
     String key = (kind == "auth") ? "auth" : "down"
     if (state.commFailKey != key) {
@@ -320,14 +319,49 @@ private void noteCommFailure(String kind, String detail) {
 }
 
 private void noteCommSuccess() {
-    if (device.currentValue("healthStatus") != "online") {
-        emitEvent(name: "healthStatus", value: "online", descriptionText: "${device.displayName} is online")
+    if (state.commFailSince != null) {
+        log.info "myAcuRite is responding again after ${formatDuration(now() - (state.commFailSince as Long))}"
+        state.remove("commFailSince")
+        state.remove("commFailKey")
+        state.remove("commFailLastLog")
     }
-    if (state.commFailSince == null) return
-    log.info "myAcuRite is responding again after ${formatDuration(now() - (state.commFailSince as Long))}"
-    state.remove("commFailSince")
-    state.remove("commFailKey")
-    state.remove("commFailLastLog")
+    updateHealth()
+}
+
+// The API can answer while the station itself has stopped reporting to it
+// (dead batteries, lost Wi-Fi); the readings are then just its last ones,
+// republished. Stale = last check-in more than 2 hours ago. One warning when
+// it goes stale, one info line when it reports again.
+private void noteStationCheckin(String checkinAt) {
+    Long checkinMs = parseIsoMs(checkinAt)
+    if (checkinMs == null) return
+    boolean stale = now() - checkinMs > 2 * 3_600_000L
+    if (stale && !state.stationStale) {
+        log.warn "the station hasn't reported to myAcuRite since ${checkinAt}; its readings are stale"
+    } else if (!stale && state.stationStale) {
+        log.info "the station is reporting to myAcuRite again"
+    }
+    state.stationStale = stale
+}
+
+// online only while the API answers and the station is reporting.
+private void updateHealth() {
+    boolean online = state.commFailSince == null && !state.stationStale
+    String value = online ? "online" : "offline"
+    if (device.currentValue("healthStatus") != value) {
+        emitEvent(name: "healthStatus", value: value, descriptionText: "${device.displayName} is ${value}")
+    }
+}
+
+// myAcuRite sends e.g. 2026-02-18T08:17:00.000+00:00. null if unparseable.
+private Long parseIsoMs(String s) {
+    if (!s) return null
+    for (String pattern in ["yyyy-MM-dd'T'HH:mm:ss.SSSXXX", "yyyy-MM-dd'T'HH:mm:ssXXX"]) {
+        try {
+            return new java.text.SimpleDateFormat(pattern).parse(s).time
+        } catch (Exception e) { /* try the next pattern */ }
+    }
+    return null
 }
 
 private Integer statusOf(response) {
@@ -377,6 +411,7 @@ private void process_acurite_data(data) {
     sendEvent(name: "battery", value: dev.battery_level == "Normal" ? 100 : 0)
     sendEvent(name: "device_signal_strength", value: dev.signal_strength)
     sendEvent(name: "device_last_checkin", value: dev.last_check_in_at)
+    noteStationCheckin(dev.last_check_in_at as String)
 
     // Sensor names from the API come in like "Wind Speed" → "wind_speed". A few
     // sensors get remapped to canonical Hubitat attribute names. Others emit

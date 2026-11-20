@@ -63,8 +63,10 @@ Then:
 `device_country`, `device_name`, `device_model`, `device_status`,
 `device_battery_level`, `device_signal_strength`, `device_last_checkin`
 
-**Health:** `healthStatus` (`offline` while myAcuRite isn't answering or is
-rejecting the login, `online` again on the next good poll)
+**Health:** `healthStatus`: `offline` while myAcuRite isn't answering or is
+rejecting the login, or while the station itself hasn't reported to
+myAcuRite for over 2 hours (its readings are then stale; one warning is
+logged). `online` otherwise.
 
 **Derived:**
 
