@@ -110,4 +110,104 @@ test("an ARC slider move logs one info line, not two per step") {
     assert !d.log.at("info").any { it.startsWith("POST /api/control") || it.contains("accepted (ok:true)") }
 }
 
+// ---- Fixes: send key ----
+
+final List<String> ACCEPTED = ["up", "down", "left", "right", "ok", "back", "home", "settings",
+        "media:playPause", "media:play", "media:pause", "media:stop", "media:rewind", "media:fastForward",
+        "media:channelUp", "media:channelDown"]
+
+test("Send key offers exactly the keys Glasshouse accepts") {
+    def d = fresh()
+    d.state.remoteKeys = [[id: "lg:INPUT", label: "Input"], [id: "up", label: "Up"]]   // left by 0.10
+    def opts = d.call("getSendKeyPrefOptions")
+    assert opts.keySet() as List == ["_unchanged"] + ACCEPTED
+}
+
+test("refresh no longer fetches /api/remotekeys") {
+    def d = fresh()
+    d.call("refresh")
+    assert d.http*.params*.uri.collect { it.toString().replaceAll(/.*:8080/, "") } == ["/api/stats", "/api/picture", "/api/hdmi"]
+}
+
+test("sendKey sends accepted keys and refuses the ones Glasshouse rejects") {
+    def d = fresh()
+    d.call("sendKey", "media:channelUp")
+    d.call("sendKey", "menu")
+    assert d.http.collect { bodyOf(it) } == [[action: "media", value: "channelUp"], [action: "rcu", value: "settings"]]
+    d.reset()
+    ["lg:INPUT", "volumeUp", "media:volumeDown", "mute", "bogus"].each { d.call("sendKey", it) }
+    assert d.http.isEmpty()
+    assert d.log.at("warn").size() == 5
+}
+
+test("a late /api/remotekeys reply (in flight across the update) is ignored") {
+    def d = fresh()
+    d.call("remoteKeysCallback", new harness.FakeResponse(data: '{"ok":true,"keys":[{"key":"INPUT"}]}'), [path: "/api/remotekeys"])
+    assert d.state.remoteKeys == null
+    assert d.log.at("warn").isEmpty() && d.log.at("error").isEmpty()
+}
+
+// ---- Fixes: API token ----
+
+test("an API token is sent as a Bearer header and never logged") {
+    def d = fresh()
+    d.settings.apiToken = "s3cret-token"
+    d.settings.logEnable = true
+    d.call("refresh")
+    d.call("sendKey", "home")
+    assert d.http.every { it.params.headers.Authorization == "Bearer s3cret-token" }
+    assert !d.log.lines.any { it[1].contains("s3cret") }
+}
+
+test("no Authorization header without a token") {
+    def d = fresh()
+    d.settings.apiToken = "  "
+    d.call("refresh")
+    assert d.http.every { !it.params.headers.containsKey("Authorization") }
+}
+
+test("the API token input sits in the Connection group as a password") {
+    def d = fresh()
+    def names = d.inputs*.name
+    assert names.indexOf("apiToken") == names.indexOf("tvPort") + 1
+    assert d.inputs.find { it.name == "apiToken" }.type == "password"
+}
+
+// ---- Fixes: dead code ----
+
+test("the unused toggle and volume-step methods are gone") {
+    def d = fresh()
+    ["toggleMute", "toggleScreen", "volumeUp", "volumeDown"].each { m ->
+        try { d.call(m); assert false: "${m} still exists" } catch (MissingMethodException ignored) { }
+    }
+}
+
+test("the ARC chain no longer writes volumeStepTarget") {
+    def d = fresh()
+    d.state.audioOutputRaw = "arc"
+    d.device.current.volume = 10
+    d.call("setVolume", 12)
+    assert !d.state.containsKey("volumeStepTarget")
+}
+
+// ---- Fixes: healthStatus ----
+
+test("an unreachable TV goes offline once; it comes back online with the outage length") {
+    def d = fresh()
+    d.call("statsCallback", new harness.FakeResponse(status: 408, errorMessage: "connect timed out"), [path: "/api/stats"])
+    assert d.device.current.healthStatus == "offline"
+    assert d.log.at("info").count { it.contains("is off or unreachable") } == 1
+    d.advance(60_000L)
+    d.call("statsCallback", new harness.FakeResponse(status: 408, errorMessage: "connect timed out"), [path: "/api/stats"])
+    assert d.log.at("info").count { it.contains("is off or unreachable") } == 1
+    d.advance(2 * 3_600_000L)
+    d.call("statsCallback", new harness.FakeResponse(data: groovy.json.JsonOutput.toJson(statsOn())), [path: "/api/stats"])
+    assert d.device.current.healthStatus == "online"
+    assert d.log.at("info").any { it.contains("reachable again after 2h 1m (2 missed polls)") }
+}
+
+test("healthStatus is declared") {
+    assert fresh().attributes*.name.contains("healthStatus")
+}
+
 finish()
