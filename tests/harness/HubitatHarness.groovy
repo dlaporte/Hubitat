@@ -31,6 +31,10 @@ class HubitatHarness {
     ]
 
     static Driver load(String path) {
+        // The hub's Groovy has no String.takeRight(int) (found on a hub at deploy).
+        // Make it fail here too. The closure's typed parameter is what lets it
+        // beat the built-in GDK method.
+        String.metaClass.takeRight = { int n -> throw new MissingMethodException("takeRight", String, [n] as Object[]) }
         GroovyClassLoader gcl = new GroovyClassLoader(HubitatHarness.classLoader)
         gcl.parseClass("""package hubitat.zwave
             class Command {
