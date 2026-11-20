@@ -38,7 +38,6 @@
  *  for the specific language governing permissions and limitations under the License.
  */
 
-import groovy.json.*
 import groovy.transform.Field
 import java.text.SimpleDateFormat
 
@@ -100,15 +99,6 @@ void initialize() {
     upgradeSettings()
     if (settings.logEnable) runIn(1800, "logsOff")
 
-    // v0.0.7 cleanup: drop legacy state from the nest-manager scaffolding so
-    // the device State Variables panel stops showing dead data.
-    [
-        "detailEventHistory", "evalExecutionHistory", "detailExecutionHistory",
-        "autoTyp", "autoDisabled", "autoDisabledDt", "lastEventData",
-        "autoRunDt", "autoRunInSchedDt", "evalSched", "evalSchedLastTime",
-        "autoExecMS", "dbgAppndName"
-    ].each { state.remove(it) }
-
     // Only hit the API during initialize() on first install. Subsequent saves
     // rely on the hourly pollChildren — fetching synchronously here on every
     // preference save was making the settings page block for the duration of
@@ -116,12 +106,8 @@ void initialize() {
     Map tankData = (state.devices && state.deviceData) ? (state.deviceData as Map) : fetchTankData()
     boolean newDeviceCreated = false
     tankData.each { sensorId, tank ->
-        String dni = getDeviceDNI(sensorId)
-        def child = getChildDevice(dni)
-        if (!child) {
-            String label = tank?.tank_num ? "Tank ${tank.tank_num}" : "Tank ${sensorId}"
-            child = addChildDevice("dlaporte", CHILD_NAME(), dni, [name: label, label: label])
-            log.info "Created ${child.displayName} (dni: ${dni})"
+        if (!getChildDevice(getDeviceDNI(sensorId))) {
+            ensureChild(sensorId, tank as Map)
             newDeviceCreated = true
         }
     }
@@ -137,6 +123,19 @@ void initialize() {
 private void upgradeSettings() {
     app.removeSetting("showDebug")         // replaced by logEnable in 0.1.0
     state.appVersion = VERSION
+}
+
+// Returns the tank's child device, creating it if needed (also used by the
+// poll, so a tank added to the account later gets a device without a re-save).
+private ensureChild(String sensorId, Map tank) {
+    String dni = getDeviceDNI(sensorId)
+    def child = getChildDevice(dni)
+    if (!child) {
+        String label = tank?.tank_num ? "Tank ${tank.tank_num}" : "Tank ${sensorId}"
+        child = addChildDevice("dlaporte", CHILD_NAME(), dni, [name: label, label: label])
+        log.info "Created ${child.displayName} (dni: ${dni})"
+    }
+    return child
 }
 
 // ---- Settings page ----
@@ -232,6 +231,7 @@ private boolean getAPIToken() {
         uri: DROPLET_API(),
         path: "/brand_token.php",
         headers: dropletHeaders(),
+        timeout: 15,
         body: [
             grant_type: "client_credentials",
             client_id: settings.ClientId,
@@ -239,6 +239,7 @@ private boolean getAPIToken() {
         ]
     ]
     boolean ok = false
+    String failKind = "down"
     try {
         httpPost(params) { resp ->
             if (resp.status == 200 && resp.data?.access_token) {
@@ -253,13 +254,14 @@ private boolean getAPIToken() {
                 logDebug "Token refresh OK — lease ${ttlSec}s"
             } else {
                 state.lastErr = "Token request returned ${resp.status}: ${resp.data?.error ?: resp.data}"
+                if (resp.status in [400, 401, 403]) failKind = "auth"
             }
         }
     } catch (Exception e) {
         state.lastErr = "Token request exception: ${e.message}"
     }
     if (state.lastErr) {
-        log.error "getAPIToken failed: ${state.lastErr}"
+        noteCommFailure(failKind, state.lastErr as String)
         state.APIToken = null
         state.APITokenExpirationTime = 0L
     }
@@ -278,26 +280,27 @@ private Map fetchTankData() {
         uri: DROPLET_API(),
         path: "/auto/get_tank_data.php",
         headers: dropletHeaders(),
+        timeout: 15,
         body: [access_token: state.APIToken, start_index: 0, max_results: 1000]
     ]
     try {
         httpPost(params) { resp ->
             if (resp.status != 200) {
-                log.error "fetchTankData: HTTP ${resp.status}"
+                noteCommFailure("down", "get_tank_data returned HTTP ${resp.status}")
                 state.APIToken = null
                 state.APITokenExpirationTime = 0L
                 return
             }
             def obs = parseJson(resp.data.toString())
             if (obs?.result != "ok") {
-                log.error "fetchTankData: API non-ok: ${obs?.error_msg ?: obs}"
+                noteCommFailure("down", "get_tank_data error: ${obs?.error_msg ?: obs}")
                 return
             }
             obs.data?.each { dev -> deviceData[dev.sensor_id] = dev }
             ok = true
         }
     } catch (Exception e) {
-        log.error "fetchTankData exception: ${e.message}"
+        noteCommFailure("down", "get_tank_data: ${e.message}")
         state.APIToken = null
         state.APITokenExpirationTime = 0L
     }
@@ -307,6 +310,7 @@ private Map fetchTankData() {
     if (ok) {
         state.deviceData = deviceData
         state.devices = deviceData.keySet() as List
+        noteCommSuccess()
     }
     return deviceData
 }
@@ -317,11 +321,17 @@ void pollChildren(boolean updateData = true) {
     logDebug "pollChildren(updateData=${updateData})"
     if (!getToken()) {
         logDebug "pollChildren: skipping — no API token"
+        setAllTanksHealth("offline")
         return
     }
     // Fetch before reading state.devices so an empty cached list (e.g. the
     // first-install fetch failed) is retried on every poll.
     Map deviceData = updateData ? fetchTankData() : (state.deviceData ?: [:])
+    if (updateData && state.commFailSince != null) {
+        // fetchTankData logged the failure; the tanks' last readings stand.
+        setAllTanksHealth("offline")
+        return
+    }
     List devices = state.devices ?: []
     if (!devices) {
         logDebug "pollChildren: no known devices"
@@ -330,17 +340,12 @@ void pollChildren(boolean updateData = true) {
 
     devices.each { sensorId ->
         try {
-            String dni = getDeviceDNI(sensorId)
-            def d = getChildDevice(dni)
-            if (!d) {
-                log.warn "pollChildren: no child device for ${dni}"
-                return
-            }
             Map devData = deviceData[sensorId]
             if (!devData) {
-                logDebug "pollChildren: no API data for ${d.label}"
+                logDebug "pollChildren: no API data for ${sensorId}"
                 return
             }
+            def d = ensureChild(sensorId, devData)
 
             float gallons = devData.gallons.toFloat()
             float capacity = devData.tank_volume.toFloat()
@@ -348,7 +353,7 @@ void pollChildren(boolean updateData = true) {
             String lastReadTime = devData.last_read
             String acctNum = devData.acct_num ?: ""
             int battery = batteryToPercent(devData.battery)
-            Map derived = computeTankMetrics(sensorId, gallons, capacity)
+            Map derived = computeTankMetrics(sensorId, gallons, capacity, lastReadTime)
             recordDailyLevel(d.id, level)
 
             List events = [
@@ -366,6 +371,7 @@ void pollChildren(boolean updateData = true) {
             // Skip null derived metrics — sendEvent(value:null) stores the
             // literal string "null" on the attribute.
             if (derived.daysRemaining != null) events << [daysRemaining: derived.daysRemaining]
+            events << [healthStatus: readingIsStale(sensorId, d.label as String, lastReadTime) ? "offline" : "online"]
             if (derived.refillDetected) {
                 events << [lastRefillAt: derived.refillAt]
                 events << [lastRefillGallons: derived.refillGallons]
@@ -392,7 +398,11 @@ private int batteryToPercent(String level) {
 // State shape: state.tankHistory[sensorId] = [[gallons, timeMs], ...] kept
 // within the smoothing window. Refill events break the chain so post-refill
 // usageRate isn't polluted by the jump.
-private Map computeTankMetrics(String sensorId, Float gallons, Float capacity) {
+// A sample is only added when last_read changes: the gauge uploads less often
+// than the hourly poll, and a repeated reading counted again (with a new
+// timestamp) skewed the usage rate and refill timing. Samples keep the poll
+// time (now()), as before.
+private Map computeTankMetrics(String sensorId, Float gallons, Float capacity, String lastRead = null) {
     Long nowMs = now()
     Integer windowHours = (settings.usageWindowHours ?: 168) as Integer
     Float refillThresholdPct = (settings.refillThresholdPct ?: 5) as Float
@@ -400,11 +410,13 @@ private Map computeTankMetrics(String sensorId, Float gallons, Float capacity) {
 
     if (state.tankHistory == null) state.tankHistory = [:]
     def hist = state.tankHistory[sensorId] ?: []
+    if (state.lastReadSeen == null) state.lastReadSeen = [:]
+    boolean newReading = !lastRead || state.lastReadSeen[sensorId] != lastRead
 
     boolean refillDetected = false
     Float refillGallons = 0
     String refillAt = null
-    if (hist) {
+    if (hist && newReading) {
         Float prevGallons = hist.last()[0] as Float
         Float jumpThreshold = capacity * refillThresholdPct / 100
         if (gallons > prevGallons + jumpThreshold) {
@@ -417,7 +429,10 @@ private Map computeTankMetrics(String sensorId, Float gallons, Float capacity) {
 
     Long cutoff = nowMs - (windowHours * 3600L * 1000L)
     hist = hist.findAll { (it[1] as Long) >= cutoff }
-    hist << [gallons, nowMs]
+    if (newReading) {
+        hist << [gallons, nowMs]
+        if (lastRead) state.lastReadSeen[sensorId] = lastRead
+    }
     // Hard cap independent of windowHours so an aggressive window setting
     // can't bloat state indefinitely. 720 = max window at 1-per-hour polling.
     while (hist.size() > 720) hist.removeAt(0)
@@ -602,7 +617,8 @@ private String renderTankSvg(def level) {
     // Tank body interior: y=12..132 (height 120). Fill rises from bottom.
     Float fillHeight = 120 * lvl / 100
     Float fillY = 12 + (120 - fillHeight)
-    String fillColor = lvl <= 25 ? "#b94a48" : "#c69963"
+    Float lowPct = (settings.lowFuelThresholdPct ?: 25) as Float
+    String fillColor = lvl <= lowPct ? "#b94a48" : "#c69963"
     return """<svg width="140" height="170" viewBox="0 0 100 150" xmlns="http://www.w3.org/2000/svg">
   <rect x="42" y="2" width="16" height="8" fill="#555" rx="1"/>
   <rect x="8" y="12" width="84" height="120" rx="6" fill="#f0f0f0" stroke="#333" stroke-width="2"/>
@@ -612,6 +628,80 @@ private String renderTankSvg(def level) {
   <line x1="8" y1="102" x2="92" y2="102" stroke="#999" stroke-width="0.5" stroke-dasharray="3,3"/>
   <rect x="8" y="12" width="84" height="120" rx="6" fill="none" stroke="#333" stroke-width="2"/>
 </svg>"""
+}
+
+// ---- Connection health ----
+// The poll runs hourly, so every failure would log: instead one line when a
+// failure starts, a reminder at most hourly, one recovery line with the
+// outage length. An API outage is a warning (it is retried); a rejected
+// Client ID / Secret is an error (the user has to fix it).
+
+private void noteCommFailure(String kind, String detail) {
+    Long nowMs = now()
+    if (state.commFailSince == null) state.commFailSince = nowMs
+    String key = (kind == "auth") ? "auth" : "down"
+    if (state.commFailKey != key) {
+        state.commFailKey = key
+        state.commFailLastLog = nowMs
+        if (key == "auth") {
+            log.error "Droplet Fuel rejected the Client ID / Secret (${detail}); check them in the app. Repeats are suppressed; reminder hourly."
+        } else {
+            log.warn "Droplet Fuel API isn't answering properly (${detail}). Repeats are suppressed; reminder hourly."
+        }
+    } else if (nowMs - ((state.commFailLastLog ?: 0L) as Long) >= 3_600_000L) {
+        state.commFailLastLog = nowMs
+        log.warn "Droplet Fuel API still failing after ${formatDuration(nowMs - (state.commFailSince as Long))} (${detail})"
+    }
+}
+
+private void noteCommSuccess() {
+    if (state.commFailSince == null) return
+    log.info "Droplet Fuel API is responding again after ${formatDuration(now() - (state.commFailSince as Long))}"
+    state.remove("commFailSince")
+    state.remove("commFailKey")
+    state.remove("commFailLastLog")
+}
+
+private void setAllTanksHealth(String value) {
+    (state.devices ?: []).each { sensorId ->
+        def d = getChildDevice(getDeviceDNI(sensorId as String))
+        if (d) d.generateEvent([healthStatus: value])
+    }
+}
+
+// A gauge that stops uploading (battery, Wi-Fi) leaves its last reading in the
+// API forever. Stale = last_read over 96 hours old (the threshold the Smart Oil
+// Gauge site uses). One warning per tank when it goes stale. last_read has no
+// documented time zone; it's read in the hub's, which is close enough here.
+private boolean readingIsStale(String sensorId, String label, String lastRead) {
+    if (!lastRead) return false
+    Long readMs
+    try {
+        def fmt = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
+        if (getTimeZone()) fmt.setTimeZone(getTimeZone())
+        readMs = fmt.parse(lastRead).time
+    } catch (Exception e) {
+        return false
+    }
+    boolean stale = now() - readMs > 96 * 3_600_000L
+    List staleTanks = (state.staleTanks ?: []) as List
+    if (stale && !(sensorId in staleTanks)) {
+        log.warn "${label} hasn't reported since ${lastRead}; check the gauge's battery and Wi-Fi"
+        staleTanks << sensorId
+    } else if (!stale && (sensorId in staleTanks)) {
+        log.info "${label} is reporting again"
+        staleTanks.remove(sensorId)
+    }
+    state.staleTanks = staleTanks
+    return stale
+}
+
+private String formatDuration(Long ms) {
+    Long totalMin = Math.max(0L, ms as long).intdiv(60_000L)
+    if (totalMin == 0) return "under a minute"
+    Long h = totalMin.intdiv(60L)
+    Long m = totalMin % 60L
+    return h > 0 ? "${h}h ${m}m" : "${m}m"
 }
 
 // ---- Helpers ----
