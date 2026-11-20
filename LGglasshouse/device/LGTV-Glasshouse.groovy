@@ -43,6 +43,9 @@ import groovy.transform.Field
 
 @Field static final String VERSION = "0.11.0"
 
+// The only keys Glasshouse's control API accepts (rcu and media actions).
+@Field static final List<String> RCU_KEYS = ["up", "down", "left", "right", "ok", "back", "settings", "home"]
+
 metadata {
     definition(
         name: "LG TV (Glasshouse)",
@@ -56,10 +59,10 @@ metadata {
         // Commands on the device page come only from capabilities.
         // Refresh and Initialize are the only ones declared, so the
         // Commands section shows just those two. on/off, setVolume,
-        // volumeUp/Down, mute/unmute, setInput, setPictureMode,
-        // screenOn/Off, toggleMute, toggleScreen, launchApp and
-        // sendKey remain as methods: preferences and the volume
-        // slider (POST /device/runmethod) still call them.
+        // mute/unmute, setInput, setPictureMode, screenOn/Off, launchApp
+        // and sendKey remain as methods: updated() calls them to apply
+        // preferences, and the volume slider posts setVolume to
+        // /device/runmethod. Rules and Maker API can't call them.
         capability "Refresh"
         capability "Initialize"
         capability "Actuator"
@@ -73,6 +76,7 @@ metadata {
         attribute "supportedPictureModes", "string"
         attribute "supportedInputs", "string"
         attribute "screen", "string"
+        attribute "healthStatus", "enum", ["online", "offline"]
     }
 
     preferences {
@@ -94,6 +98,9 @@ metadata {
         input name: "tvPort", type: "text", title: "Port",
             description: "Glasshouse HTTP port (for example 8080). This is text so the hub does not insert a thousands separator.",
             required: true, defaultValue: "8080"
+        input name: "apiToken", type: "password", title: "API token",
+            description: "Only if a token is set in Glasshouse's config; it is sent as a Bearer token. Leave blank otherwise.",
+            required: false
         input name: "tvMac", type: "text", title: "MAC for Wake-on-LAN",
             description: "Used to wake the TV from deep sleep. Prefills the address reported by the TV.",
             required: false
@@ -123,7 +130,7 @@ metadata {
             options: getLaunchAppPrefOptions(),
             required: false
         input name: "prefSendKey", type: "enum", title: "Send key",
-            description: "Leave at (don't change) for no action. Choices come from the TV's remote keys, plus the usual navigation and media keys. After a key is sent, this resets so the same key can be sent again.",
+            description: "Leave at (don't change) for no action. Navigation and media keys (the ones Glasshouse accepts). After a key is sent, this resets so the same key can be sent again.",
             options: getSendKeyPrefOptions(),
             required: false
 
@@ -466,27 +473,13 @@ def getLaunchAppPrefOptions() {
 
 def getSendKeyPrefOptions() {
     Map opts = [(prefUnchanged()): "(don't change)"]
-    sendKeyList().each { Map item ->
-        String id = item.id?.toString()
-        if (!id) return
-        opts[id] = (item.label ?: id).toString()
-    }
-    if (opts.size() == 1) {
-        builtinSendKeys().each { Map item ->
-            opts[item.id] = item.label
-        }
-    }
+    builtinSendKeys().each { Map item -> opts[item.id] = item.label }
     return opts
 }
 
 private List appList() {
     def raw = state.apps
     return (raw instanceof List) ? raw.findAll { it instanceof Map && it.id } : []
-}
-
-private List sendKeyList() {
-    def raw = state.remoteKeys
-    return (raw instanceof List) ? raw.findAll { it instanceof Map && it.id } : builtinSendKeys()
 }
 
 private List builtinSendKeys() {
@@ -504,7 +497,9 @@ private List builtinSendKeys() {
         [id: "media:pause", label: "Pause"],
         [id: "media:stop", label: "Stop"],
         [id: "media:rewind", label: "Rewind"],
-        [id: "media:fastForward", label: "Fast forward"]
+        [id: "media:fastForward", label: "Fast forward"],
+        [id: "media:channelUp", label: "Channel up"],
+        [id: "media:channelDown", label: "Channel down"]
     ]
 }
 
@@ -557,6 +552,7 @@ void initialize() {
 
 private void upgradeSettings() {
     device.removeSetting("debugLogging")   // replaced by logEnable in 0.11.0
+    state.remove("remoteKeys")             // Send key no longer uses /api/remotekeys (0.11.0)
     device.updateDataValue("driverVersion", VERSION)
 }
 
@@ -857,16 +853,6 @@ def screenOn() {
     sendControl("screenOn")
 }
 
-def toggleScreen() {
-    if (device.currentValue("screen")?.toString() == "off") {
-        screenOn()
-    } else if (device.currentValue("screen")?.toString() == "on") {
-        screenOff()
-    } else {
-        log.warn "toggleScreen: current screen state is unknown; not sending"
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Commands: volume
 // ---------------------------------------------------------------------------
@@ -895,16 +881,6 @@ def setVolume(volume) {
     }
 }
 
-def volumeUp() {
-    log.info "Volume up"
-    sendControl("volumeStep", 1)
-}
-
-def volumeDown() {
-    log.info "Volume down"
-    sendControl("volumeStep", -1)
-}
-
 def mute() {
     log.info "Mute"
     sendControl("mute", true)
@@ -913,14 +889,6 @@ def mute() {
 def unmute() {
     log.info "Unmute"
     sendControl("mute", false)
-}
-
-def toggleMute() {
-    if (device.currentValue("mute")?.toString() == "muted") {
-        unmute()
-    } else {
-        mute()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -950,7 +918,7 @@ def launchApp(appId) {
 def sendKey(key) {
     Map sent = resolveKey(key)
     if (!sent) {
-        log.warn "sendKey needs a remote key name (got '${key}')"
+        log.warn "Glasshouse doesn't accept the key '${key}'; choose one from the Send key list"
         return
     }
     log.info "Send key ${sent.action}:${sent.value}"
@@ -971,7 +939,6 @@ def refresh() {
     fetchJson("/api/stats", "statsCallback")
     fetchJson("/api/picture", "pictureCallback")
     fetchJson("/api/hdmi", "hdmiCallback")
-    fetchJson("/api/remotekeys", "remoteKeysCallback")
 }
 
 // ---------------------------------------------------------------------------
@@ -1005,6 +972,14 @@ private Integer parsedPort() {
     return 8080
 }
 
+// Adds the optional API token. Glasshouse answers 401 to every call when a token
+// is set in its config and the request doesn't carry it.
+private Map requestHeaders(Map headers) {
+    String token = settings?.apiToken?.toString()?.trim()
+    if (token) headers.Authorization = "Bearer ${token}".toString()
+    return headers
+}
+
 private void fetchJson(String path, String callback) {
     String uri = apiUrl(path)
     if (!uri) return
@@ -1012,7 +987,7 @@ private void fetchJson(String path, String callback) {
         uri: uri,
         contentType: "application/json",
         timeout: 15,
-        headers: ["Accept": "application/json"]
+        headers: requestHeaders(["Accept": "application/json"])
     ]
     logDebug "GET ${path}"
     asynchttpGet(callback, params, [path: path])
@@ -1031,7 +1006,7 @@ private void sendControl(String action, value = null) {
         contentType: "application/json",
         requestContentType: "application/json",
         timeout: 20,
-        headers: ["Accept": "application/json", "Content-Type": "application/json"],
+        headers: requestHeaders(["Accept": "application/json", "Content-Type": "application/json"]),
         body: body
     ]
     Map data = [action: action]
@@ -1159,10 +1134,9 @@ void hdmiCallback(resp, data) {
     applyHdmi(json)
 }
 
+// No longer requested (0.11.0). Kept so a reply still in flight when the code
+// is updated has a handler to land on.
 void remoteKeysCallback(resp, data) {
-    def json = requireJson(resp, "remotekeys")
-    if (!(json instanceof Map)) return
-    applyRemoteKeys(json)
 }
 
 private def requireJson(resp, String label) {
@@ -1400,51 +1374,6 @@ private void storeInputs(List list) {
         descriptionText: "${device.displayName} has ${list.size()} input(s)")
 }
 
-// Build the Send key dropdown: always offer navigation and media,
-// then any extra keys from GET /api/remotekeys. Skip remap
-// "choices" that would launch an app, change input, or power off
-// the TV (those have their own preferences).
-private void applyRemoteKeys(Map d) {
-    List list = []
-    Map seen = [:]
-    builtinSendKeys().each { Map item ->
-        String id = item.id?.toString()
-        if (!id || seen[id]) return
-        seen[id] = true
-        list << [id: id, label: (item.label ?: id).toString()]
-    }
-    if (d.keys instanceof List) {
-        d.keys.each { def raw ->
-            if (!(raw instanceof Map)) return
-            Map k = (Map) raw
-            String key = k.key?.toString()
-            if (!key) return
-            String id = "lg:${key}"
-            if (seen[id] || seen[key]) return
-            seen[id] = true
-            String title = k.title?.toString() ?: key
-            list << [id: id, label: title]
-        }
-    }
-    if (d.choices instanceof List) {
-        d.choices.each { def raw ->
-            if (!(raw instanceof Map)) return
-            Map c = (Map) raw
-            String id = c.id?.toString()
-            String kind = c.kind?.toString()
-            if (!id) return
-            // action includes powerOff / screenOff; input and app
-            // are covered by other preferences.
-            if (kind == "action" || kind == "input" || kind == "app") return
-            if (seen[id]) return
-            seen[id] = true
-            list << [id: id, label: (c.title ?: id).toString()]
-        }
-    }
-    state.remoteKeys = list
-    logDebug "Remote keys: ${list.size()}"
-}
-
 private void notePollFailure(String reason) {
     Integer n = (state.failCount ?: 0) + 1
     state.failCount = n
@@ -1485,6 +1414,10 @@ private void noteUnreachable(String label, String reason) {
     }
     Integer n = (state.unreachableCount ?: 0) + 1
     state.unreachableCount = n
+    if (n == 1) state.unreachableSince = now()
+    if (device.currentValue("healthStatus") != "offline") {
+        emitEvent(name: "healthStatus", value: "offline", descriptionText: "${device.displayName} is offline")
+    }
     if (warnOnUnreachable()) {
         if (n == 1 || (n % 10) == 0) {
             log.warn "${device.displayName} can't be reached (${n} poll${n == 1 ? '' : 's'}): ${reason}"
@@ -1500,12 +1433,27 @@ private void noteUnreachable(String label, String reason) {
 
 // Called when stats answers.
 private void noteReachable() {
+    if (device.currentValue("healthStatus") != "online") {
+        emitEvent(name: "healthStatus", value: "online", descriptionText: "${device.displayName} is online")
+    }
     Integer n = (state.unreachableCount ?: 0) as Integer
     if (n > 0) {
-        log.info "${device.displayName} is reachable again (after ${n} missed poll${n == 1 ? '' : 's'})"
+        String polls = "${n} missed poll${n == 1 ? '' : 's'}"
+        Long since = state.unreachableSince as Long
+        String after = since ? "after ${formatDuration(now() - since)} (${polls})" : "(after ${polls})"
+        log.info "${device.displayName} is reachable again ${after}"
         state.remove("unreachableCount")
+        state.remove("unreachableSince")
     }
     state.failCount = 0
+}
+
+private String formatDuration(Long ms) {
+    Long totalMin = Math.max(0L, ms as long).intdiv(60_000L)
+    if (totalMin == 0) return "under a minute"
+    Long h = totalMin.intdiv(60L)
+    Long m = totalMin % 60L
+    return h > 0 ? "${h}h ${m}m" : "${m}m"
 }
 
 private def safeJson(resp) {
@@ -1615,24 +1563,18 @@ private Map resolveKey(key) {
     if (!raw) return null
     String lower = raw.toLowerCase()
 
+    // Glasshouse rejects anything outside its rcu and media key sets (there is
+    // no "lg" action), so unknown keys return null rather than being sent.
     if (lower.startsWith("media:")) {
-        String rest = raw.substring(6)
-        String mapped = mediaAction(rest)
-        return mapped ? [action: "media", value: mapped] : [action: "media", value: rest]
+        String mapped = mediaAction(raw.substring(6))
+        return mapped ? [action: "media", value: mapped] : null
     }
-    if (lower.startsWith("rcu:")) {
-        return [action: "rcu", value: rcuKey(raw.substring(4))]
+    if (!lower.startsWith("rcu:")) {
+        String media = mediaAction(lower)
+        if (media) return [action: "media", value: media]
     }
-    if (lower.startsWith("lg:")) {
-        String rest = raw.substring(3).trim()
-        if (!rest) return null
-        return [action: "lg", value: rest]
-    }
-
-    String media = mediaAction(lower)
-    if (media) return [action: "media", value: media]
-
-    return [action: "rcu", value: rcuKey(lower)]
+    String rcu = rcuKey(lower.startsWith("rcu:") ? lower.substring(4) : lower)
+    return (rcu in RCU_KEYS) ? [action: "rcu", value: rcu] : null
 }
 
 private String mediaAction(String raw) {
@@ -1646,9 +1588,8 @@ private String mediaAction(String raw) {
         ff: "fastForward",
         fastforward: "fastForward",
         fastfwd: "fastForward",
-        volumeup: "volumeUp",
-        volumedown: "volumeDown",
-        mute: "mute"
+        channelup: "channelUp",
+        channeldown: "channelDown"
     ]
     return map[lower]
 }
@@ -1744,7 +1685,6 @@ private boolean startArcVolumeSteps(Integer desired) {
     if (n > 30) n = 30
     state.volumeStepDir = dir
     state.volumeStepLeft = n
-    state.volumeStepTarget = desired
     log.info "HDMI ARC: sending ${n} x volumeStep(${dir}) so the receiver can follow (same path as Glasshouse + / -)"
     sendControl("volumeStep", dir)
     return true
