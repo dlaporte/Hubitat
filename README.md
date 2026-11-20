@@ -89,12 +89,16 @@ open = stopped) with timestamps and an alarm attribute:
   configured `alarmAfterMinutes` (default 30). Survives hub reboots —
   initialize() re-arms the timer with the remaining window.
 - `lastStartedAt` / `lastStoppedAt` ISO timestamps for use in Rule Machine.
+- `healthStatus` goes `"offline"` if the sensor misses two wake-ups, so a
+  dead battery doesn't leave the last reading on display forever.
+- An **Invert sensor** preference covers a pressure switch wired the other
+  way.
 
 The driver also keeps the legacy `switch` attribute (`on`/`off`) for
 backward compatibility with any rules that already use it.
 
-Parts list, install instructions, and theory of operation are in the driver
-header.
+Parts list, build steps and install instructions are in the
+[package README](RadonFanSensor/README.md).
 
 ### LG TV (Glasshouse)
 
