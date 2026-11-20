@@ -39,13 +39,17 @@
  */
 
 import groovy.json.*
+import groovy.transform.Field
 import java.text.SimpleDateFormat
+
+@Field static final String VERSION = "0.1.0"
 
 definition(
     name: "Smart Oil Gauge (Connect)",
     namespace: "dlaporte",
     author: "David LaPorte",
     description: "Virtual device handler for Smart Oil Gauge",
+    importUrl: "https://raw.githubusercontent.com/dlaporte/Hubitat/main/SmartOilGauge/app/smartoilgauge.groovy",
     category: "My Apps",
     iconUrl: "https://github.com/dlaporte/Hubitat/raw/main/SmartOilGauge/images/tank-3.png",
     iconX2Url: "https://github.com/dlaporte/Hubitat/raw/main/SmartOilGauge/images/tank-3.png",
@@ -53,7 +57,7 @@ definition(
     oauth: true
 )
 
-static String appVersion() { "0.0.16" }
+static String appVersion() { VERSION }
 
 preferences {
     page(name: "settings", title: "Smart Oil Gauge", content: "settingsPage", install: true)
@@ -74,18 +78,15 @@ private Map dropletHeaders() {
     return ["User-Agent": "Hubitat SmartOilGauge driver/${appVersion()} (+https://github.com/dlaporte/Hubitat)"]
 }
 
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
+// ---- Lifecycle ----
 
 void installed() {
     // Don't log ${settings} — it contains ClientSecret in plaintext.
-    log.info "Smart Oil Gauge installed"
     initialize()
 }
 
 void updated() {
-    log.info "Smart Oil Gauge updated"
+    log.info "Preferences saved"
     initialize()
 }
 
@@ -94,9 +95,10 @@ void uninstalled() {
 }
 
 void initialize() {
-    logTrace "initialize()"
     unsubscribe()
     unschedule()
+    upgradeSettings()
+    if (settings.logEnable) runIn(1800, "logsOff")
 
     // v0.0.7 cleanup: drop legacy state from the nest-manager scaffolding so
     // the device State Variables panel stops showing dead data.
@@ -119,7 +121,7 @@ void initialize() {
         if (!child) {
             String label = tank?.tank_num ? "Tank ${tank.tank_num}" : "Tank ${sensorId}"
             child = addChildDevice("dlaporte", CHILD_NAME(), dni, [name: label, label: label])
-            logInfo "Created ${child.displayName} (dni: ${dni})"
+            log.info "Created ${child.displayName} (dni: ${dni})"
             newDeviceCreated = true
         }
     }
@@ -132,9 +134,12 @@ void initialize() {
     pollChildren(false)
 }
 
-// ---------------------------------------------------------------------------
-// Settings page
-// ---------------------------------------------------------------------------
+private void upgradeSettings() {
+    app.removeSetting("showDebug")         // replaced by logEnable in 0.1.0
+    state.appVersion = VERSION
+}
+
+// ---- Settings page ----
 
 private settingsPage() {
     if (!state.access_token) { try { state.access_token = createAccessToken() } catch (Exception e) { /* OAuth not enabled */ } }
@@ -190,26 +195,24 @@ private settingsPage() {
         }
 
         section("Logging") {
-            input "showDebug", "bool", title: "Enable debug logging", required: false, defaultValue: false
+            input name: "logEnable", type: "bool", title: "Enable debug logging", description: "Turns itself off after 30 minutes", defaultValue: false
         }
     }
 }
 
 private void resetAppAccessToken(boolean reset) {
     if (!reset) return
-    logInfo "Resetting web tile access token"
+    log.info "Resetting web tile access token"
     state.access_token = null
-    try { state.access_token = createAccessToken() } catch (Exception e) { logError "Could not regenerate access token: ${e.message}" }
+    try { state.access_token = createAccessToken() } catch (Exception e) { log.error "Could not regenerate access token: ${e.message}" }
     app?.clearSetting("resetAppAccessToken")
 }
 
-// ---------------------------------------------------------------------------
-// Droplet Fuel API
-// ---------------------------------------------------------------------------
+// ---- Droplet Fuel API ----
 
 private boolean getToken() {
     if (!settings.ClientId || !settings.ClientSecret) {
-        logTrace "getToken: no Client ID / Secret yet"
+        logDebug "getToken: no Client ID / Secret yet"
         return false
     }
     if (isTokenExpired() || !state.APIToken) {
@@ -224,7 +227,7 @@ private boolean isTokenExpired() {
 }
 
 private boolean getAPIToken() {
-    logTrace "getAPIToken: requesting a new API token"
+    logDebug "getAPIToken: requesting a new API token"
     def params = [
         uri: DROPLET_API(),
         path: "/brand_token.php",
@@ -247,7 +250,7 @@ private boolean getAPIToken() {
                 state.APITokenExpirationTime = now() + ((ttlSec - 60) * 1000L)
                 state.lastErr = ""
                 ok = true
-                logInfo "Token refresh OK — lease ${ttlSec}s"
+                logDebug "Token refresh OK — lease ${ttlSec}s"
             } else {
                 state.lastErr = "Token request returned ${resp.status}: ${resp.data?.error ?: resp.data}"
             }
@@ -256,7 +259,7 @@ private boolean getAPIToken() {
         state.lastErr = "Token request exception: ${e.message}"
     }
     if (state.lastErr) {
-        logError "getAPIToken failed: ${state.lastErr}"
+        log.error "getAPIToken failed: ${state.lastErr}"
         state.APIToken = null
         state.APITokenExpirationTime = 0L
     }
@@ -267,7 +270,7 @@ private boolean getAPIToken() {
 // sensor_id, or [:] on any failure. On success, also refreshes
 // state.devices (list of sensor_ids) and state.deviceData (the full Map).
 private Map fetchTankData() {
-    logTrace "fetchTankData()"
+    logDebug "fetchTankData()"
     Map deviceData = [:]
     boolean ok = false
     if (!getToken()) return deviceData
@@ -280,21 +283,21 @@ private Map fetchTankData() {
     try {
         httpPost(params) { resp ->
             if (resp.status != 200) {
-                logError "fetchTankData: HTTP ${resp.status}"
+                log.error "fetchTankData: HTTP ${resp.status}"
                 state.APIToken = null
                 state.APITokenExpirationTime = 0L
                 return
             }
             def obs = parseJson(resp.data.toString())
             if (obs?.result != "ok") {
-                logError "fetchTankData: API non-ok: ${obs?.error_msg ?: obs}"
+                log.error "fetchTankData: API non-ok: ${obs?.error_msg ?: obs}"
                 return
             }
             obs.data?.each { dev -> deviceData[dev.sensor_id] = dev }
             ok = true
         }
     } catch (Exception e) {
-        logError "fetchTankData exception: ${e.message}"
+        log.error "fetchTankData exception: ${e.message}"
         state.APIToken = null
         state.APITokenExpirationTime = 0L
     }
@@ -308,14 +311,12 @@ private Map fetchTankData() {
     return deviceData
 }
 
-// ---------------------------------------------------------------------------
-// Polling — pushes events to each child device and updates derived metrics
-// ---------------------------------------------------------------------------
+// ---- Polling — pushes events to each child device and updates derived metrics ----
 
 void pollChildren(boolean updateData = true) {
-    logTrace "pollChildren(updateData=${updateData})"
+    logDebug "pollChildren(updateData=${updateData})"
     if (!getToken()) {
-        logInfo "pollChildren: skipping — no API token"
+        logDebug "pollChildren: skipping — no API token"
         return
     }
     // Fetch before reading state.devices so an empty cached list (e.g. the
@@ -323,7 +324,7 @@ void pollChildren(boolean updateData = true) {
     Map deviceData = updateData ? fetchTankData() : (state.deviceData ?: [:])
     List devices = state.devices ?: []
     if (!devices) {
-        logInfo "pollChildren: no known devices"
+        logDebug "pollChildren: no known devices"
         return
     }
 
@@ -332,12 +333,12 @@ void pollChildren(boolean updateData = true) {
             String dni = getDeviceDNI(sensorId)
             def d = getChildDevice(dni)
             if (!d) {
-                logInfo "pollChildren: no child device for ${dni}"
+                log.warn "pollChildren: no child device for ${dni}"
                 return
             }
             Map devData = deviceData[sensorId]
             if (!devData) {
-                logInfo "pollChildren: no API data for ${d.label}"
+                logDebug "pollChildren: no API data for ${d.label}"
                 return
             }
 
@@ -368,11 +369,11 @@ void pollChildren(boolean updateData = true) {
             if (derived.refillDetected) {
                 events << [lastRefillAt: derived.refillAt]
                 events << [lastRefillGallons: derived.refillGallons]
-                log.info "SOG: refill detected on ${d.label} +${derived.refillGallons} gal"
+                log.info "refill detected on ${d.label} +${derived.refillGallons} gal"
             }
             events.each { evt -> d.generateEvent(evt) }
         } catch (Exception e) {
-            logError "pollChildren: error for sensor ${sensorId}: ${e.message}"
+            log.error "pollChildren: error for sensor ${sensorId}: ${e.message}"
         }
     }
 }
@@ -468,9 +469,7 @@ private void recordDailyLevel(devId, float level) {
     state[key] = table
 }
 
-// ---------------------------------------------------------------------------
-// Tile rendering
-// ---------------------------------------------------------------------------
+// ---- Tile rendering ----
 
 def getTile() {
     String dni = "${params?.dni}"
@@ -615,9 +614,7 @@ private String renderTankSvg(def level) {
 </svg>"""
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+// ---- Helpers ----
 
 String getDeviceDNI(String DeviceID) {
     return [app.id, DeviceID].join('.')
@@ -647,10 +644,15 @@ private TimeZone getTimeZone() {
     return location?.timeZone
 }
 
-// ---------------------------------------------------------------------------
-// Logging — gated entirely behind showDebug; one helper per level.
-// ---------------------------------------------------------------------------
+// ---- BEGIN standard logging (app) v1: keep identical in every app, see STYLE.md ----
 
-private void logTrace(String msg) { if (showDebug) log.trace "SOG: ${msg}" }
-private void logInfo(String msg)  { if (showDebug) log.info  "SOG: ${msg}" }
-private void logError(String msg) { log.error "SOG: ${msg}" }
+void logsOff() {
+    log.info "Debug logging turned off"
+    app.updateSetting("logEnable", [value: "false", type: "bool"])
+}
+
+private void logDebug(String msg) {
+    if (settings.logEnable) log.debug msg
+}
+
+// ---- END standard logging ----

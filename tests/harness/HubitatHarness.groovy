@@ -123,6 +123,38 @@ class FakeResponse {
     def getJson() { data == null ? null : new groovy.json.JsonSlurper().parseText(data) }
 }
 
+/** A child device as an app sees it: generateEvent() lands in `events` and `current`. */
+class FakeChildDevice {
+    Object id
+    String deviceNetworkId
+    String name
+    String label
+    String typeName
+    List<Map> events = []
+    Map current = [:]
+    String getDisplayName() { label ?: name }
+    String getLabel() { label }
+    void generateEvent(Map m) { m.each { k, v -> events << [name: k, value: v]; current[k] = v } }
+    def currentValue(String n) { current[n] }
+}
+
+/** The `app` object for app scripts. */
+class FakeApp {
+    Object id = 55
+    Map settings
+    Map children
+    List<String> removedSettings = []
+    List<Map> settingUpdates = []
+    void updateSetting(String name, Map value) {
+        settingUpdates << [name: name] + value
+        def v = value.value
+        settings?.put(name, value.type == "bool" ? (v.toString() == "true") : v)
+    }
+    void removeSetting(String name) { removedSettings << name; settings?.remove(name) }
+    void clearSetting(String name) { settings?.remove(name) }
+    List getChildDevices(boolean includeVirtual = false) { children.values() as List }
+}
+
 class FakeLog {
     List<List<String>> lines = []
     void debug(msg) { lines << ["debug", msg.toString()] }
@@ -165,7 +197,10 @@ class Driver {
     final List<String> unschedules = []     // every unschedule call ("*" = all)
     final List<Map> http = []               // every async HTTP call: [method, callback, params, data]
     final List hubCommands = []             // every sendHubCommand
-    final Map<String, Map> children = [:]   // child DNI -> [namespace, typeName, props]
+    final Map<String, Object> children = [:] // child DNI -> FakeChildDevice
+    final FakeApp app = new FakeApp()
+    final List<Map> syncHttp = []           // queued replies for httpPost/httpGet: [status:, data:] or [exception:]
+    int nextChildId = 100
 
     // Recorded from metadata { }
     Map definition = [:]
@@ -220,10 +255,30 @@ class Driver {
         binding.setVariable("sendHubCommand", { cmd -> hubCommands << cmd })
         binding.setVariable("getChildDevice", { String dni -> children[dni] })
         binding.setVariable("getChildDevices", { -> children.values() as List })
+        binding.setVariable("getAllChildDevices", { -> children.values() as List })
         binding.setVariable("addChildDevice", { String ns, String type, String dni, Map props = [:] ->
-            children[dni] = [namespace: ns, typeName: type, displayName: props.label ?: type] + props
+            children[dni] = new FakeChildDevice(id: nextChildId++, deviceNetworkId: dni, typeName: type,
+                    name: props.name ?: type, label: props.label)
         })
         binding.setVariable("deleteChildDevice", { String dni -> children.remove(dni) })
+
+        // App platform calls.
+        app.settings = settings
+        app.children = children
+        binding.setVariable("app", app)
+        binding.setVariable("unsubscribe", { Object... a -> })
+        binding.setVariable("parseJson", { String text -> new groovy.json.JsonSlurper().parseText(text) })
+        binding.setVariable("createAccessToken", { -> "access-token" })
+        binding.setVariable("getFullApiServerUrl", { -> "https://cloud.example/api/55" })
+        binding.setVariable("getFullLocalApiServerUrl", { -> "http://hub.local/apps/api/55" })
+        Closure syncCall = { String method, Map params, Closure cb ->
+            http << [method: method, params: params]
+            Map r = syncHttp ? syncHttp.remove(0) : [exception: "no reply queued"]
+            if (r.exception) throw new Exception(r.exception as String)
+            cb.call([status: r.status ?: 200, data: r.data])
+        }
+        binding.setVariable("httpPost", { Map params, Closure cb -> syncCall("SYNC_POST", params, cb) })
+        binding.setVariable("httpGet", { Map params, Closure cb -> syncCall("SYNC_GET", params, cb) })
         binding.setVariable("updateDataValue", { String k, String v -> device.updateDataValue(k, v) })
         binding.setVariable("getDataValue", { String k -> device.getDataValue(k) })
 
@@ -232,6 +287,10 @@ class Driver {
         binding.setVariable("metadata", runNested)
         binding.setVariable("preferences", runNested)
         binding.setVariable("section", runNested)
+        binding.setVariable("page", { Object... args -> })
+        binding.setVariable("mappings", { Closure c -> })
+        binding.setVariable("dynamicPage", runNested)
+        binding.setVariable("paragraph", { Object... args -> })
         binding.setVariable("definition", { Object[] args ->
             definition = (Map) args.find { it instanceof Map } ?: [:]
             args.find { it instanceof Closure }?.call()
