@@ -49,8 +49,9 @@ metadata {
         attribute "usageRate", "number"           // gallons per day (smoothed)
         attribute "daysRemaining", "number"       // gallons / usageRate
         attribute "lowFuel", "string"             // "true" / "false" vs threshold
-        attribute "lastRefillAt", "string"        // ISO timestamp of last detected refill
+        attribute "lastRefillAt", "string"        // time of the last detected refill (yyyy-MM-dd HH:mm:ss, hub time)
         attribute "lastRefillGallons", "number"   // delta gallons at the refill
+        attribute "healthStatus", "enum", ["online", "offline"]   // offline: API failing, or no reading for 96 h
     }
 }
     
