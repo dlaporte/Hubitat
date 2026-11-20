@@ -21,8 +21,17 @@
  *  for the specific language governing permissions and limitations under the License.
  */
 
+import groovy.transform.Field
+
+@Field static final String VERSION = "0.1.0"
+
 metadata {
-    definition (name: "Smart Oil Gauge", namespace: "dlaporte" , author: "David LaPorte") {
+    definition(
+        name: "Smart Oil Gauge",
+        namespace: "dlaporte",
+        author: "David LaPorte",
+        importUrl: "https://raw.githubusercontent.com/dlaporte/Hubitat/main/SmartOilGauge/device/smartoilgauge.groovy"
+    ) {
         capability "Energy Meter"
         capability "Refresh"
         capability "Sensor"
@@ -55,7 +64,11 @@ void poll() {
     refresh()
 }
 
+// Called by the parent app with one or more attribute: value pairs.
 def generateEvent(Map results) {
+    // This device has no settings page or initialize(), so record the running
+    // version here, where the app reaches it every poll.
+    if (device.getDataValue("driverVersion") != VERSION) device.updateDataValue("driverVersion", VERSION)
     results.each { name, value ->
         sendEvent(name: name, value: value)
     }
