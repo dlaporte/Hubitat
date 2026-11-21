@@ -1,10 +1,11 @@
 {
   "packageName": "Amcrest ASH26",
   "author": "David LaPorte",
-  "version": "0.7",
-  "releaseNotes": "Bug fixes and minor cleanup.",
-  "minimumHEVersion": "2.1.9",
-  "dateReleased": "2026-06-12",
+  "version": "0.8.0",
+  "minimumHEVersion": "2.2.9",
+  "dateReleased": "2026-11-21",
+  "documentationLink": "https://github.com/dlaporte/Hubitat/blob/main/ASH26/README.md",
+  "releaseNotes": "The switch now updates as soon as the camera confirms On or Off. New lightMode and healthStatus attributes. An offline camera is logged once, with an hourly reminder and a recovery line. Debug logging now turns itself off after 30 minutes, and a new descriptionText logging option (on by default) logs value changes. After updating, click Initialize on the device. Requires Hubitat 2.2.9+.",
   "drivers": [
     {
       "id": "b607fa7f-ed1e-4b9b-adad-01bd88a5664b",
