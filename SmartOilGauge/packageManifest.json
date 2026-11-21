@@ -1,14 +1,18 @@
 {
   "packageName": "Smart Oil Gauge",
-  "author": "dlaporte",
-  "minimumHEVersion": "2.2.0",
-  "dateReleased": "2026-10-28",
+  "author": "David LaPorte",
+  "version": "0.1.0",
+  "minimumHEVersion": "2.2.9",
+  "dateReleased": "2026-11-21",
+  "documentationLink": "https://github.com/dlaporte/Hubitat/blob/main/SmartOilGauge/README.md",
+  "communityLink": "https://community.hubitat.com/t/smart-oil-gauge-app-and-device/63078",
+  "releaseNotes": "Repeated readings from the gauge no longer skew the usage rate or refill detection. A newly added tank gets its device without re-saving the app. The tile turns red at your low-fuel setting, and API calls time out instead of hanging. New healthStatus attribute on each tank (offline when the API is failing or the tank hasn't reported for 96 hours); outages are logged once, with an hourly reminder and a recovery line. After updating, open the app and click Done. Requires Hubitat 2.2.9+.",
   "apps": [
     {
       "id": "22278792-e18b-4bc1-8b85-7de24b8e8832",
       "name": "Smart Oil Gauge (Connect)",
       "namespace": "dlaporte",
-      "location": "https://raw.githubusercontent.com/dlaporte/Hubitat/refs/heads/main/SmartOilGauge/app/smartoilgauge.groovy",
+      "location": "https://raw.githubusercontent.com/dlaporte/Hubitat/main/SmartOilGauge/app/smartoilgauge.groovy",
       "required": true,
       "oauth": true,
       "primary": true
@@ -19,11 +23,8 @@
       "id": "37d34d73-d84b-4f65-8818-58704e1a79ab",
       "name": "Smart Oil Gauge",
       "namespace": "dlaporte",
-      "location": "https://raw.githubusercontent.com/dlaporte/Hubitat/refs/heads/main/SmartOilGauge/device/smartoilgauge.groovy",
+      "location": "https://raw.githubusercontent.com/dlaporte/Hubitat/main/SmartOilGauge/device/smartoilgauge.groovy",
       "required": true
     }
-  ],
-  "version": "0.0.16",
-  "releaseNotes": "Polling now recovers after a failed API call (previously it stopped until the app was re-saved). daysRemaining no longer goes stale when usage is flat or right after a refill. Requires Hubitat 2.2.0+.",
-  "communityLink": "https://community.hubitat.com/t/smart-oil-gauge-app-and-device/63078"
+  ]
 }
