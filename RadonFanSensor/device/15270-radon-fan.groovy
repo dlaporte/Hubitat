@@ -8,7 +8,8 @@
  *  Changelog:
  *  v0.10.0 (2026-11-20) - Initialize runs at hub boot; repeat reports no longer restart the
  *         alarm clock; no repeat alarm after a reboot; threshold changes apply on save; Invert
- *         sensor option; healthStatus; standard logging and lifecycle.
+ *         sensor option; healthStatus (offline threshold from the time between wake-ups);
+ *         standard logging and lifecycle.
  *  v0.9 - fan alarm survives hub reboots and accounts for elapsed time.
  *  v0.7 - Z-Wave correctness: state.MSR, NOMI, and parse() cleanup.
  *  v0.6 - removed inapplicable Enerwave MSR branch.
@@ -137,7 +138,7 @@ private void rearmOfflineTimer() {
 // report the internal reed switch rather than the wired terminals.)
 void refresh() {
     state.refreshPending = true
-    log.info "${device.displayName} is asleep; it will report its battery and wake-up interval when it next wakes up"
+    log.info "${device.displayName} is asleep; it will report its battery when it next wakes up"
 }
 
 // Called via runIn after the configured fan-off threshold. If the fan is still
@@ -266,6 +267,7 @@ def zwaveEvent(hubitat.zwave.commands.notificationv3.NotificationReport cmd) {
 
 def zwaveEvent(hubitat.zwave.commands.wakeupv1.WakeUpNotification cmd) {
     logDebug "woke up"
+    noteWakeUp()
     def result = []
     boolean refreshNow = state.refreshPending == true
     if (refreshNow || !state.lastbat || now() - (state.lastbat as Long) > 53*60*60*1000L) {
@@ -275,11 +277,6 @@ def zwaveEvent(hubitat.zwave.commands.wakeupv1.WakeUpNotification cmd) {
     if (!state.MSR) {
         result << response(zwave.wakeUpV1.wakeUpIntervalSet(seconds:4*3600, nodeid:zwaveHubNodeId))
         result << response(zwave.manufacturerSpecificV2.manufacturerSpecificGet())
-        result << response("delay 1200")
-    }
-    // The offline threshold is based on the interval the sensor reports.
-    if (refreshNow || !wakeUpIntervalKnown()) {
-        result << response(zwave.wakeUpV1.wakeUpIntervalGet())
         result << response("delay 1200")
     }
     state.remove("refreshPending")
@@ -354,12 +351,25 @@ private void noteCheckin() {
     runIn(offlineAfterSeconds(), "markOffline")
 }
 
-private boolean wakeUpIntervalKnown() {
-    return ((state.wakeUpIntervalSec ?: 0) as Integer) > 0
+// The hub's Z-Wave stack keeps the sensor's WakeUpIntervalReport to itself (seen
+// on firmware 2.5.3), so the interval is measured from the time between wake-ups.
+// The larger of the last two gaps is used: one early wake (a button press) can't
+// shrink it, and a missed wake-up only lengthens it until two normal gaps follow.
+private void noteWakeUp() {
+    Long nowMs = now()
+    Long last = state.lastWakeMs as Long
+    state.lastWakeMs = nowMs
+    if (last == null) return
+    Integer gap = ((nowMs - last).intdiv(1000L)) as Integer
+    if (gap < 600 || gap > 7 * 24 * 3600) return
+    Integer prevGap = (state.lastWakeGapSec ?: 0) as Integer
+    state.lastWakeGapSec = gap
+    state.wakeUpIntervalSec = Math.max(gap, prevGap)
+    runIn(offlineAfterSeconds(), "markOffline")
 }
 
-// Offline after two missed wake-ups plus an hour's grace. Until the sensor has
-// reported its interval (or if it reports 0), allow a week.
+// Offline after two missed wake-ups plus an hour's grace. Until the interval is
+// known (or if it is 0), allow a week.
 private Integer offlineAfterSeconds() {
     Integer interval = (state.wakeUpIntervalSec ?: 0) as Integer
     return interval > 0 ? 2 * interval + 3600 : 7 * 24 * 3600

@@ -352,26 +352,88 @@ test("markOffline warns once and sets offline") {
 
 // ---- Wake-up and refresh ----
 
-test("wake-up asks for the interval while it is unknown") {
+// The hub's Z-Wave stack keeps the sensor's WakeUpIntervalReport (seen on the
+// cabin hub, 2026-11-20), so asking for it only costs a message per wake-up.
+test("wake-up doesn't ask for the interval, even while it is unknown") {
     def d = fresh()
     d.state.MSR = "014F-2001-0102"
     d.state.lastbat = d.clock
-    def result = d.call("zwaveEvent", d.zw("wakeupv1.WakeUpNotification"))
-    assert result.contains("response:wakeUpV1.wakeUpIntervalGet()")
-    assert !result.contains("response:batteryV1.batteryGet()")
-    assert result.last() == "response:wakeUpV1.wakeUpNoMoreInformation()"
-}
-
-test("wake-up with a known interval and no refresh pending sends only NOMI") {
-    def d = fresh()
-    d.state.MSR = "014F-2001-0102"
-    d.state.lastbat = d.clock
-    d.state.wakeUpIntervalSec = 86400
     def result = d.call("zwaveEvent", d.zw("wakeupv1.WakeUpNotification"))
     assert result == ["response:wakeUpV1.wakeUpNoMoreInformation()"]
 }
 
-test("refresh queues battery and interval for the next wake-up") {
+// A wake-up as it arrives from the hub: parse() first, then the handler.
+def wake = { d ->
+    d.zwave.next = d.zw("wakeupv1.WakeUpNotification")
+    d.call("parse", "zw device: 34, command: 8407, payload: ")
+}
+
+test("the interval is measured from the time between wake-ups") {
+    def d = fresh()
+    d.state.MSR = "014F-2001-0102"
+    d.state.lastbat = d.clock
+    wake(d)
+    assert d.state.lastWakeMs == d.clock
+    assert d.state.wakeUpIntervalSec == null
+    assert d.schedules.markOffline == 7 * 24 * 3600
+    d.advance(14_461_000L)                    // 4 h plus the drift seen on the hub
+    wake(d)
+    assert d.state.wakeUpIntervalSec == 14461
+    assert d.schedules.markOffline == 2 * 14461 + 3600
+}
+
+test("one early wake (a button press) doesn't shrink the interval") {
+    def d = fresh()
+    d.state.MSR = "014F-2001-0102"
+    d.state.lastbat = d.clock
+    wake(d)
+    d.advance(14_400_000L); wake(d)
+    d.advance(1_800_000L); wake(d)            // pressed 30 min later
+    assert d.state.wakeUpIntervalSec == 14400
+    d.advance(12_600_000L); wake(d)           // next scheduled wake
+    assert d.state.wakeUpIntervalSec == 12600
+    d.advance(14_400_000L); wake(d)
+    assert d.state.wakeUpIntervalSec == 14400
+}
+
+test("a missed wake-up lengthens the interval until two normal gaps follow") {
+    def d = fresh()
+    d.state.MSR = "014F-2001-0102"
+    d.state.lastbat = d.clock
+    wake(d)
+    d.advance(14_400_000L); wake(d)
+    d.advance(28_800_000L); wake(d)           // one wake-up never arrived
+    assert d.state.wakeUpIntervalSec == 28800
+    d.advance(14_400_000L); wake(d)
+    assert d.state.wakeUpIntervalSec == 28800
+    d.advance(14_400_000L); wake(d)
+    assert d.state.wakeUpIntervalSec == 14400
+}
+
+test("gaps under 10 minutes or over 7 days aren't used") {
+    def d = fresh()
+    d.state.MSR = "014F-2001-0102"
+    d.state.lastbat = d.clock
+    wake(d)
+    d.advance(300_000L); wake(d)
+    assert d.state.wakeUpIntervalSec == null
+    d.advance(8L * 24 * 3600 * 1000); wake(d)
+    assert d.state.wakeUpIntervalSec == null
+    assert d.state.lastWakeMs == d.clock
+}
+
+test("other messages don't count as wake-ups") {
+    def d = fresh()
+    d.state.MSR = "014F-2001-0102"
+    d.state.lastbat = d.clock
+    wake(d)
+    long first = d.clock
+    d.advance(3_600_000L)
+    d.call("zwaveEvent", d.zw("sensorbinaryv1.SensorBinaryReport", sensorValue: 255))
+    assert d.state.lastWakeMs == first
+}
+
+test("refresh queues a battery request for the next wake-up") {
     def d = fresh()
     d.state.MSR = "014F-2001-0102"
     d.state.lastbat = d.clock
@@ -382,7 +444,7 @@ test("refresh queues battery and interval for the next wake-up") {
     assert d.log.at("info").any { it.contains("next wakes up") }
     def result = d.call("zwaveEvent", d.zw("wakeupv1.WakeUpNotification"))
     assert result.contains("response:batteryV1.batteryGet()")
-    assert result.contains("response:wakeUpV1.wakeUpIntervalGet()")
+    assert !result.contains("response:wakeUpV1.wakeUpIntervalGet()")
     assert result.last() == "response:wakeUpV1.wakeUpNoMoreInformation()"
     assert !d.state.containsKey("refreshPending")
 }

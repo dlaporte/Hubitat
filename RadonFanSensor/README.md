@@ -71,16 +71,16 @@ Then pair the door sensor:
   `"ok"` the moment the fan starts again
 - **`battery`** — sensor battery %
 - **`healthStatus`** — `"online"` while the sensor checks in; `"offline"`
-  after it misses two wake-ups (plus an hour). The threshold uses the
-  wake-up interval the sensor reports at its first wake-up after install;
-  until then it allows a week
+  after it misses two wake-ups (plus an hour). The driver measures the
+  wake-up interval from the time between wake-ups, so the threshold is
+  known from the second wake-up after install; until then it allows a week
 
 ## Commands
 
 - **Initialize** — re-arms the fan-alarm and offline timers. Also runs
   automatically at hub boot and when you save preferences.
-- **Refresh** — the sensor sleeps, so this queues a battery and wake-up
-  interval request for its next wake-up rather than sending anything now.
+- **Refresh** — the sensor sleeps, so this queues a battery request for its
+  next wake-up rather than sending anything now.
 
 ## Notes
 
