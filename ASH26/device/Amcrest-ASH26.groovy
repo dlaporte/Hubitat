@@ -1,8 +1,14 @@
 /*
  *  Amcrest ASH26
- *  Enable control of lights, night vision, motion detection, and other settings
- *  only available through Amcrest mobile app.
  *
+ *  LAN driver (CGI API with digest auth) for the Amcrest ASH26 outdoor camera's floodlight,
+ *  plus device info that is otherwise only shown in the Amcrest app.
+ *  Documentation: https://github.com/dlaporte/Hubitat/blob/main/ASH26/README.md
+ *
+ *  Changelog:
+ *  v0.8.0 (2026-11-20) - switch updates as soon as the camera confirms On/Off; lightMode
+ *         attribute; an offline camera is logged once with hourly reminders; healthStatus;
+ *         standard logging and lifecycle.
  *  v0.7 - reset state.nc on initialize.
  *  v0.6 - loudly log chain abandonment on mid-sequence set failure.
  *  v0.5 - RFC 2617-compliant digest nc; on/off sequenced.
@@ -21,88 +27,106 @@
  *  Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
  *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
  *  for the specific language governing permissions and limitations under the License.
- *
  */
 
+import groovy.transform.Field
+
+@Field static final String VERSION = "0.8.0"
+
 metadata {
+    definition(
+        name: "Amcrest ASH26",
+        namespace: "dlaporte",
+        author: "David LaPorte",
+        importUrl: "https://raw.githubusercontent.com/dlaporte/Hubitat/main/ASH26/device/Amcrest-ASH26.groovy",
+        // Each request is two async round trips (digest challenge, then the call),
+        // and the 1-minute poll can overlap a command; handlers share state.
+        singleThreaded: true
+    ) {
+        capability "Initialize"
+        capability "Refresh"
+        capability "Switch"
 
-  definition(name: "Amcrest ASH26", namespace: "dlaporte", author: "dlaporte") {
-    capability "Initialize"
-    capability "Refresh"
-    capability "Switch"
+        attribute "light_status", "string"
+        attribute "device_name", "string"
+        attribute "serial_number", "string"
+        attribute "firmware_version", "string"
+        attribute "mac_address", "string"
+        attribute "wireless_ssid", "string"
+        attribute "lightMode", "string"     // the camera's Lighting_V2 mode (Manual, Off, Auto, ...)
+        attribute "healthStatus", "enum", ["online", "offline"]
+    }
 
-    attribute "light_status", "string"
-    attribute "device_name", "string"
-    attribute "serial_number", "string"
-    attribute "firmware_version", "string"
-    attribute "mac_address", "string"
-    attribute "wireless_ssid", "string"
-  }
-
-  preferences {
-    input("ip", "text", title: "IP Address", required: true)
-    input("username", "text", title: "ASH26 Username", required: true)
-    input("password", "password", title: "ASH26 Password", required: true)
-    input "debug", "bool", required: false, defaultValue: false, title: "Debug Logging"
-  }
+    preferences {
+        input name: "ip", type: "text", title: "IP address", required: true
+        input name: "username", type: "text", title: "ASH26 username", required: true
+        input name: "password", type: "password", title: "ASH26 password", required: true
+        input name: "logEnable", type: "bool", title: "Enable debug logging", description: "Turns itself off after 30 minutes", defaultValue: false
+        input name: "txtEnable", type: "bool", title: "Enable descriptionText logging", defaultValue: true
+    }
 }
 
-// ---------------------------------------------------------------------------
-// Lifecycle
-// ---------------------------------------------------------------------------
+// ---- Lifecycle ----
 
-def installed() {
-  log.info "ASH26: installed()"
-  initialize()
+void installed() {
+    initialize()
 }
 
-def updated() {
-  log.info "ASH26: updated()"
-  initialize()
+void updated() {
+    log.info "Preferences saved"
+    initialize()
 }
 
-def initialize() {
-  unschedule()
-  // Reset the digest nonce counter so it doesn't accumulate forever in the
-  // serialized state map. Each request gets a fresh server-side nonce, so
-  // the counter's monotonic-increase isn't actually buying us replay
-  // protection beyond what the server already guarantees.
-  state.nc = 0
-  if (!ip || !username || !password) {
-    log.error "ASH26: required fields not completed, please complete for proper operation."
-    return
-  }
-  runEvery1Minute("refresh")
-  refresh()
+void initialize() {
+    unschedule()
+    upgradeSettings()
+    if (settings.logEnable) runIn(1800, "logsOff")
+    // Let the next failure (if any) log again so Save gives fresh feedback;
+    // commFailSince is kept so the recovery line reports the full outage.
+    state.remove("commFailKey")
+    // Reset the digest nonce counter so it doesn't accumulate forever in the
+    // serialized state map. Each request gets a fresh server-side nonce, so
+    // the counter's monotonic-increase isn't actually buying us replay
+    // protection beyond what the server already guarantees.
+    state.nc = 0
+    if (!ip || !username || !password) {
+        log.error "required fields not completed, please complete for proper operation."
+        return
+    }
+    runEvery1Minute("refresh")
+    refresh()
 }
 
-// ---------------------------------------------------------------------------
-// Switch + refresh entry points
-// ---------------------------------------------------------------------------
+private void upgradeSettings() {
+    device.removeSetting("debug")          // replaced by logEnable in 0.8.0
+    device.updateDataValue("driverVersion", VERSION)
+}
+
+// ---- Switch + refresh entry points ----
 
 def refresh() {
-  if (debug) log.debug "ASH26: refresh()"
-  get_camera_settings()
+    logDebug "refresh()"
+    get_camera_settings()
 }
 
 def on() {
-  if (debug) log.debug "ASH26: on()"
-  // Order matters: disable alarm-lighting *first*, then set manual mode.
-  // With the previous parallel firing, the camera could observe the two
-  // sets in arbitrary order.
-  setSequence([["AlarmLighting[0][0].Enable", "false"], ["Lighting_V2[0][0][1].Mode", "Manual"]])
+    logDebug "on()"
+    // Order matters: disable alarm-lighting *first*, then set manual mode.
+    // With the previous parallel firing, the camera could observe the two
+    // sets in arbitrary order.
+    setSequence([["AlarmLighting[0][0].Enable", "false"], ["Lighting_V2[0][0][1].Mode", "Manual"]])
 }
 
 def off() {
-  if (debug) log.debug "ASH26: off()"
-  setSequence([["AlarmLighting[0][0].Enable", "true"], ["Lighting_V2[0][0][1].Mode", "Off"]])
+    logDebug "off()"
+    setSequence([["AlarmLighting[0][0].Enable", "true"], ["Lighting_V2[0][0][1].Mode", "Off"]])
 }
 
 private setSequence(List remaining) {
-  if (!remaining) return
-  def head = remaining[0]
-  def rest = remaining.size() > 1 ? remaining[1..-1] : []
-  set_camera_setting(head[0], head[1], [chainRest: rest])
+    if (!remaining) return
+    def head = remaining[0]
+    def rest = remaining.size() > 1 ? remaining[1..-1] : []
+    set_camera_setting(head[0], head[1], [chainRest: rest])
 }
 
 // ---------------------------------------------------------------------------
@@ -118,176 +142,289 @@ private setSequence(List remaining) {
 // ---------------------------------------------------------------------------
 
 private get_camera_settings() {
-  String uri = "/cgi-bin/configManager.cgi?action=getConfig&name=All"
-  def params = [
-      uri: "http://${ip}${uri}",
-      contentType: "text/plain",
-      timeout: 10
-  ]
-  asynchttpGet("unauthRequestHandler", params, [
-      uri: uri,
-      finalCallback: "parseCameraSettings"
-  ])
+    String uri = "/cgi-bin/configManager.cgi?action=getConfig&name=All"
+    def params = [
+            uri: "http://${ip}${uri}",
+            contentType: "text/plain",
+            timeout: 10
+    ]
+    asynchttpGet("unauthRequestHandler", params, [
+            uri: uri,
+            finalCallback: "parseCameraSettings"
+    ])
 }
 
 private set_camera_setting(String name, String value, Map extra = [:]) {
-  String uri = "/cgi-bin/configManager.cgi?action=setConfig&${name}=${value}"
-  def params = [
-      uri: "http://${ip}${uri}",
-      contentType: "text/plain",
-      timeout: 10
-  ]
-  Map userData = [
-      uri: uri,
-      finalCallback: "verifySetResponse",
-      settingName: name,
-      settingValue: value
-  ]
-  if (extra) userData.putAll(extra)
-  asynchttpGet("unauthRequestHandler", params, userData)
+    String uri = "/cgi-bin/configManager.cgi?action=setConfig&${name}=${value}"
+    def params = [
+            uri: "http://${ip}${uri}",
+            contentType: "text/plain",
+            timeout: 10
+    ]
+    Map userData = [
+            uri: uri,
+            finalCallback: "verifySetResponse",
+            settingName: name,
+            settingValue: value
+    ]
+    if (extra) userData.putAll(extra)
+    asynchttpGet("unauthRequestHandler", params, userData)
 }
 
 // First callback: expects a 401, parses the WWW-Authenticate challenge,
 // then re-issues the same request with an Authorization header.
 def unauthRequestHandler(response, data) {
-  if (!response.hasError() && response.status == 200) {
-    // Unusual: a previously-cached connection let us through without auth.
-    // Hand straight off to the operation parser.
-    if (data.finalCallback) "${data.finalCallback}"(response, data)
-    return
-  }
-  if (response.status != 401) {
-    log.error "ASH26: unexpected status ${response.status} for ${data.uri}"
-    return
-  }
+    if (!response.hasError() && response.status == 200) {
+        // Unusual: a previously-cached connection let us through without auth.
+        // Hand straight off to the operation parser.
+        noteCommSuccess()
+        if (data.finalCallback) "${data.finalCallback}"(response, data)
+        return
+    }
+    if (response.status != 401) {
+        requestFailed(data, failureKind(response), httpErrorDetail(response))
+        return
+    }
 
-  def wwwAuth = extractHeader(response, "WWW-Authenticate")
-  if (!wwwAuth) {
-    log.error "ASH26: 401 without WWW-Authenticate header"
-    return
-  }
-  def digestMap = parseDigestChallenge(wwwAuth)
-  String authHeader = calcDigestAuth(data.uri, "MD5", digestMap)
+    def wwwAuth = extractHeader(response, "WWW-Authenticate")
+    if (!wwwAuth) {
+        requestFailed(data, "http", "401 without a WWW-Authenticate header")
+        return
+    }
+    def digestMap = parseDigestChallenge(wwwAuth)
+    String authHeader = calcDigestAuth(data.uri, "MD5", digestMap)
 
-  def params = [
-      uri: "http://${ip}${data.uri}",
-      contentType: "text/plain",
-      headers: ["Authorization": authHeader],
-      timeout: 10
-  ]
-  asynchttpGet("authedRequestHandler", params, data)
+    def params = [
+            uri: "http://${ip}${data.uri}",
+            contentType: "text/plain",
+            headers: ["Authorization": authHeader],
+            timeout: 10
+    ]
+    asynchttpGet("authedRequestHandler", params, data)
 }
 
 // Second callback: dispatches the (now-authenticated) response to the
 // operation's parser by the name passed in through data.finalCallback.
 def authedRequestHandler(response, data) {
-  if (response.hasError() || response.status != 200) {
-    log.error "ASH26: authed request failed for ${data.uri}: HTTP ${response.status}"
-    return
-  }
-  if (data.finalCallback) {
-    "${data.finalCallback}"(response, data)
-  }
+    if (response.hasError() || response.status != 200) {
+        // A 401 to the digest-signed request means the credentials are wrong.
+        String kind = (response.status == 401) ? "auth" : failureKind(response)
+        requestFailed(data, kind, httpErrorDetail(response))
+        return
+    }
+    noteCommSuccess()
+    if (data.finalCallback) {
+        "${data.finalCallback}"(response, data)
+    }
 }
 
 def parseCameraSettings(response, data) {
-  def camera_settings = [: ]
-  def text = response.data ?: ""
-  text.eachLine { line ->
-    def parts = line.split("=", 2)
-    if (parts.length == 2) {
-      camera_settings.put(parts[0].trim(), parts[1].trim())
+    def camera_settings = [: ]
+    def text = response.data ?: ""
+    text.eachLine { line ->
+        def parts = line.split("=", 2)
+        if (parts.length == 2) {
+            camera_settings.put(parts[0].trim(), parts[1].trim())
+        }
     }
-  }
 
-  sendEvent(name: "device_name",       value: camera_settings['table.All.General.MachineName'])
-  sendEvent(name: "serial_number",     value: camera_settings['table.All.VSP_PaaS.SN'])
-  sendEvent(name: "firmware_version",  value: camera_settings['table.All.PaaS_UPGRADE.LastVersion'])
-  sendEvent(name: "mac_address",       value: camera_settings['table.All.Network.eth2.PhysicalAddress'])
-  sendEvent(name: "wireless_ssid",     value: camera_settings['table.All.WLan.eth2.SSID'])
+    sendEvent(name: "device_name",       value: camera_settings['table.All.General.MachineName'])
+    sendEvent(name: "serial_number",     value: camera_settings['table.All.VSP_PaaS.SN'])
+    sendEvent(name: "firmware_version",  value: camera_settings['table.All.PaaS_UPGRADE.LastVersion'])
+    sendEvent(name: "mac_address",       value: camera_settings['table.All.Network.eth2.PhysicalAddress'])
+    sendEvent(name: "wireless_ssid",     value: camera_settings['table.All.WLan.eth2.SSID'])
 
-  def mode = camera_settings['table.All.Lighting_V2[0][0][1].Mode']
-  if (mode == "Manual") {
-    sendEvent(name: "light_status", value: "on")
-    sendEvent(name: "switch",       value: "on")
-  } else if (mode == "Off") {
-    sendEvent(name: "light_status", value: "off")
-    sendEvent(name: "switch",       value: "off")
-  }
+    applyLightMode(camera_settings['table.All.Lighting_V2[0][0][1].Mode'])
+}
+
+// Manual = light on, Off = light off. Other modes (motion-triggered and so on)
+// only show in lightMode; switch keeps its last value, as before 0.8.0.
+private void applyLightMode(String mode) {
+    if (!mode) return
+    emitEvent(name: "lightMode", value: mode, descriptionText: "${device.displayName} light mode is ${mode}")
+    if (mode == "Manual") {
+        emitEvent(name: "light_status", value: "on", descriptionText: "${device.displayName} light is on")
+        emitEvent(name: "switch",       value: "on", descriptionText: "${device.displayName} is on")
+    } else if (mode == "Off") {
+        emitEvent(name: "light_status", value: "off", descriptionText: "${device.displayName} light is off")
+        emitEvent(name: "switch",       value: "off", descriptionText: "${device.displayName} is off")
+    }
 }
 
 def verifySetResponse(response, data) {
-  String text = (response.data ?: "").toString().trim()
-  if (text == "OK") {
-    if (debug) log.debug "ASH26: set ${data.settingName} = ${data.settingValue}"
-    if (data.chainRest) setSequence(data.chainRest as List)
-  } else {
-    log.error "ASH26: set ${data.settingName} failed: ${text}"
-    if (data.chainRest) {
-      // Don't silently swallow the rest of the chain — for on()/off() this
-      // means the camera ends up in a half-configured state. Loudly flag it.
-      log.error "ASH26: chain abandoned with ${(data.chainRest as List).size()} step(s) remaining; camera state may be inconsistent"
+    String text = (response.data ?: "").toString().trim()
+    if (text == "OK") {
+        logDebug "set ${data.settingName} = ${data.settingValue}"
+        if (data.chainRest) {
+            setSequence(data.chainRest as List)
+        } else if (data.settingName == "Lighting_V2[0][0][1].Mode") {
+            // The last step of On/Off: show the result now, not at the next poll.
+            applyLightMode(data.settingValue as String)
+        }
+    } else {
+        log.error "set ${data.settingName} failed: ${text}"
+        if (data.chainRest) {
+            // Don't silently swallow the rest of the chain — for on()/off() this
+            // means the camera ends up in a half-configured state. Loudly flag it.
+            log.error "chain abandoned with ${(data.chainRest as List).size()} step(s) remaining; camera state may be inconsistent"
+        }
     }
-  }
 }
 
-// ---------------------------------------------------------------------------
-// Digest auth helpers
-// ---------------------------------------------------------------------------
+// ---- Connection health ----
+// The poll runs every minute, so each failure isn't logged: one ERROR naming
+// the cause when a problem starts, a WARN reminder at most hourly, and one INFO
+// on recovery. The dedup key leaves out the error text, which can change
+// during one outage. A failed command is always logged.
+
+private void requestFailed(Map data, String kind, String detail) {
+    noteCommFailure(kind, detail)
+    if (data?.settingName) {
+        log.error "set ${data.settingName} failed: ${detail}"
+        if (data.chainRest) {
+            log.error "chain abandoned with ${(data.chainRest as List).size()} step(s) remaining; camera state may be inconsistent"
+        }
+    }
+}
+
+// No status, or the hub's 408 for a connect/read timeout, means the camera
+// never answered; any other status is the camera answering with an error.
+private String failureKind(response) {
+    def status = null
+    try { status = response?.status } catch (Exception e) { /* none */ }
+    return (status == null || status == 408) ? "unreachable" : "http"
+}
+
+private void noteCommFailure(String kind, String detail) {
+    String key = "${kind}|${ip}"
+    Long nowMs = now()
+    if (state.commFailSince == null) state.commFailSince = nowMs
+    if (device.currentValue("healthStatus") != "offline") {
+        emitEvent(name: "healthStatus", value: "offline", descriptionText: "${device.displayName} is offline")
+    }
+    if (state.commFailKey != key) {
+        state.commFailKey = key
+        state.commFailLastLog = nowMs
+        if (kind == "auth") {
+            log.error "camera at ${ip} rejected the login (${detail}); check the username and password in preferences. Repeats are suppressed; reminder hourly."
+        } else if (kind == "http") {
+            log.error "camera at ${ip} answered with an error (${detail}). Repeats are suppressed; reminder hourly."
+        } else {
+            log.error "camera at ${ip} isn't answering (${detail}); it looks offline, off the network, or at a different IP. Repeats are suppressed; reminder hourly."
+        }
+    } else if (nowMs - ((state.commFailLastLog ?: 0L) as Long) >= 3_600_000L) {
+        state.commFailLastLog = nowMs
+        String what = (kind == "auth") ? "still rejecting the login" : (kind == "http" ? "still answering with an error" : "still not answering")
+        log.warn "camera at ${ip} ${what} after ${formatDuration(nowMs - (state.commFailSince as Long))} (${detail})"
+    }
+}
+
+private void noteCommSuccess() {
+    if (device.currentValue("healthStatus") != "online") {
+        emitEvent(name: "healthStatus", value: "online", descriptionText: "${device.displayName} is online")
+    }
+    if (state.commFailSince == null) return
+    log.info "camera at ${ip} is responding again after ${formatDuration(now() - (state.commFailSince as Long))}"
+    state.remove("commFailSince")
+    state.remove("commFailKey")
+    state.remove("commFailLastLog")
+}
+
+private String httpErrorDetail(response) {
+    String msg = null
+    def status = null
+    try { msg = response?.getErrorMessage() } catch (Exception e) { /* no message available */ }
+    try { status = response?.status } catch (Exception e) { /* no status available */ }
+    return (msg ?: "no response") + (status ? ", HTTP ${status}" : "")
+}
+
+private String formatDuration(Long ms) {
+    Long totalMin = Math.max(0L, ms as long).intdiv(60_000L)
+    if (totalMin == 0) return "under a minute"
+    Long h = totalMin.intdiv(60L)
+    Long m = totalMin % 60L
+    return h > 0 ? "${h}h ${m}m" : "${m}m"
+}
+
+// ---- Digest auth helpers ----
 
 private String extractHeader(response, String name) {
-  def headers = response.headers
-  if (!headers) return null
-  String lname = name.toLowerCase()
-  def entry = headers.find { it.key?.toLowerCase() == lname }
-  return entry?.value?.toString()
+    def headers = response.headers
+    if (!headers) return null
+    String lname = name.toLowerCase()
+    def entry = headers.find { it.key?.toLowerCase() == lname }
+    return entry?.value?.toString()
 }
 
 private Map parseDigestChallenge(String wwwAuth) {
-  // "Digest realm=\"foo\", nonce=\"bar\", qop=\"auth\", opaque=\"xyz\""
-  String stripped = wwwAuth.replaceFirst(/(?i)^\s*Digest\s+/, "")
-  Map result = [:]
-  stripped.split(",").each { part ->
-    def kv = part.split("=", 2)
-    if (kv.length == 2) {
-      result[kv[0].trim()] = kv[1].trim().replaceAll(/^"|"$/, "")
+    // "Digest realm=\"foo\", nonce=\"bar\", qop=\"auth\", opaque=\"xyz\""
+    String stripped = wwwAuth.replaceFirst(/(?i)^\s*Digest\s+/, "")
+    Map result = [:]
+    stripped.split(",").each { part ->
+        def kv = part.split("=", 2)
+        if (kv.length == 2) {
+            result[kv[0].trim()] = kv[1].trim().replaceAll(/^"|"$/, "")
+        }
     }
-  }
-  return result
+    return result
 }
 
 private String hash(String algorithm, String text) {
-  return java.security.MessageDigest.getInstance(algorithm).digest(text.bytes).collect {
-    String.format("%02x", it)
-  }.join('')
+    return java.security.MessageDigest.getInstance(algorithm).digest(text.bytes).collect {
+        String.format("%02x", it)
+    }.join('')
 }
 
 private String calcDigestAuth(String uri, String algorithm, Map headers) {
-  String HA1 = "${username}:${headers.realm.trim()}:${password}"
-  String HA1_hash = hash(algorithm, HA1)
+    String HA1 = "${username}:${headers.realm.trim()}:${password}"
+    String HA1_hash = hash(algorithm, HA1)
 
-  String HA2 = "GET:${uri}"
-  String HA2_hash = hash(algorithm, HA2)
+    String HA2 = "GET:${uri}"
+    String HA2_hash = hash(algorithm, HA2)
 
-  // Each request gets a fresh nonce challenge from the server, so reuse
-  // protection isn't actually relying on this counter — but RFC 2617 §3.2.2
-  // still requires the wire format to be exactly 8 lowercase hex digits.
-  state.nc = (state.nc ?: 0) + 1
-  String nc = String.format("%08x", (state.nc as Integer))
+    // Each request gets a fresh nonce challenge from the server, so reuse
+    // protection isn't actually relying on this counter — but RFC 2617 §3.2.2
+    // still requires the wire format to be exactly 8 lowercase hex digits.
+    state.nc = (state.nc ?: 0) + 1
+    String nc = String.format("%08x", (state.nc as Integer))
 
-  String cnonce = java.util.UUID.randomUUID().toString().replaceAll('-', '').substring(0, 8)
-  String response = "${HA1_hash}:${headers.nonce}:${nc}:${cnonce}:auth:${HA2_hash}"
-  String response_enc = hash(algorithm, response)
+    String cnonce = java.util.UUID.randomUUID().toString().replaceAll('-', '').substring(0, 8)
+    String response = "${HA1_hash}:${headers.nonce}:${nc}:${cnonce}:auth:${HA2_hash}"
+    String response_enc = hash(algorithm, response)
 
-  String eol = " "
-  return 'Digest username="' + username + '",' + eol +
-    'realm="' + headers.realm + '",' + eol +
-    'qop="' + headers.qop + '",' + eol +
-    'algorithm="' + algorithm + '",' + eol +
-    'uri="' + uri + '",' + eol +
-    'nonce="' + headers.nonce + '",' + eol +
-    'cnonce="' + cnonce + '",' + eol +
-    'opaque="' + (headers.opaque ?: "") + '",' + eol +
-    'nc=' + nc + ',' + eol +
-    'response="' + response_enc + '"'
+    String eol = " "
+    return 'Digest username="' + username + '",' + eol +
+        'realm="' + headers.realm + '",' + eol +
+        'qop="' + headers.qop + '",' + eol +
+        'algorithm="' + algorithm + '",' + eol +
+        'uri="' + uri + '",' + eol +
+        'nonce="' + headers.nonce + '",' + eol +
+        'cnonce="' + cnonce + '",' + eol +
+        'opaque="' + (headers.opaque ?: "") + '",' + eol +
+        'nc=' + nc + ',' + eol +
+        'response="' + response_enc + '"'
 }
+
+// ---- BEGIN standard logging (driver) v1: keep identical in every driver, see STYLE.md ----
+
+void logsOff() {
+    log.info "Debug logging turned off"
+    device.updateSetting("logEnable", [value: "false", type: "bool"])
+}
+
+private void logDebug(String msg) {
+    if (settings.logEnable) log.debug msg
+}
+
+private void logDesc(String msg) {
+    if (settings.txtEnable != false) log.info msg
+}
+
+// Sends the event; logs its descriptionText only when the value actually changes.
+private void emitEvent(Map evt) {
+    boolean changed = device.currentValue(evt.name as String)?.toString() != evt.value?.toString()
+    sendEvent(evt)
+    if (changed && evt.descriptionText) logDesc(evt.descriptionText as String)
+}
+
+// ---- END standard logging ----

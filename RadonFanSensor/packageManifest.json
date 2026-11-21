@@ -1,16 +1,17 @@
 {
   "packageName": "Radon Fan Sensor",
   "author": "David LaPorte",
-  "version": "0.9",
-  "releaseNotes": "Fan alarm now survives hub reboots and accounts for elapsed time.",
-  "minimumHEVersion": "2.1.9",
-  "dateReleased": "2026-06-12",
+  "version": "0.10.0",
+  "minimumHEVersion": "2.2.9",
+  "dateReleased": "2026-11-21",
+  "documentationLink": "https://github.com/dlaporte/Hubitat/blob/main/RadonFanSensor/README.md",
+  "releaseNotes": "Initialize now runs at hub boot. Repeat reports from the sensor no longer restart the fan-alarm clock, an alarm that already fired isn't sent again after a reboot, and a changed alarm threshold applies on save. New Invert sensor option, and a healthStatus attribute that goes offline after two missed wake-ups plus an hour (the driver learns the wake-up interval from the time between wake-ups). Debug logging now turns itself off after 30 minutes, and a new descriptionText logging option (on by default) logs value changes. After updating, click Initialize on the device. Requires Hubitat 2.2.9+.",
   "drivers": [
     {
       "id": "c34390fc-6497-4578-87e3-4f77374c5ea0",
       "name": "Radon Fan Sensor",
       "namespace": "dlaporte",
-      "location": "https://raw.githubusercontent.com/dlaporte/Hubitat/refs/heads/main/RadonFanSensor/device/15270-radon-fan.groovy",
+      "location": "https://raw.githubusercontent.com/dlaporte/Hubitat/main/RadonFanSensor/device/15270-radon-fan.groovy",
       "required": true
     }
   ]

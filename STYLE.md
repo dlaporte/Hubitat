@@ -133,6 +133,11 @@ same pull request.
 - No hard-coded driver prefixes such as `Reolink:`; the Logs page already
   names the source.
 - descriptionText starts with `${device.displayName}` (Hubitat convention).
+- A `logDebug` message is built even when debug is off. Keep it cheap, and
+  don't call anything that might throw. The hub's Groovy lacks some GDK
+  methods the local Groovy has, for example `String.takeRight`; use plain
+  Java such as `substring`. An `if (debug) log.debug` that becomes
+  `logDebug` now runs its string on every call.
 - Never log secrets: passwords, client secrets or tokens. If a token has to
   appear, show only its last 4 characters.
 - `log.warn` and `log.error` are called directly. Wrapping them adds
@@ -238,6 +243,25 @@ Fields go in this order:
   Attributes, Commands and Notes. Others, such as Supported hardware or
   Setup, are welcome.
 - Update the README in the same pull request as the code it describes.
+
+## Testing
+
+`tests/harness/HubitatHarness.groovy` loads a driver into plain Groovy with
+fakes for:
+
+- events, `runIn`/`unschedule`, settings, `state`;
+- the device object, logs and a settable clock;
+- Z-Wave command classes.
+
+Drivers can then be unit-tested off the hub. It matters most for logic you
+can't trigger remotely, such as a sensor transition.
+
+- Tests live in `tests/<package>/*Test.groovy` and run with
+  `scripts/run-tests.sh`, which uses the local `groovy` (6.x).
+- The hub runs Groovy 2.4, so the hub's compile-on-save is still the check
+  for syntax.
+- The harness is a fake, not an emulator. If a driver needs a platform call
+  the harness doesn't model, add it to the harness in the same pull request.
 
 ## Releasing
 

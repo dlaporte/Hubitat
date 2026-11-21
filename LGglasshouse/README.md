@@ -42,8 +42,8 @@ Then create a device:
 3. Open the device, fill in **TV IP** (and **Port** if Glasshouse is not
    on 8080), then Save
 4. Click **Initialize**
-5. After the first refresh, the Input, Picture mode, Launch app, and Send
-   key lists are filled from the TV. Set the MAC if you want Wake-on-LAN
+5. After the first refresh, the Input, Picture mode and Launch app lists
+   are filled from the TV. Set the MAC if you want Wake-on-LAN
    from deep sleep.
 
 ## Features
@@ -62,8 +62,11 @@ Then create a device:
   (`/api/hdmi` and `/api/picture`). Picture-mode choices follow the
   content that is playing (for example Dolby Vision vs SDR).
 - **Screen on/off** — Turns only the panel off; the TV stays powered.
-- **Launch app** and **Send key** — Dropdowns filled from the apps and
-  remote keys reported by the TV. Both reset after use so the same choice
+- **Launch app** — Dropdown filled from the apps reported by the TV.
+- **Send key** — The navigation keys (up, down, left, right, OK, back,
+  home, settings) and media keys (play, pause, play/pause, stop, rewind,
+  fast forward, channel up, channel down). These are the keys Glasshouse's
+  control API accepts. Both dropdowns reset after use so the same choice
   can be sent again.
 - **Polling** — Configurable interval (off, or 1–30 minutes; default every
   1 minute).
@@ -76,11 +79,11 @@ The device page is grouped into sections:
 
 | Section | Controls |
 |---|---|
-| Connection | TV IP, Port, MAC for Wake-on-LAN, Poll interval, Warn when the TV can't be reached |
+| Connection | TV IP, Port, API token (only if Glasshouse has one set), MAC for Wake-on-LAN, Poll interval, Warn when the TV can't be reached |
 | TV | Power toggle, Launch app, Send key |
 | Sound | Volume slider, Mute |
 | Picture | Input, Picture mode, Screen on |
-| Hubitat | Notification device, Enable debug logging (plus Hubitat's own Show on Home page) |
+| Hubitat | Notification device, Enable debug logging (turns itself off after 30 minutes), Enable descriptionText logging (plus Hubitat's own Show on Home page) |
 
 Most preference actions (power, mute, input, picture mode, screen) are
 applied on **Save Preferences** only when the value differs from the TV.
@@ -108,6 +111,13 @@ Rule Machine, Notifier, Basic Rules, and HSM can send messages to it.
 The Notifier has no connection settings of its own; the TV device sends
 each message to Glasshouse.
 
+## Attributes
+
+`switch`, `volume`, `mute`, `input`, `currentApp`, `pictureMode`,
+`supportedPictureModes`, `supportedInputs`, `screen`, and `healthStatus`
+(`offline` while the TV can't be reached, which is normal when it is
+switched fully off; `online` when it answers).
+
 ## Commands
 
 The Commands tab is intentionally just **Initialize** and **Refresh**.
@@ -124,7 +134,9 @@ in rules.
 ## Notes
 
 - Glasshouse's HTTP API is unauthenticated by default. Anyone who can
-  reach port 8080 can control the TV, so keep it on a trusted LAN.
+  reach port 8080 can control the TV, so keep it on a trusted LAN. If you
+  set a token in Glasshouse's config, enter it as **API token**; without
+  it every request gets a 401.
 - Don't switch Power off and Save while you're watching; that turns the
   TV off.
 - A TV that is switched fully off drops off the network. The driver logs
@@ -132,7 +144,10 @@ in rules.
   repeated warnings. If Always Ready is on in Glasshouse, the TV stays on
   the network when switched off with the remote; then turn on **Warn when
   the TV can't be reached** to get a warning on the first miss and every
-  10th. The power button still switches the TV fully off. Notifications
+  10th. The recovery line says how long the TV was unreachable. The power
+  button still switches the TV fully off. Notifications
   sent while the TV can't be reached follow the same setting. Other
   failures, where the TV answers with an error, are always warnings.
-- Hub firmware floor: **2.2.0**.
+- The driver runs single-threaded (an option added in Hubitat 2.2.9), so
+  the poll callbacks can't race on shared state. Hub firmware floor:
+  **2.2.9**.

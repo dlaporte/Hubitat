@@ -1,28 +1,14 @@
 /*
  *  LG TV (Glasshouse)
  *
- *  Control a rooted LG webOS TV through the Glasshouse JSON API
- *  (typically on port 8080, no authentication). The dashboard itself
- *  uses POST /api/control with {"action":"...","value":...} and reads
- *  live state from GET /api/stats.
+ *  LAN driver for a rooted LG webOS TV running Glasshouse, through its local JSON API
+ *  (typically port 8080). Power, volume, mute, input, picture mode, screen, apps and keys.
+ *  Documentation: https://github.com/dlaporte/Hubitat/blob/main/LGglasshouse/README.md
  *
- *  Picture-mode choices come from GET /api/picture (the pictureMode
- *  row; they change with the current content, e.g. Dolby Vision vs
- *  SDR). Inputs come from GET /api/hdmi. Both are shown as preference
- *  pull-downs, which Hubitat can fill at page-render time from state
- *  saved at refresh. Command-parameter ENUMs cannot do this - they are
- *  fixed at compile time - so setInput and setPictureMode stay free
- *  text and still work from rules and Maker API.
- *
- *  Power on sends a Wake-on-LAN magic packet from the hub and also
- *  POSTs the Glasshouse powerOn action, which works while the TV is in
- *  Active Standby with Glasshouse still running. Deep sleep relies on
- *  WOL (the TV must have Wake-on-LAN enabled).
- *
- *  David LaPorte
- *
- *  Last Update 2026-11-15
- *
+ *  Changelog:
+ *  v0.11.0 (2026-11-20) - Send key offers only keys Glasshouse accepts; optional API token;
+ *         healthStatus; runs single-threaded; ARC volume steps log at debug; standard
+ *         logging and lifecycle; unused toggle and volume step methods removed.
  *  v0.10 - 2026-11-15 - A TV that is switched off (unreachable) is logged
  *         as one info line when it goes and one when it is back, not
  *         repeated warnings; new Warn when the TV can't be reached option.
@@ -53,21 +39,30 @@
 
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
+import groovy.transform.Field
+
+@Field static final String VERSION = "0.11.0"
+
+// The only keys Glasshouse's control API accepts (rcu and media actions).
+@Field static final List<String> RCU_KEYS = ["up", "down", "left", "right", "ok", "back", "settings", "home"]
 
 metadata {
     definition(
         name: "LG TV (Glasshouse)",
         namespace: "dlaporte",
         author: "David LaPorte",
-        importUrl: "https://raw.githubusercontent.com/dlaporte/Hubitat/main/LGglasshouse/device/LGTV-Glasshouse.groovy"
+        importUrl: "https://raw.githubusercontent.com/dlaporte/Hubitat/main/LGglasshouse/device/LGTV-Glasshouse.groovy",
+        // Poll callbacks arrive together and share state (failure counters,
+        // the ARC volume-step chain), so run them one at a time.
+        singleThreaded: true
     ) {
         // Commands on the device page come only from capabilities.
         // Refresh and Initialize are the only ones declared, so the
         // Commands section shows just those two. on/off, setVolume,
-        // volumeUp/Down, mute/unmute, setInput, setPictureMode,
-        // screenOn/Off, toggleMute, toggleScreen, launchApp and
-        // sendKey remain as methods: preferences and the volume
-        // slider (POST /device/runmethod) still call them.
+        // mute/unmute, setInput, setPictureMode, screenOn/Off, launchApp
+        // and sendKey remain as methods: updated() calls them to apply
+        // preferences, and the volume slider posts setVolume to
+        // /device/runmethod. Rules and Maker API can't call them.
         capability "Refresh"
         capability "Initialize"
         capability "Actuator"
@@ -81,6 +76,7 @@ metadata {
         attribute "supportedPictureModes", "string"
         attribute "supportedInputs", "string"
         attribute "screen", "string"
+        attribute "healthStatus", "enum", ["online", "offline"]
     }
 
     preferences {
@@ -102,6 +98,9 @@ metadata {
         input name: "tvPort", type: "text", title: "Port",
             description: "Glasshouse HTTP port (for example 8080). This is text so the hub does not insert a thousands separator.",
             required: true, defaultValue: "8080"
+        input name: "apiToken", type: "password", title: "API token",
+            description: "Only if a token is set in Glasshouse's config; it is sent as a Bearer token. Leave blank otherwise.",
+            required: false
         input name: "tvMac", type: "text", title: "MAC for Wake-on-LAN",
             description: "Used to wake the TV from deep sleep. Prefills the address reported by the TV.",
             required: false
@@ -131,7 +130,7 @@ metadata {
             options: getLaunchAppPrefOptions(),
             required: false
         input name: "prefSendKey", type: "enum", title: "Send key",
-            description: "Leave at (don't change) for no action. Choices come from the TV's remote keys, plus the usual navigation and media keys. After a key is sent, this resets so the same key can be sent again.",
+            description: "Leave at (don't change) for no action. Navigation and media keys (the ones Glasshouse accepts). After a key is sent, this resets so the same key can be sent again.",
             options: getSendKeyPrefOptions(),
             required: false
 
@@ -169,9 +168,8 @@ metadata {
         input name: "notifierEnabled", type: "bool", title: "Notification device",
             description: "Creates a child device that shows Hubitat notifications on the TV screen. Turning this off deletes that device, and any rules using it lose it.",
             defaultValue: false
-        input name: "debugLogging", type: "bool", title: "Enable debug logging",
-            description: "Turns off automatically after 30 minutes",
-            defaultValue: false
+        input name: "logEnable", type: "bool", title: "Enable debug logging", description: "Turns itself off after 30 minutes", defaultValue: false
+        input name: "txtEnable", type: "bool", title: "Enable descriptionText logging", defaultValue: true
     }
 }
 
@@ -422,6 +420,12 @@ if(fromSlider){
 // Dynamic preference options (evaluated when the device page is drawn)
 // ---------------------------------------------------------------------------
 
+// Picture-mode choices come from GET /api/picture (the pictureMode row; they
+// change with the content, e.g. Dolby Vision vs SDR). Inputs come from
+// GET /api/hdmi. Both are preference pull-downs, which Hubitat fills at
+// page-render time from state saved at refresh. Command-parameter ENUMs can't
+// do this, since they are fixed at compile time.
+
 def getInputPrefOptions() {
     Map opts = [(prefUnchanged()): "(don't change)"]
     inputList().each { Map item ->
@@ -469,27 +473,13 @@ def getLaunchAppPrefOptions() {
 
 def getSendKeyPrefOptions() {
     Map opts = [(prefUnchanged()): "(don't change)"]
-    sendKeyList().each { Map item ->
-        String id = item.id?.toString()
-        if (!id) return
-        opts[id] = (item.label ?: id).toString()
-    }
-    if (opts.size() == 1) {
-        builtinSendKeys().each { Map item ->
-            opts[item.id] = item.label
-        }
-    }
+    builtinSendKeys().each { Map item -> opts[item.id] = item.label }
     return opts
 }
 
 private List appList() {
     def raw = state.apps
     return (raw instanceof List) ? raw.findAll { it instanceof Map && it.id } : []
-}
-
-private List sendKeyList() {
-    def raw = state.remoteKeys
-    return (raw instanceof List) ? raw.findAll { it instanceof Map && it.id } : builtinSendKeys()
 }
 
 private List builtinSendKeys() {
@@ -507,7 +497,9 @@ private List builtinSendKeys() {
         [id: "media:pause", label: "Pause"],
         [id: "media:stop", label: "Stop"],
         [id: "media:rewind", label: "Rewind"],
-        [id: "media:fastForward", label: "Fast forward"]
+        [id: "media:fastForward", label: "Fast forward"],
+        [id: "media:channelUp", label: "Channel up"],
+        [id: "media:channelDown", label: "Channel down"]
     ]
 }
 
@@ -525,13 +517,12 @@ private List pictureModeList() {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-def installed() {
-    log.info "${device.displayName} installed"
+void installed() {
     initialize()
 }
 
-def updated() {
-    log.info "${device.displayName} updated"
+void updated() {
+    log.info "Preferences saved"
     // Apply preference choices first, and only when they actually differ
     // from the TV's current values. Blank or sentinel values are ignored,
     // so a Save Preferences that only changes IP, port or polling is safe.
@@ -547,23 +538,22 @@ def updated() {
     initialize()
 }
 
-def initialize() {
+void initialize() {
     unschedule()
+    upgradeSettings()
+    if (settings.logEnable) runIn(1800, "logsOff")
     if (!tvIp?.toString()?.trim()) {
         log.error "TV IP is required; set it in preferences."
         return
-    }
-    if (debugLogging) {
-        log.debug "Debug logging enabled; will turn off in 30 minutes"
-        runIn(1800, "logsOff")
     }
     schedulePoll()
     refresh()
 }
 
-def logsOff() {
-    log.info "Debug logging disabled"
-    device.updateSetting("debugLogging", [value: "false", type: "bool"])
+private void upgradeSettings() {
+    device.removeSetting("debugLogging")   // replaced by logEnable in 0.11.0
+    state.remove("remoteKeys")             // Send key no longer uses /api/remotekeys (0.11.0)
+    device.updateDataValue("driverVersion", VERSION)
 }
 
 // ---------------------------------------------------------------------------
@@ -620,7 +610,7 @@ void sendToast(String text) {
 private void schedulePoll() {
     String mins = (pollInterval != null) ? pollInterval.toString() : "1"
     if (mins == "0") {
-        dbg "Polling is off"
+        logDebug "Polling is off"
         return
     }
     Integer n
@@ -650,24 +640,24 @@ private void schedulePoll() {
             schedule("0 */${n} * * * ?", "refresh")
             break
     }
-    dbg "Polling every ${n} minute(s)"
+    logDebug "Polling every ${n} minute(s)"
 }
 
 private void applyPreferredPower() {
     def desired = settings?.prefPower
     if (desired == null || desired.toString().trim() == "") {
-        dbg "Power preference is unset; not sending"
+        logDebug "Power preference is unset; not sending"
         return
     }
     boolean wantOn = (desired == true || desired.toString() == "true")
     String current = device.currentValue("switch")?.toString()
     if (!current) {
-        dbg "Power preference skipped: current power state is unknown"
+        logDebug "Power preference skipped: current power state is unknown"
         return
     }
     boolean currentlyOn = (current == "on")
     if (wantOn == currentlyOn) {
-        dbg "Power preference is already ${current}; not sending"
+        logDebug "Power preference is already ${current}; not sending"
         return
     }
     log.info "Preference: power ${wantOn ? 'on' : 'off'}"
@@ -677,7 +667,7 @@ private void applyPreferredPower() {
 private void applyPreferredLaunchApp() {
     String desired = settings?.prefLaunchApp?.toString()?.trim()
     if (isPrefSentinel(desired)) {
-        dbg "Launch app preference is unchanged; not sending"
+        logDebug "Launch app preference is unchanged; not sending"
         return
     }
     log.info "Preference: launch app ${desired}"
@@ -688,7 +678,7 @@ private void applyPreferredLaunchApp() {
 private void applyPreferredSendKey() {
     String desired = settings?.prefSendKey?.toString()?.trim()
     if (isPrefSentinel(desired)) {
-        dbg "Send key preference is unchanged; not sending"
+        logDebug "Send key preference is unchanged; not sending"
         return
     }
     log.info "Preference: send key ${desired}"
@@ -700,14 +690,14 @@ private void resetEnumPref(String name) {
     try {
         device.updateSetting(name, [value: prefUnchanged(), type: "enum"])
     } catch (e) {
-        dbg "Could not reset preference ${name}: ${e.message}"
+        logDebug "Could not reset preference ${name}: ${e.message}"
     }
 }
 
 private void applyPreferredInput() {
     String desired = settings?.prefInput?.toString()?.trim()
     if (isPrefSentinel(desired)) {
-        dbg "Input preference is unchanged; not sending"
+        logDebug "Input preference is unchanged; not sending"
         return
     }
     String resolved = resolveInput(desired)
@@ -717,7 +707,7 @@ private void applyPreferredInput() {
         return
     }
     if (resolved == current) {
-        dbg "Input preference is already ${current}; not sending"
+        logDebug "Input preference is already ${current}; not sending"
         return
     }
     log.info "Preference: set input to ${resolved}"
@@ -727,7 +717,7 @@ private void applyPreferredInput() {
 private void applyPreferredPictureMode() {
     String desired = settings?.prefPictureMode?.toString()?.trim()
     if (isPrefSentinel(desired)) {
-        dbg "Picture mode preference is unchanged; not sending"
+        logDebug "Picture mode preference is unchanged; not sending"
         return
     }
     String resolved = resolvePictureMode(desired)
@@ -736,7 +726,7 @@ private void applyPreferredPictureMode() {
         return
     }
     if (pictureModeIsCurrent(resolved)) {
-        dbg "Picture mode preference is already ${resolved}; not sending"
+        logDebug "Picture mode preference is already ${resolved}; not sending"
         return
     }
     log.info "Preference: set picture mode to ${resolved}"
@@ -746,18 +736,18 @@ private void applyPreferredPictureMode() {
 private void applyPreferredMute() {
     def desired = settings?.prefMute
     if (desired == null || desired.toString().trim() == "") {
-        dbg "Mute preference is unset; not sending"
+        logDebug "Mute preference is unset; not sending"
         return
     }
     boolean wantMuted = (desired == true || desired.toString() == "true")
     String current = device.currentValue("mute")?.toString()
     if (!current) {
-        dbg "Mute preference skipped: current mute state is unknown"
+        logDebug "Mute preference skipped: current mute state is unknown"
         return
     }
     boolean currentlyMuted = (current == "muted")
     if (wantMuted == currentlyMuted) {
-        dbg "Mute preference is already ${current}; not sending"
+        logDebug "Mute preference is already ${current}; not sending"
         return
     }
     log.info "Preference: ${wantMuted ? 'mute' : 'unmute'}"
@@ -767,7 +757,7 @@ private void applyPreferredMute() {
 private void applyPreferredVolume() {
     def raw = settings?.prefVolume
     if (raw == null || raw.toString().trim() == "") {
-        dbg "Volume preference is unset; not sending"
+        logDebug "Volume preference is unset; not sending"
         return
     }
     Integer desired
@@ -781,18 +771,18 @@ private void applyPreferredVolume() {
     if (desired > 100) desired = 100
     def cur = device.currentValue("volume")
     if (cur == null || cur.toString().trim() == "") {
-        dbg "Volume preference skipped: current volume is unknown"
+        logDebug "Volume preference skipped: current volume is unknown"
         return
     }
     Integer current
     try {
         current = cur.toString().replaceAll(/[, ]/, "").toInteger()
     } catch (ignored) {
-        dbg "Volume preference skipped: current volume '${cur}' is not a number"
+        logDebug "Volume preference skipped: current volume '${cur}' is not a number"
         return
     }
     if (desired == current) {
-        dbg "Volume preference is already ${current}; not sending"
+        logDebug "Volume preference is already ${current}; not sending"
         return
     }
     log.info "Preference: set volume to ${desired}"
@@ -802,18 +792,18 @@ private void applyPreferredVolume() {
 private void applyPreferredScreen() {
     def desired = settings?.prefScreen
     if (desired == null || desired.toString().trim() == "") {
-        dbg "Screen preference is unset; not sending"
+        logDebug "Screen preference is unset; not sending"
         return
     }
     boolean wantOn = (desired == true || desired.toString() == "true")
     String current = device.currentValue("screen")?.toString()
     if (!current) {
-        dbg "Screen preference skipped: current screen state is unknown"
+        logDebug "Screen preference skipped: current screen state is unknown"
         return
     }
     boolean currentlyOn = (current == "on")
     if (wantOn == currentlyOn) {
-        dbg "Screen preference is already ${current}; not sending"
+        logDebug "Screen preference is already ${current}; not sending"
         return
     }
     log.info "Preference: screen ${wantOn ? 'on' : 'off'}"
@@ -837,6 +827,11 @@ private boolean pictureModeIsCurrent(String resolved) {
 // Commands: power and screen
 // ---------------------------------------------------------------------------
 
+// Power on sends a Wake-on-LAN magic packet from the hub and also POSTs the
+// Glasshouse powerOn action, which works while the TV is in Active Standby with
+// Glasshouse still running. Deep sleep relies on WOL (the TV must have
+// Wake-on-LAN enabled).
+
 def on() {
     log.info "Power on"
     sendWol()
@@ -856,16 +851,6 @@ def screenOff() {
 def screenOn() {
     log.info "Screen on"
     sendControl("screenOn")
-}
-
-def toggleScreen() {
-    if (device.currentValue("screen")?.toString() == "off") {
-        screenOn()
-    } else if (device.currentValue("screen")?.toString() == "on") {
-        screenOff()
-    } else {
-        log.warn "toggleScreen: current screen state is unknown; not sending"
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -896,16 +881,6 @@ def setVolume(volume) {
     }
 }
 
-def volumeUp() {
-    log.info "Volume up"
-    sendControl("volumeStep", 1)
-}
-
-def volumeDown() {
-    log.info "Volume down"
-    sendControl("volumeStep", -1)
-}
-
 def mute() {
     log.info "Mute"
     sendControl("mute", true)
@@ -914,14 +889,6 @@ def mute() {
 def unmute() {
     log.info "Unmute"
     sendControl("mute", false)
-}
-
-def toggleMute() {
-    if (device.currentValue("mute")?.toString() == "muted") {
-        unmute()
-    } else {
-        mute()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -951,7 +918,7 @@ def launchApp(appId) {
 def sendKey(key) {
     Map sent = resolveKey(key)
     if (!sent) {
-        log.warn "sendKey needs a remote key name (got '${key}')"
+        log.warn "Glasshouse doesn't accept the key '${key}'; choose one from the Send key list"
         return
     }
     log.info "Send key ${sent.action}:${sent.value}"
@@ -972,12 +939,15 @@ def refresh() {
     fetchJson("/api/stats", "statsCallback")
     fetchJson("/api/picture", "pictureCallback")
     fetchJson("/api/hdmi", "hdmiCallback")
-    fetchJson("/api/remotekeys", "remoteKeysCallback")
 }
 
 // ---------------------------------------------------------------------------
 // HTTP helpers
 // ---------------------------------------------------------------------------
+
+// The Glasshouse dashboard itself uses POST /api/control with
+// {"action":"...","value":...} and reads live state from GET /api/stats; this
+// driver does the same.
 
 private String apiUrl(String path) {
     String ip = tvIp?.toString()?.trim()
@@ -1002,6 +972,14 @@ private Integer parsedPort() {
     return 8080
 }
 
+// Adds the optional API token. Glasshouse answers 401 to every call when a token
+// is set in its config and the request doesn't carry it.
+private Map requestHeaders(Map headers) {
+    String token = settings?.apiToken?.toString()?.trim()
+    if (token) headers.Authorization = "Bearer ${token}".toString()
+    return headers
+}
+
 private void fetchJson(String path, String callback) {
     String uri = apiUrl(path)
     if (!uri) return
@@ -1009,9 +987,9 @@ private void fetchJson(String path, String callback) {
         uri: uri,
         contentType: "application/json",
         timeout: 15,
-        headers: ["Accept": "application/json"]
+        headers: requestHeaders(["Accept": "application/json"])
     ]
-    dbg "GET ${path}"
+    logDebug "GET ${path}"
     asynchttpGet(callback, params, [path: path])
 }
 
@@ -1028,17 +1006,14 @@ private void sendControl(String action, value = null) {
         contentType: "application/json",
         requestContentType: "application/json",
         timeout: 20,
-        headers: ["Accept": "application/json", "Content-Type": "application/json"],
+        headers: requestHeaders(["Accept": "application/json", "Content-Type": "application/json"]),
         body: body
     ]
     Map data = [action: action]
     if (value != null) {
         data.value = value
     }
-    dbg "POST /api/control ${body}"
-    if (action == "volume" || action == "volumeStep") {
-        log.info "POST /api/control ${body}"
-    }
+    logDebug "POST /api/control ${body}"
     asynchttpPost("controlCallback", params, data)
 }
 
@@ -1065,11 +1040,7 @@ void controlCallback(resp, data) {
         clearVolumeStepChain()
         return
     }
-    if (action == "volume" || action == "volumeStep") {
-        log.info "Glasshouse ${action} accepted (ok:true); volume will update from the TV read-back"
-    } else {
-        dbg "Glasshouse ${action} ok"
-    }
+    logDebug "Glasshouse ${action} ok"
     // Volume is never applied optimistically: only applyStats (the TV
     // read-back) may set the volume attribute. Other actions still get
     // a prompt UI update, then refresh confirms.
@@ -1115,31 +1086,31 @@ private void applyOptimistic(Map data) {
     def value = data.value
     if (action == "mute") {
         boolean muted = (value == true || value == "true")
-        sendEvent(name: "mute", value: muted ? "muted" : "unmuted",
+        emitEvent(name: "mute", value: muted ? "muted" : "unmuted",
             descriptionText: "${device.displayName} is ${muted ? 'muted' : 'unmuted'}")
     } else if (action == "powerOn") {
-        sendEvent(name: "switch", value: "on",
+        emitEvent(name: "switch", value: "on",
             descriptionText: "${device.displayName} is on")
     } else if (action == "powerOff") {
-        sendEvent(name: "switch", value: "off",
+        emitEvent(name: "switch", value: "off",
             descriptionText: "${device.displayName} is off")
-        sendEvent(name: "screen", value: "off",
+        emitEvent(name: "screen", value: "off",
             descriptionText: "${device.displayName} screen is off")
     } else if (action == "screenOn") {
-        sendEvent(name: "screen", value: "on",
+        emitEvent(name: "screen", value: "on",
             descriptionText: "${device.displayName} screen is on")
     } else if (action == "screenOff") {
-        sendEvent(name: "screen", value: "off",
+        emitEvent(name: "screen", value: "off",
             descriptionText: "${device.displayName} screen is off")
     } else if (action == "input" && value) {
-        sendEvent(name: "input", value: value.toString(),
+        emitEvent(name: "input", value: value.toString(),
             descriptionText: "${device.displayName} input is ${value}")
     } else if (action == "pictureMode" && value) {
         String label = pictureModeLabel(value.toString()) ?: value.toString()
-        sendEvent(name: "pictureMode", value: label,
+        emitEvent(name: "pictureMode", value: label,
             descriptionText: "${device.displayName} picture mode is ${label}")
     } else if (action == "launchApp" && value) {
-        sendEvent(name: "currentApp", value: value.toString(),
+        emitEvent(name: "currentApp", value: value.toString(),
             descriptionText: "${device.displayName} app is ${value}")
     }
 }
@@ -1163,10 +1134,9 @@ void hdmiCallback(resp, data) {
     applyHdmi(json)
 }
 
+// No longer requested (0.11.0). Kept so a reply still in flight when the code
+// is updated has a handler to land on.
 void remoteKeysCallback(resp, data) {
-    def json = requireJson(resp, "remotekeys")
-    if (!(json instanceof Map)) return
-    applyRemoteKeys(json)
 }
 
 private def requireJson(resp, String label) {
@@ -1202,7 +1172,7 @@ private void applyStats(Map d) {
         systemOn = false
     }
     String sw = systemOn ? "on" : "off"
-    sendEvent(name: "switch", value: sw,
+    emitEvent(name: "switch", value: sw,
         descriptionText: "${device.displayName} is ${sw}")
     syncBoolPref("prefPower", systemOn)
 
@@ -1219,14 +1189,14 @@ private void applyStats(Map d) {
     if (d.containsKey("volume") && d.volume != null) {
         try {
             Integer v = d.volume.toInteger()
-            sendEvent(name: "volume", value: v, unit: "%",
+            emitEvent(name: "volume", value: v, unit: "%",
                 descriptionText: "${device.displayName} volume is ${v}%")
             syncNumberPref("prefVolume", v)
         } catch (ignored) {}
     }
     if (d.containsKey("muted")) {
         String muteVal = (d.muted == true) ? "muted" : "unmuted"
-        sendEvent(name: "mute", value: muteVal,
+        emitEvent(name: "mute", value: muteVal,
             descriptionText: "${device.displayName} is ${muteVal}")
         syncBoolPref("prefMute", d.muted == true)
     }
@@ -1241,7 +1211,7 @@ private void applyStats(Map d) {
         screenOn = true
     }
     String screenVal = screenOn ? "on" : "off"
-    sendEvent(name: "screen", value: screenVal,
+    emitEvent(name: "screen", value: screenVal,
         descriptionText: "${device.displayName} screen is ${screenVal}")
     syncBoolPref("prefScreen", screenOn)
 
@@ -1268,15 +1238,15 @@ private void applyStats(Map d) {
     }
     if (inputVal) {
         String label = inputs[inputVal] ?: inputVal
-        sendEvent(name: "input", value: inputVal,
+        emitEvent(name: "input", value: inputVal,
             descriptionText: "${device.displayName} input is ${label} (${inputVal})")
     } else if (appKey) {
-        sendEvent(name: "input", value: appKey,
+        emitEvent(name: "input", value: appKey,
             descriptionText: "${device.displayName} source is ${appKey}")
     }
 
     if (title) {
-        sendEvent(name: "currentApp", value: title,
+        emitEvent(name: "currentApp", value: title,
             descriptionText: "${device.displayName} is showing ${title}")
     }
 
@@ -1298,13 +1268,13 @@ private void applyStats(Map d) {
         state.wakeOnLan = (d.wakeOnLan == true)
     }
 
-    dbg "State: switch=${sw} volume=${d.volume} muted=${d.muted} input=${inputVal} app=${title}"
+    logDebug "State: switch=${sw} volume=${d.volume} muted=${d.muted} input=${inputVal} app=${title}"
 }
 
 private void applyPicture(Map d) {
     Map row = pictureModeRow(d)
     if (!row) {
-        dbg "No pictureMode row in /api/picture"
+        logDebug "No pictureMode row in /api/picture"
         return
     }
     List modes = []
@@ -1315,17 +1285,17 @@ private void applyPicture(Map d) {
     }
     if (modes) {
         state.pictureModes = modes
-        sendEvent(name: "supportedPictureModes", value: JsonOutput.toJson(modes),
+        emitEvent(name: "supportedPictureModes", value: JsonOutput.toJson(modes),
             descriptionText: "${device.displayName} has ${modes.size()} picture mode(s)")
     }
     String raw = row.value?.toString()
     if (raw) {
         state.pictureModeRaw = raw
         String label = pictureModeLabel(raw) ?: raw
-        sendEvent(name: "pictureMode", value: label,
+        emitEvent(name: "pictureMode", value: label,
             descriptionText: "${device.displayName} picture mode is ${label}")
     }
-    dbg "Picture modes: ${modes.collect { it.label ?: it.value }.join(', ')} (current ${raw})"
+    logDebug "Picture modes: ${modes.collect { it.label ?: it.value }.join(', ')} (current ${raw})"
 }
 
 private void applyPictureFromStats(Map picture) {
@@ -1335,7 +1305,7 @@ private void applyPictureFromStats(Map picture) {
         }
         if (modes) {
             state.pictureModes = modes
-            sendEvent(name: "supportedPictureModes", value: JsonOutput.toJson(modes),
+            emitEvent(name: "supportedPictureModes", value: JsonOutput.toJson(modes),
                 descriptionText: "${device.displayName} has ${modes.size()} picture mode(s)")
         }
     }
@@ -1343,7 +1313,7 @@ private void applyPictureFromStats(Map picture) {
     String modeLabel = picture.mode?.toString()
     if (modeRaw) state.pictureModeRaw = modeRaw
     if (modeLabel) {
-        sendEvent(name: "pictureMode", value: modeLabel,
+        emitEvent(name: "pictureMode", value: modeLabel,
             descriptionText: "${device.displayName} picture mode is ${modeLabel}")
     }
 }
@@ -1377,7 +1347,7 @@ private void applyHdmi(Map d) {
         state.inputs = byKey
         storeInputs(list)
     }
-    dbg "Inputs: ${list.collect { it.label + ' (' + it.id + ')' }.join(', ')}"
+    logDebug "Inputs: ${list.collect { it.label + ' (' + it.id + ')' }.join(', ')}"
 }
 
 private String hdmiInputKey(Map src) {
@@ -1400,53 +1370,8 @@ private String hdmiInputKey(Map src) {
 
 private void storeInputs(List list) {
     state.inputList = list
-    sendEvent(name: "supportedInputs", value: JsonOutput.toJson(list),
+    emitEvent(name: "supportedInputs", value: JsonOutput.toJson(list),
         descriptionText: "${device.displayName} has ${list.size()} input(s)")
-}
-
-// Build the Send key dropdown: always offer navigation and media,
-// then any extra keys from GET /api/remotekeys. Skip remap
-// "choices" that would launch an app, change input, or power off
-// the TV (those have their own preferences).
-private void applyRemoteKeys(Map d) {
-    List list = []
-    Map seen = [:]
-    builtinSendKeys().each { Map item ->
-        String id = item.id?.toString()
-        if (!id || seen[id]) return
-        seen[id] = true
-        list << [id: id, label: (item.label ?: id).toString()]
-    }
-    if (d.keys instanceof List) {
-        d.keys.each { def raw ->
-            if (!(raw instanceof Map)) return
-            Map k = (Map) raw
-            String key = k.key?.toString()
-            if (!key) return
-            String id = "lg:${key}"
-            if (seen[id] || seen[key]) return
-            seen[id] = true
-            String title = k.title?.toString() ?: key
-            list << [id: id, label: title]
-        }
-    }
-    if (d.choices instanceof List) {
-        d.choices.each { def raw ->
-            if (!(raw instanceof Map)) return
-            Map c = (Map) raw
-            String id = c.id?.toString()
-            String kind = c.kind?.toString()
-            if (!id) return
-            // action includes powerOff / screenOff; input and app
-            // are covered by other preferences.
-            if (kind == "action" || kind == "input" || kind == "app") return
-            if (seen[id]) return
-            seen[id] = true
-            list << [id: id, label: (c.title ?: id).toString()]
-        }
-    }
-    state.remoteKeys = list
-    dbg "Remote keys: ${list.size()}"
 }
 
 private void notePollFailure(String reason) {
@@ -1457,7 +1382,7 @@ private void notePollFailure(String reason) {
     if (n == 1 || (n % 10) == 0) {
         log.warn "Glasshouse request failed (${n} time${n == 1 ? '' : 's'}): ${reason}"
     } else {
-        dbg "Glasshouse request failed (${n}): ${reason}"
+        logDebug "Glasshouse request failed (${n}): ${reason}"
     }
 }
 
@@ -1484,32 +1409,51 @@ private boolean warnOnUnreachable() {
 // counter written from four concurrent callbacks loses updates.
 private void noteUnreachable(String label, String reason) {
     if (label != "stats") {
-        dbg "Glasshouse ${label} unreachable: ${reason}"
+        logDebug "Glasshouse ${label} unreachable: ${reason}"
         return
     }
     Integer n = (state.unreachableCount ?: 0) + 1
     state.unreachableCount = n
+    if (n == 1) state.unreachableSince = now()
+    if (device.currentValue("healthStatus") != "offline") {
+        emitEvent(name: "healthStatus", value: "offline", descriptionText: "${device.displayName} is offline")
+    }
     if (warnOnUnreachable()) {
         if (n == 1 || (n % 10) == 0) {
             log.warn "${device.displayName} can't be reached (${n} poll${n == 1 ? '' : 's'}): ${reason}"
         } else {
-            dbg "${device.displayName} can't be reached (${n}): ${reason}"
+            logDebug "${device.displayName} can't be reached (${n}): ${reason}"
         }
     } else if (n == 1) {
         log.info "${device.displayName} is off or unreachable (${reason}); further misses are logged at debug only"
     } else {
-        dbg "${device.displayName} is still off or unreachable (${n}): ${reason}"
+        logDebug "${device.displayName} is still off or unreachable (${n}): ${reason}"
     }
 }
 
 // Called when stats answers.
 private void noteReachable() {
+    if (device.currentValue("healthStatus") != "online") {
+        emitEvent(name: "healthStatus", value: "online", descriptionText: "${device.displayName} is online")
+    }
     Integer n = (state.unreachableCount ?: 0) as Integer
     if (n > 0) {
-        log.info "${device.displayName} is reachable again (after ${n} missed poll${n == 1 ? '' : 's'})"
+        String polls = "${n} missed poll${n == 1 ? '' : 's'}"
+        Long since = state.unreachableSince as Long
+        String after = since ? "after ${formatDuration(now() - since)} (${polls})" : "(after ${polls})"
+        log.info "${device.displayName} is reachable again ${after}"
         state.remove("unreachableCount")
+        state.remove("unreachableSince")
     }
     state.failCount = 0
+}
+
+private String formatDuration(Long ms) {
+    Long totalMin = Math.max(0L, ms as long).intdiv(60_000L)
+    if (totalMin == 0) return "under a minute"
+    Long h = totalMin.intdiv(60L)
+    Long m = totalMin % 60L
+    return h > 0 ? "${h}h ${m}m" : "${m}m"
 }
 
 private def safeJson(resp) {
@@ -1531,7 +1475,7 @@ private def safeJson(resp) {
             }
         }
     } catch (e) {
-        dbg "JSON parse failed: ${e.message}"
+        logDebug "JSON parse failed: ${e.message}"
     }
     return null
 }
@@ -1558,7 +1502,7 @@ private void sendWol() {
     if (state.wakeOnLan == false) {
         log.warn "The TV last reported Wake-on-LAN as disabled; sending a magic packet anyway"
     }
-    dbg "Sending Wake-on-LAN to ${mac}"
+    logDebug "Sending Wake-on-LAN to ${mac}"
     try {
         sendHubCommand(new hubitat.device.HubAction(
             "wake on lan ${mac}",
@@ -1619,24 +1563,18 @@ private Map resolveKey(key) {
     if (!raw) return null
     String lower = raw.toLowerCase()
 
+    // Glasshouse rejects anything outside its rcu and media key sets (there is
+    // no "lg" action), so unknown keys return null rather than being sent.
     if (lower.startsWith("media:")) {
-        String rest = raw.substring(6)
-        String mapped = mediaAction(rest)
-        return mapped ? [action: "media", value: mapped] : [action: "media", value: rest]
+        String mapped = mediaAction(raw.substring(6))
+        return mapped ? [action: "media", value: mapped] : null
     }
-    if (lower.startsWith("rcu:")) {
-        return [action: "rcu", value: rcuKey(raw.substring(4))]
+    if (!lower.startsWith("rcu:")) {
+        String media = mediaAction(lower)
+        if (media) return [action: "media", value: media]
     }
-    if (lower.startsWith("lg:")) {
-        String rest = raw.substring(3).trim()
-        if (!rest) return null
-        return [action: "lg", value: rest]
-    }
-
-    String media = mediaAction(lower)
-    if (media) return [action: "media", value: media]
-
-    return [action: "rcu", value: rcuKey(lower)]
+    String rcu = rcuKey(lower.startsWith("rcu:") ? lower.substring(4) : lower)
+    return (rcu in RCU_KEYS) ? [action: "rcu", value: rcu] : null
 }
 
 private String mediaAction(String raw) {
@@ -1650,9 +1588,8 @@ private String mediaAction(String raw) {
         ff: "fastForward",
         fastforward: "fastForward",
         fastfwd: "fastForward",
-        volumeup: "volumeUp",
-        volumedown: "volumeDown",
-        mute: "mute"
+        channelup: "channelUp",
+        channeldown: "channelDown"
     ]
     return map[lower]
 }
@@ -1708,10 +1645,6 @@ private String pictureModeHelp() {
     return modes.collect { it.label ?: it.value }.join(", ")
 }
 
-private void dbg(msg) {
-    if (debugLogging) log.debug msg
-}
-
 // Keep the mute and screen toggles in the preferences pane in step with
 // the TV, so a later Save Preferences does not fire a change the user
 // did not make. device.updateSetting does not call updated().
@@ -1722,7 +1655,7 @@ private void syncBoolPref(String name, boolean value) {
     try {
         device.updateSetting(name, [value: value ? "true" : "false", type: "bool"])
     } catch (e) {
-        dbg "Could not sync preference ${name}: ${e.message}"
+        logDebug "Could not sync preference ${name}: ${e.message}"
     }
 }
 
@@ -1752,7 +1685,6 @@ private boolean startArcVolumeSteps(Integer desired) {
     if (n > 30) n = 30
     state.volumeStepDir = dir
     state.volumeStepLeft = n
-    state.volumeStepTarget = desired
     log.info "HDMI ARC: sending ${n} x volumeStep(${dir}) so the receiver can follow (same path as Glasshouse + / -)"
     sendControl("volumeStep", dir)
     return true
@@ -1804,6 +1736,30 @@ private void syncNumberPref(String name, Integer value) {
     try {
         device.updateSetting(name, [value: value.toString(), type: "number"])
     } catch (e) {
-        dbg "Could not sync preference ${name}: ${e.message}"
+        logDebug "Could not sync preference ${name}: ${e.message}"
     }
 }
+
+// ---- BEGIN standard logging (driver) v1: keep identical in every driver, see STYLE.md ----
+
+void logsOff() {
+    log.info "Debug logging turned off"
+    device.updateSetting("logEnable", [value: "false", type: "bool"])
+}
+
+private void logDebug(String msg) {
+    if (settings.logEnable) log.debug msg
+}
+
+private void logDesc(String msg) {
+    if (settings.txtEnable != false) log.info msg
+}
+
+// Sends the event; logs its descriptionText only when the value actually changes.
+private void emitEvent(Map evt) {
+    boolean changed = device.currentValue(evt.name as String)?.toString() != evt.value?.toString()
+    sendEvent(evt)
+    if (changed && evt.descriptionText) logDesc(evt.descriptionText as String)
+}
+
+// ---- END standard logging ----

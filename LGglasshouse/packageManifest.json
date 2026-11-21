@@ -1,11 +1,11 @@
 {
   "packageName": "LG TV (Glasshouse)",
   "author": "David LaPorte",
-  "version": "0.10",
-  "releaseNotes": "v0.10 (2026-11-15): a switched-off (unreachable) TV is logged as one info line when it goes and one when it is back, instead of repeated warnings for every poll request; notifications sent to it are logged at info. New Connection option Warn when the TV can't be reached (default off) restores warnings, for TVs with Always Ready on. v0.9 (2026-11-14): optional Notification device. Turn on Notification device on the TV's Preferences page and Save to create a '<TV name> Notifier' child that shows Hubitat notifications (Rule Machine, Notifier, Basic Rules, HSM) on the TV screen as an on-screen toast. Adds the LG TV (Glasshouse) Notifier driver. v0.8 (2026-11-11): initial public release. Requires Hubitat 2.2.0+.",
-  "minimumHEVersion": "2.2.0",
-  "dateReleased": "2026-11-15",
+  "version": "0.11.0",
+  "minimumHEVersion": "2.2.9",
+  "dateReleased": "2026-11-21",
   "documentationLink": "https://github.com/dlaporte/Hubitat/blob/main/LGglasshouse/README.md",
+  "releaseNotes": "Send key now offers only the keys Glasshouse accepts, including Channel up and Channel down. New optional API token setting. New healthStatus attribute, and the 'reachable again' line says how long the TV was unreachable. The driver runs single-threaded, and ARC volume steps log at debug. Debug logging now turns itself off after 30 minutes, and a new descriptionText logging option (on by default) logs value changes. The Notifier's version now matches the TV driver. After updating, click Initialize on the TV device. Requires Hubitat 2.2.9+.",
   "drivers": [
     {
       "id": "d4d3a183-19c8-46dc-bdaf-6d21682e2ab3",

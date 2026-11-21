@@ -20,7 +20,7 @@ You'll build a small assembly — these are the parts I used:
 | Part | Notes |
 |---|---|
 | Dwyer 1910-00 pressure switch | The kind that closes on suction |
-| Monoprice 15270 (or WADWAZ-1) door sensor with screw terminals | Z-Wave Plus |
+| Monoprice 15270 or GoControl WADWAZ-1 door sensor with screw terminals | The 15270 is Z-Wave Plus; the WADWAZ-1 is plain Z-Wave |
 | 1/8" barbed 3-way fitting | Tees off the manometer line |
 | 1/8" Barb × 1/8" NPT Male pipe fitting | Connects pressure switch to the tee |
 | 1/8" ID plastic tubing | Short run |
@@ -56,8 +56,10 @@ Then pair the door sensor:
 
 | Name | Default | What it does |
 |---|---|---|
-| Fire fanAlarm if fan has been off for (minutes) | 30 | When `fanAlarm` becomes `"alarm"` |
-| Debug logging | off | Verbose logging |
+| Fire fanAlarm if fan has been off for (minutes) | 30 | When `fanAlarm` becomes `"alarm"`. A change applies on save, counting time already elapsed |
+| Invert sensor | off | Turn on if Hubitat shows the fan running when it's off (pressure switch wired the other way). Applies on save |
+| Enable debug logging | off | Verbose logging; turns itself off after 30 minutes |
+| Enable descriptionText logging | on | One info line when the fan starts or stops, the alarm fires or clears, the battery changes, or the sensor goes online/offline |
 
 ## Attributes
 
@@ -68,16 +70,30 @@ Then pair the door sensor:
   once the configured threshold elapses with the fan still off; resets to
   `"ok"` the moment the fan starts again
 - **`battery`** — sensor battery %
+- **`healthStatus`** — `"online"` while the sensor checks in; `"offline"`
+  after it misses two wake-ups (plus an hour). The driver measures the
+  wake-up interval from the time between wake-ups, so the threshold is
+  known from the second wake-up after install; until then it allows a week
 
 ## Commands
 
-`Refresh` requests current state from the Z-Wave device.
+- **Initialize** — re-arms the fan-alarm and offline timers. Also runs
+  automatically at hub boot and when you save preferences.
+- **Refresh** — the sensor sleeps, so this queues a battery request for its
+  next wake-up rather than sending anything now.
 
 ## Notes
 
 - The `fanAlarm` timer **survives hub reboots**. On Initialize, if the fan
   is currently off, the driver re-arms the alarm for the *remaining* window
-  (subtracting the time already elapsed since `lastStoppedAt`).
-- Hub firmware floor: 2.1.9.
+  (subtracting the time already elapsed since `lastStoppedAt`). An alarm
+  that has already fired is not sent again after a reboot.
+- Each fan change arrives as two Z-Wave reports; the driver acts on the
+  first and ignores the repeat, so timestamps and the alarm clock aren't
+  reset by the duplicate.
+- **Monoprice 15270:** its external terminals may need to be enabled with
+  Z-Wave configuration parameter 1; this driver doesn't set it (untested —
+  the author's unit is a WADWAZ-1).
+- Hub firmware floor: 2.2.9.
 - Sleep soundly knowing your house can no longer silently kill you if
   the fan dies.

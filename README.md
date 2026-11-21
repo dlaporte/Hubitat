@@ -30,7 +30,8 @@ Exposes:
 - Floodlight mode (`Off`, `NightSmart`, `AlwaysAtNight`, `Schedule`),
   lighting schedule, IR mode, day/night mode, microphone toggle, status LED
 - RTSP main/sub stream URLs and an optional snapshot URL for dashboard tiles
-- SD-card capacity / free / mounted attributes
+- SD-card capacity / free / mounted attributes, refreshed every 30 minutes
+- `healthStatus` (online/offline)
 
 Async HTTP throughout; 5-second poll loop for motion/AI with epoch-guarded
 self-rescheduling. Does **not** expose any siren or alarm-trigger commands
@@ -42,7 +43,8 @@ LAN driver for the Amcrest ASH26 outdoor security camera (and likely
 similar Amcrest CGI-API cameras). Controls the floodlight and surfaces
 device info that's otherwise only available in the Amcrest mobile app.
 
-Async HTTP with RFC 2617-compliant digest auth. 1-minute refresh cadence.
+Async HTTP with RFC 2617-compliant digest auth. 1-minute refresh cadence,
+with `lightMode` and `healthStatus` attributes.
 
 ### AcuRite Weather Station
 
@@ -57,8 +59,9 @@ Derived attributes:
 - `weatherSummary` — composed string like `"72°F, 45% RH, wind SW 8 mph"`
   for dashboard tiles and TTS.
 
-Session token cached across polls (~95% reduction in login API calls vs.
-the original).
+Session token cached across polls and renewed only on expiry or rejection,
+so a myAcuRite outage doesn't turn into a failed login every poll.
+`healthStatus` shows whether the cloud API is answering.
 
 ### Smart Oil Gauge
 
@@ -73,6 +76,7 @@ Per-tank attributes:
 - `lowFuel` (`true` / `false` vs. a configurable threshold)
 - `lastRefillAt` / `lastRefillGallons` (refills auto-detected from gallons
   jumping above the threshold)
+- `healthStatus` (offline when the API fails or the gauge stops uploading)
 
 Includes an OAuth-served web tile page (`/deviceTiles` and `/getTile/<dni>`)
 with an inline-SVG tank visualization — zero external assets except the
@@ -89,12 +93,16 @@ open = stopped) with timestamps and an alarm attribute:
   configured `alarmAfterMinutes` (default 30). Survives hub reboots —
   initialize() re-arms the timer with the remaining window.
 - `lastStartedAt` / `lastStoppedAt` ISO timestamps for use in Rule Machine.
+- `healthStatus` goes `"offline"` if the sensor misses two wake-ups, so a
+  dead battery doesn't leave the last reading on display forever.
+- An **Invert sensor** preference covers a pressure switch wired the other
+  way.
 
 The driver also keeps the legacy `switch` attribute (`on`/`off`) for
 backward compatibility with any rules that already use it.
 
-Parts list, install instructions, and theory of operation are in the driver
-header.
+Parts list, build steps and install instructions are in the
+[package README](RadonFanSensor/README.md).
 
 ### LG TV (Glasshouse)
 
@@ -109,7 +117,7 @@ Exposes, on the Preferences page:
   soundbar or receiver that ignores the numeric volume
 - Mute, input and picture-mode dropdowns populated from the TV, screen
   on/off, launch app, and send key
-- Configurable polling
+- Configurable polling, and a `healthStatus` attribute
 - Optional notification device that shows Hubitat notifications on the
   TV screen
 
