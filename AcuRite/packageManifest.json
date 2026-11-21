@@ -1,10 +1,11 @@
 {
   "packageName": "AcuRite Weather Station",
   "author": "David LaPorte",
-  "version": "0.0.18",
-  "releaseNotes": "Bug fixes and minor cleanup. Requires Hubitat 2.2.0+.",
-  "minimumHEVersion": "2.2.0",
-  "dateReleased": "2026-06-12",
+  "version": "0.1.0",
+  "minimumHEVersion": "2.2.9",
+  "dateReleased": "2026-11-21",
+  "documentationLink": "https://github.com/dlaporte/Hubitat/blob/main/AcuRite/README.md",
+  "releaseNotes": "The driver now logs in again only when its session expires or is rejected, instead of after every error (an outage used to mean a failed login on every poll). Initialize fetches data right away, a station without wired sensors no longer stops a poll partway, and lightningActive clears when its window ends. New healthStatus attribute, which also goes offline when the station hasn't reported to myAcuRite for 2 hours. Outages are logged once, with an hourly reminder and a recovery line. Debug logging now turns itself off after 30 minutes, and a new descriptionText logging option (on by default) logs value changes. After updating, click Initialize on the device. Requires Hubitat 2.2.9+.",
   "drivers": [
     {
       "id": "fe491414-4bfc-4b43-ad3e-7e34b3e35ff0",
