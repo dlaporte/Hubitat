@@ -111,19 +111,20 @@ LAN driver for a rooted LG webOS TV running
 Glasshouse's local HTTP API (typically port 8080, no authentication in
 the default configuration).
 
-Exposes, on the Preferences page:
-- Power (Wake-on-LAN plus Glasshouse `powerOn` / `powerOff`)
-- Volume slider, including HDMI ARC/eARC `volumeStep` behavior for a
-  soundbar or receiver that ignores the numeric volume
-- Mute, input and picture-mode dropdowns populated from the TV, screen
-  on/off, launch app, and send key
-- Configurable polling, and a `healthStatus` attribute
+Every control is a command, so Rule Machine, dashboards, HomeKit, voice
+assistants and Maker API can use the TV:
+- `Switch` (Wake-on-LAN plus Glasshouse `powerOn` / `powerOff`),
+  `AudioVolume` and `MediaInputSource`. On HDMI ARC/eARC, `setVolume`
+  sends `volumeStep`s for a soundbar or receiver that ignores the numeric
+  volume
+- Commands for picture mode, screen on/off, apps, remote keys, backlight,
+  energy saving, sound output, sleep timer, any LG setting Glasshouse
+  exposes, and reboot
+- Attributes for power, volume, input, picture and sound settings, the
+  TV's light sensor, the Magic Remote's battery, and `healthStatus`.
+  `switch` goes off when the TV can't be reached
 - Optional notification device that shows Hubitat notifications on the
   TV screen
-
-The Commands tab is intentionally just Initialize and Refresh. The
-driver does not declare `Switch` or `AudioVolume`, so dashboards,
-HomeKit, and Rule Machine cannot treat it as a switch.
 
 ## Forks (not in HPM)
 
