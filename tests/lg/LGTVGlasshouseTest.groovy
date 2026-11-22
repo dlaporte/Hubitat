@@ -20,6 +20,15 @@ def statsOn = { Map extra = [:] ->
      app: "hdmi1", app_id: "com.webos.app.hdmi1", inputs: [hdmi1: "Apple TV"]] + extra
 }
 
+// A stats reply with every reading 0.12.0 uses.
+def statsFull = { Map extra = [:] ->
+    statsOn([powerState: [systemOn: true, raw: "Active", label: "On", screenOn: true],
+             picture: [dynamicRange: "Dolby Vision", backlight_raw: 80, energySaving: "off"],
+             sound: [output: "HDMI ARC", output_raw: "external_arc", mode: "standard",
+                     outputs: [[id: "tv_speaker", name: "TV Speaker"], [id: "external_arc", name: "HDMI ARC"]]],
+             sleepTimer: "off", lightSensor: [lux: 41.6], remote: [battery: 76], temp: 52] + extra)
+}
+
 def bodyOf = { Map req -> new groovy.json.JsonSlurper().parseText(req.params.body as String) }
 def resp = { Map m -> new harness.FakeResponse(data: groovy.json.JsonOutput.toJson(m)) }
 
@@ -402,6 +411,44 @@ test("on for a TV that is fully off logs that it is waiting for Wake-on-LAN, not
     assert d.log.at("warn").isEmpty()
     assert d.log.at("info").any { it.contains("Wake-on-LAN") }
     assert d.schedules.powerUpPoll == 15
+}
+
+// ---- Readings ----
+
+test("a stats reply fills in the new attributes") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsFull()), [path: "/api/stats"])
+    def c = d.device.current
+    assert c.dynamicRange == "Dolby Vision" && c.backlight == 80 && c.energySaving == "off"
+    assert c.soundOutput == "HDMI ARC" && c.soundMode == "standard" && c.sleepTimer == "off"
+    assert c.powerStateLabel == "On" && c.illuminance == 42 && c.battery == 76 && c.tvTemperature == 52
+    assert d.state.soundOutputs == [[id: "tv_speaker", name: "TV Speaker"], [id: "external_arc", name: "HDMI ARC"]]
+}
+
+test("null lux, battery, backlight and temperature are skipped") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsFull(lightSensor: null, remote: [battery: null], temp: null,
+            picture: [dynamicRange: "SDR", backlight_raw: null, energySaving: "auto"])), [path: "/api/stats"])
+    ["illuminance", "battery", "backlight", "tvTemperature"].each { assert !d.device.current.containsKey(it) }
+    assert d.device.current.energySaving == "auto"
+}
+
+test("a repeat poll logs no new descriptionText") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsFull()), [path: "/api/stats"])
+    int n = d.log.at("info").size()
+    d.call("statsCallback", resp(statsFull()), [path: "/api/stats"])
+    assert d.log.at("info").size() == n
+}
+
+test("descriptionText for the readings; temperature changes aren't logged") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsFull()), [path: "/api/stats"])
+    def info = d.log.at("info")
+    assert info.contains("Living Room TV illuminance is 42 lx")
+    assert info.contains("Living Room TV remote battery is 76%")
+    assert info.contains("Living Room TV sound output is HDMI ARC")
+    assert !info.any { it.contains("temperature") }
 }
 
 finish()

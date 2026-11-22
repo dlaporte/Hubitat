@@ -875,7 +875,78 @@ private void applyStats(Map d) {
         state.wakeOnLan = (d.wakeOnLan == true)
     }
 
+    applyReadings(d, ps)
+
     logDebug "State: switch=${sw} volume=${d.volume} muted=${d.muted} input=${inputVal} app=${title}"
+}
+
+// Picture, sound and sensor readings from the same /api/stats reply. A
+// reading Glasshouse reports as null (no light sensor, no remote paired) is
+// skipped rather than cleared.
+private void applyReadings(Map d, Map ps) {
+    String name = device.displayName
+    Map pic = (d.picture instanceof Map) ? d.picture : [:]
+    if (pic.dynamicRange) {
+        emitEvent(name: "dynamicRange", value: pic.dynamicRange.toString(),
+            descriptionText: "${name} dynamic range is ${pic.dynamicRange}")
+    }
+    Integer backlight = toIntOrNull(pic.backlight_raw)
+    if (backlight != null) {
+        emitEvent(name: "backlight", value: backlight, unit: "%",
+            descriptionText: "${name} backlight is ${backlight}%")
+    }
+    if (pic.energySaving) {
+        emitEvent(name: "energySaving", value: pic.energySaving.toString(),
+            descriptionText: "${name} energy saving is ${pic.energySaving}")
+    }
+    Map snd = (d.sound instanceof Map) ? d.sound : [:]
+    if (snd.output) {
+        emitEvent(name: "soundOutput", value: snd.output.toString(),
+            descriptionText: "${name} sound output is ${snd.output}")
+    }
+    if (snd.mode) {
+        emitEvent(name: "soundMode", value: snd.mode.toString(),
+            descriptionText: "${name} sound mode is ${snd.mode}")
+    }
+    if (snd.outputs instanceof List) {
+        state.soundOutputs = snd.outputs.findAll { it instanceof Map && it.id }.collect { Map o ->
+            [id: o.id.toString(), name: (o.name ?: o.id).toString()]
+        }
+    }
+    if (d.sleepTimer != null) {
+        String st = d.sleepTimer.toString()
+        emitEvent(name: "sleepTimer", value: st,
+            descriptionText: "${name} sleep timer is ${st == 'off' ? 'off' : st + ' minutes'}")
+    }
+    if (ps.label) {
+        emitEvent(name: "powerStateLabel", value: ps.label.toString(),
+            descriptionText: "${name} power state is ${ps.label}")
+    }
+    Integer lux = toIntOrNull((d.lightSensor instanceof Map) ? d.lightSensor.lux : null)
+    if (lux != null) {
+        emitEvent(name: "illuminance", value: lux, unit: "lx",
+            descriptionText: "${name} illuminance is ${lux} lx")
+    }
+    Integer battery = toIntOrNull((d.remote instanceof Map) ? d.remote.battery : null)
+    if (battery != null) {
+        emitEvent(name: "battery", value: battery, unit: "%",
+            descriptionText: "${name} remote battery is ${battery}%")
+    }
+    // The TV's chip temperature moves a degree at a time all day; no
+    // descriptionText, so it doesn't fill the log.
+    Integer temp = toIntOrNull(d.temp)
+    if (temp != null) {
+        emitEvent(name: "tvTemperature", value: temp, unit: "\u00B0C")
+    }
+}
+
+private Integer toIntOrNull(v) {
+    if (v == null) return null
+    try {
+        return Math.round(v.toString().trim().toDouble()) as Integer
+    } catch (ignored) {
+        return null
+    }
 }
 
 // input (frozen) and MediaInputSource's mediaInputSource carry the same value,
