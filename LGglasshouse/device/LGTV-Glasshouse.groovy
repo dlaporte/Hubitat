@@ -323,7 +323,7 @@ private void syncNotifierChild() {
 }
 
 // Called by the Notifier child. Public so parent.sendToast() reaches it,
-// but not a command, so the Commands tab stays Initialize and Refresh.
+// but not a command: the Notifier is how rules send a notification.
 // A string value is LG's standard toast. Glasshouse shows "hello" for
 // empty text, so blank messages are dropped here.
 void sendToast(String text) {
@@ -1444,7 +1444,7 @@ private String pictureModeHelp() {
 // On HDMI ARC/eARC (or when Glasshouse reports volume_control
 // "steps"), also send volumeStep so a receiver that ignores the TV's
 // own level can still follow. Each step is +/- 1, same as the
-// dashboard's + / - buttons. Capped so a wild slider jump cannot
+// dashboard's + / - buttons. Capped so a large setVolume jump cannot
 // fire a long burst.
 private boolean startArcVolumeSteps(Integer desired) {
     if (desired == null) return false
