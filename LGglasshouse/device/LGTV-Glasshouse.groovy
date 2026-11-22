@@ -59,15 +59,25 @@ import groovy.transform.Field
 @Field static final List<String> ENERGY_SAVING = ["auto", "off", "min", "med", "max", "screen_off"]
 @Field static final List<String> SLEEP_TIMER = ["off", "10", "30", "60", "90", "120"]
 
-// Glasshouse's sound output names (the soundOutput attribute) and their ids.
-// The TV's own list (sound.outputs in /api/stats) wins; this is the fallback.
+// Glasshouse's sound output names (the soundOutput attribute) and their ids,
+// from its names.js. The TV's own list (sound.outputs in /api/stats) wins;
+// this is the fallback, and the choices the setSoundOutput command offers.
 @Field static final Map<String, String> SOUND_OUTPUTS = [
     "TV Speaker": "tv_speaker",
     "HDMI ARC": "external_arc",
     "Optical": "optical",
     "Bluetooth": "bt_soundbar",
     "Headphone / AUX": "headphone",
-    "TV Speaker + HDMI ARC": "tv_speaker_external_arc"
+    "TV Speaker + HDMI ARC": "tv_speaker_external_arc",
+    "TV Speaker + Optical": "tv_external_speaker",
+    "TV Speaker + Bluetooth": "tv_speaker_bluetooth",
+    "TV Speaker + Headphone": "tv_speaker_headphone",
+    "LG Sound Sync": "soundbar",
+    "LG WOWCAST": "wow_cast",
+    "Line Out": "lineout",
+    "External Speaker": "external_speaker",
+    "WiSA Speakers": "wisa_speaker",
+    "Mobile Phone": "mobile_phone"
 ]
 
 // Settings earlier versions used. The TV controls moved from Preferences to
@@ -511,7 +521,7 @@ def launchApp(appId) {
 def sendKey(key) {
     Map sent = resolveKey(key)
     if (!sent) {
-        log.warn "Glasshouse doesn't accept the key '${key}'; choose one from the Send key list"
+        log.warn "Glasshouse doesn't accept the key '${key}'; choose one from the sendKey list"
         return
     }
     log.info "Send key ${sent.action}:${sent.value}"
@@ -526,6 +536,78 @@ def setPictureMode(mode) {
     }
     log.info "Set picture mode to ${raw}"
     sendControl("pictureMode", raw)
+}
+
+// ---------------------------------------------------------------------------
+// Commands: picture, sound and settings
+// ---------------------------------------------------------------------------
+
+def setBacklight(level) {
+    Integer v = toIntOrNull(level)
+    if (v == null || v < 0 || v > 100) {
+        log.warn "setBacklight: '${level}' isn't a number from 0 to 100"
+        return
+    }
+    log.info "Set backlight to ${v}"
+    sendControl("backlight", v)
+}
+
+def setEnergySaving(mode) {
+    String m = mode?.toString()?.trim()?.toLowerCase()
+    if (!(m in ENERGY_SAVING)) {
+        log.warn "setEnergySaving: '${mode}' isn't one of ${ENERGY_SAVING.join(', ')}"
+        return
+    }
+    log.info "Set energy saving to ${m}"
+    sendControl("energySaving", m)
+}
+
+def setSoundOutput(output) {
+    String id = resolveSoundOutput(output)
+    if (!id) {
+        log.warn "setSoundOutput: '${output}' isn't a sound output (${soundOutputHelp()})"
+        return
+    }
+    log.info "Set sound output to ${output} (${id})"
+    sendControl("soundOutput", id)
+}
+
+def setSleepTimer(minutes) {
+    String m = minutes?.toString()?.trim()?.toLowerCase()
+    if (!(m in SLEEP_TIMER)) {
+        log.warn "setSleepTimer: '${minutes}' isn't one of ${SLEEP_TIMER.join(', ')}"
+        return
+    }
+    log.info "Set sleep timer to ${m == 'off' ? 'off' : m + ' minutes'}"
+    sendControl("sleepTimer", m)
+}
+
+// Any of Glasshouse's LG settings by id (its Settings tab lists them).
+def setLgSetting(id, value) {
+    String key = id?.toString()?.trim()
+    String raw = value?.toString()?.trim()
+    if (!key || !raw) {
+        log.warn "setLgSetting needs a setting id and a value (got '${id}', '${value}')"
+        return
+    }
+    List<Map> forms = lgSettingPayloads(key, raw)
+    log.info "Set LG setting ${key} to ${raw}"
+    sendControl("lgSetting", forms[0], forms.size() > 1 ? [fallback: forms[1]] : null)
+}
+
+// Glasshouse takes { id, on } for a switch setting and { id, value } for the
+// rest, and a number setting takes only a JSON number. The driver doesn't keep
+// Glasshouse's list of settings, so an ambiguous value gets a second form,
+// sent only if Glasshouse refuses the first as "not one this setting takes".
+// on/off goes as a switch first: a choice or number setting refuses a boolean
+// without changing anything, while "on" sent as a value to a switch setting
+// would switch it off.
+private List<Map> lgSettingPayloads(String key, String raw) {
+    String lower = raw.toLowerCase()
+    if (lower in ["on", "true"]) return [[id: key, on: true], [id: key, value: raw]]
+    if (lower in ["off", "false"]) return [[id: key, on: false], [id: key, value: raw]]
+    if (raw ==~ /-?\d+/) return [[id: key, value: raw.toInteger()], [id: key, value: raw]]
+    return [[id: key, value: raw]]
 }
 
 def refresh() {
@@ -592,7 +674,7 @@ private void fetchJson(String path, String callback) {
     asynchttpGet(callback, params, [path: path])
 }
 
-private void sendControl(String action, value = null) {
+private void sendControl(String action, value = null, Map extra = null) {
     Map payload = [action: action]
     if (value != null) {
         payload.value = value
@@ -612,6 +694,7 @@ private void sendControl(String action, value = null) {
     if (value != null) {
         data.value = value
     }
+    if (extra) data.putAll(extra)
     logDebug "POST /api/control ${body}"
     asynchttpPost("controlCallback", params, data)
 }
@@ -646,6 +729,14 @@ void controlCallback(resp, data) {
     }
     def json = safeJson(resp)
     if (json instanceof Map && json.ok == false) {
+        // See lgSettingPayloads: the second form, only when Glasshouse refused
+        // the value itself.
+        if (action == "lgSetting" && data?.fallback instanceof Map &&
+                json.error?.toString()?.contains("not one this setting takes")) {
+            logDebug "Glasshouse refused ${data.value}; trying ${data.fallback}"
+            sendControl("lgSetting", data.fallback)
+            return
+        }
         log.warn "Glasshouse ${action} rejected: ${json.error ?: json}"
         clearVolumeStepChain()
         return
@@ -1313,6 +1404,23 @@ private String resolvePictureMode(mode) {
     def byLabel = modes.find { it.label?.equalsIgnoreCase(raw) || it.value?.equalsIgnoreCase(raw) }
     if (byLabel) return byLabel.value
     return raw
+}
+
+// The TV's own outputs (sound.outputs in /api/stats) first; the fixed table
+// for a name the TV hasn't listed.
+private String resolveSoundOutput(output) {
+    String want = output?.toString()?.trim()
+    if (!want) return null
+    List listed = (state.soundOutputs instanceof List) ? state.soundOutputs : []
+    def match = listed.find { it instanceof Map && it.name?.toString()?.equalsIgnoreCase(want) }
+    if (match) return match.id?.toString()
+    String known = SOUND_OUTPUTS.keySet().find { it.equalsIgnoreCase(want) }
+    return known ? SOUND_OUTPUTS[known] : null
+}
+
+private String soundOutputHelp() {
+    List listed = (state.soundOutputs instanceof List) ? state.soundOutputs : []
+    return (listed ? listed.collect { it.name } : SOUND_OUTPUTS.keySet() as List).join(", ")
 }
 
 private String pictureModeLabel(String raw) {

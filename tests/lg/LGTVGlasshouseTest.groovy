@@ -66,7 +66,9 @@ test("custom commands and their parameters") {
     assert d.commandDefs.setEnergySaving[0].constraints == ["auto", "off", "min", "med", "max", "screen_off"]
     assert d.commandDefs.setSleepTimer[0].constraints == ["off", "10", "30", "60", "90", "120"]
     assert d.commandDefs.setSoundOutput[0].constraints == ["TV Speaker", "HDMI ARC", "Optical", "Bluetooth",
-                                                         "Headphone / AUX", "TV Speaker + HDMI ARC"]
+            "Headphone / AUX", "TV Speaker + HDMI ARC", "TV Speaker + Optical", "TV Speaker + Bluetooth",
+            "TV Speaker + Headphone", "LG Sound Sync", "LG WOWCAST", "Line Out", "External Speaker",
+            "WiSA Speakers", "Mobile Phone"]
     assert d.commandDefs.screenOn == [] && d.commandDefs.screenOff == [] && d.commandDefs.reboot == []
 }
 
@@ -449,6 +451,82 @@ test("descriptionText for the readings; temperature changes aren't logged") {
     assert info.contains("Living Room TV remote battery is 76%")
     assert info.contains("Living Room TV sound output is HDMI ARC")
     assert !info.any { it.contains("temperature") }
+}
+
+// ---- Picture, sound and setting commands ----
+
+test("setBacklight, setEnergySaving and setSleepTimer send their actions") {
+    def d = fresh()
+    d.call("setBacklight", "40.0")
+    d.call("setEnergySaving", "MED")
+    d.call("setSleepTimer", "30")
+    d.call("setSleepTimer", "off")
+    assert d.http.collect { bodyOf(it) } == [[action: "backlight", value: 40], [action: "energySaving", value: "med"],
+                                            [action: "sleepTimer", value: "30"], [action: "sleepTimer", value: "off"]]
+}
+
+test("bad values send nothing and log one warning each") {
+    def d = fresh()
+    d.call("setBacklight", 150)
+    d.call("setBacklight", "bright")
+    d.call("setEnergySaving", "eco")
+    d.call("setSleepTimer", "15")
+    d.call("sendKey", "bogus")
+    d.call("setInputSource", "Xbox")
+    d.call("setLgSetting", "filmMakerMode", " ")
+    d.call("setLgSetting", "", "on")
+    d.call("setSoundOutput", "Speakers")
+    assert d.http.isEmpty()
+    assert d.log.at("warn").size() == 9
+}
+
+test("setSoundOutput uses the TV's own id for a name, and the fixed table for a name the TV hasn't listed") {
+    def d = fresh()
+    d.call("setSoundOutput", "Optical")
+    d.state.soundOutputs = [[id: "tv_speaker", name: "TV Speaker"], [id: "external_optical", name: "Optical"]]
+    d.call("setSoundOutput", "optical")
+    d.call("setSoundOutput", "HDMI ARC")
+    assert d.http.collect { bodyOf(it) } == [[action: "soundOutput", value: "optical"],
+                                            [action: "soundOutput", value: "external_optical"],
+                                            [action: "soundOutput", value: "external_arc"]]
+}
+
+test("setLgSetting: on/off as a switch, integers as numbers, anything else as a value") {
+    def d = fresh()
+    d.call("setLgSetting", "filmMakerMode", "on")
+    d.call("setLgSetting", "contrast", "85")
+    d.call("setLgSetting", "soundMode", "movie")
+    assert d.http.collect { bodyOf(it) } == [[action: "lgSetting", value: [id: "filmMakerMode", on: true]],
+                                            [action: "lgSetting", value: [id: "contrast", value: 85]],
+                                            [action: "lgSetting", value: [id: "soundMode", value: "movie"]]]
+}
+
+test("a choice setting that refuses off as a switch gets it as a value") {
+    def d = fresh()
+    d.call("setLgSetting", "truMotion", "off")
+    def first = d.http[0]
+    assert bodyOf(first).value == [id: "truMotion", on: false]
+    d.reply(first, json: [ok: false, error: "That value is not one this setting takes"])
+    def second = d.http[0]
+    assert bodyOf(second).value == [id: "truMotion", value: "off"]
+    d.reply(second, json: [ok: true])
+    assert d.log.at("warn").isEmpty()
+    assert d.schedules.refreshAfterCommand == 2
+}
+
+test("a refusal for another reason isn't retried, and its error text is in the warning") {
+    def d = fresh()
+    d.call("setLgSetting", "filmMakerMode", "on")
+    d.reply(d.http[0], json: [ok: false, error: "Not available in the current picture mode, or for what is on screen."])
+    assert d.http.isEmpty()
+    assert d.log.at("warn") == ["Glasshouse lgSetting rejected: Not available in the current picture mode, or for what is on screen."]
+}
+
+test("a reboot Glasshouse refuses warns with its reason") {
+    def d = fresh()
+    d.call("reboot")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: false, error: "power actions disabled (set allowPower)"])
+    assert d.log.at("warn") == ["Glasshouse reboot rejected: power actions disabled (set allowPower)"]
 }
 
 finish()
