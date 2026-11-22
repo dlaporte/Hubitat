@@ -67,24 +67,23 @@ test("attributes the capabilities declare aren't declared again; the new stats a
                                         "soundMode", "sleepTimer", "powerStateLabel", "tvTemperature"]
 }
 
-test("logging inputs come last; debugLogging is gone") {
+test("preferences: connection and Hubitat settings only, no TV controls") {
     def d = fresh()
-    def names = d.inputs*.name
-    assert names.takeRight(2) == ["logEnable", "txtEnable"]
-    assert !names.contains("debugLogging")
-    assert names.containsAll(["tvIp", "tvPort", "tvMac", "pollInterval", "warnUnreachable", "prefPower",
-                              "prefLaunchApp", "prefSendKey", "prefVolume", "prefMute", "prefInput",
-                              "prefPictureMode", "prefScreen", "notifierEnabled"])
+    assert d.inputs.findAll { it.type != "paragraph" }*.name == ["tvIp", "tvPort", "apiToken", "tvMac", "pollInterval",
+                                                                 "warnUnreachable", "notifierEnabled", "logEnable", "txtEnable"]
+    assert d.inputs.findAll { it.type == "paragraph" }*.name == ["hdrConnection", "hdrHubitat"]
 }
 
 // ---- Lifecycle ----
 
-test("initialize removes debugLogging, records driverVersion and polls every minute") {
+test("initialize removes retired settings, records driverVersion 0.12.0 and polls every minute") {
     def d = fresh()
-    d.settings.debugLogging = true
+    d.settings.putAll(debugLogging: true, prefPower: true, prefVolume: 30, prefInput: "hdmi2")
     d.call("initialize")
-    assert d.device.removedSettings.contains("debugLogging")
-    assert d.device.data.driverVersion == "0.11.0"
+    assert d.device.removedSettings.containsAll(["debugLogging", "prefPower", "prefLaunchApp", "prefSendKey",
+            "prefVolume", "prefMute", "prefInput", "prefPictureMode", "prefScreen"])
+    assert !d.settings.keySet().any { it.startsWith("pref") }
+    assert d.device.data.driverVersion == "0.12.0"
     assert d.schedules.refresh == "runEvery1Minute"
 }
 
@@ -96,20 +95,35 @@ test("logsOff is scheduled after unschedule, so Initialize can't cancel it") {
     assert d.schedules.logsOff == 1800
 }
 
-test("updated logs 'Preferences saved' and still applies a power preference that differs") {
+test("updated logs 'Preferences saved' and sends nothing to the TV, even with 0.11 settings left") {
     def d = fresh()
-    d.device.current.switch = "off"
-    d.settings.prefPower = true
+    d.device.current.putAll(switch: "off", mute: "unmuted", volume: 10, input: "hdmi1", screen: "on")
+    d.settings.putAll(prefPower: true, prefMute: true, prefVolume: 30, prefInput: "hdmi2", prefScreen: false,
+                      prefPictureMode: "cinema", prefLaunchApp: "netflix", prefSendKey: "home")
     d.call("updated")
     assert d.log.at("info").contains("Preferences saved")
-    def control = d.httpMatching("/api/control")
-    assert control.size() == 1 && bodyOf(control[0]) == [action: "powerOn"]
+    assert d.http.findAll { it.method == "POST" }.isEmpty()
+    assert d.hubCommands.isEmpty()
+}
+
+test("a poll no longer writes any preference") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    assert d.device.settingUpdates.isEmpty()
+}
+
+test("the preference option providers and the volume slider are gone") {
+    def d = fresh()
+    ["getInputPrefOptions", "getPictureModePrefOptions", "getLaunchAppPrefOptions", "getSendKeyPrefOptions",
+     "volumeSliderHtml"].each { m ->
+        try { d.call(m); assert false: "${m} still exists" } catch (MissingMethodException ignored) { }
+    }
 }
 
 test("the Notifier records its driverVersion") {
     def n = HubitatHarness.load(NOTIFIER)
     n.call("updated")
-    assert n.device.data.driverVersion == "0.11.0"
+    assert n.device.data.driverVersion == "0.12.0"
 }
 
 // ---- Logging ----
@@ -143,13 +157,6 @@ test("an ARC slider move logs one info line, not two per step") {
 }
 
 // ---- Fixes: send key ----
-
-test("Send key offers exactly the keys Glasshouse accepts") {
-    def d = fresh()
-    d.state.remoteKeys = [[id: "lg:INPUT", label: "Input"], [id: "up", label: "Up"]]   // left by 0.10
-    def opts = d.call("getSendKeyPrefOptions")
-    assert opts.keySet() as List == ["_unchanged"] + ACCEPTED
-}
 
 test("refresh no longer fetches /api/remotekeys") {
     def d = fresh()
