@@ -46,6 +46,26 @@ import groovy.transform.Field
 // The only keys Glasshouse's control API accepts (rcu and media actions).
 @Field static final List<String> RCU_KEYS = ["up", "down", "left", "right", "ok", "back", "settings", "home"]
 
+// Send key choices: the rcu keys and Glasshouse's media keys.
+@Field static final List<String> SEND_KEYS = ["up", "down", "left", "right", "ok", "back", "home", "settings",
+        "media:playPause", "media:play", "media:pause", "media:stop", "media:rewind", "media:fastForward",
+        "media:channelUp", "media:channelDown"]
+
+// Values Glasshouse's energySaving and sleepTimer actions accept.
+@Field static final List<String> ENERGY_SAVING = ["auto", "off", "min", "med", "max", "screen_off"]
+@Field static final List<String> SLEEP_TIMER = ["off", "10", "30", "60", "90", "120"]
+
+// Glasshouse's sound output names (the soundOutput attribute) and their ids.
+// The TV's own list (sound.outputs in /api/stats) wins; this is the fallback.
+@Field static final Map<String, String> SOUND_OUTPUTS = [
+    "TV Speaker": "tv_speaker",
+    "HDMI ARC": "external_arc",
+    "Optical": "optical",
+    "Bluetooth": "bt_soundbar",
+    "Headphone / AUX": "headphone",
+    "TV Speaker + HDMI ARC": "tv_speaker_external_arc"
+]
+
 metadata {
     definition(
         name: "LG TV (Glasshouse)",
@@ -56,27 +76,46 @@ metadata {
         // the ARC volume-step chain), so run them one at a time.
         singleThreaded: true
     ) {
-        // Commands on the device page come only from capabilities.
-        // Refresh and Initialize are the only ones declared, so the
-        // Commands section shows just those two. on/off, setVolume,
-        // mute/unmute, setInput, setPictureMode, screenOn/Off, launchApp
-        // and sendKey remain as methods: updated() calls them to apply
-        // preferences, and the volume slider posts setVolume to
-        // /device/runmethod. Rules and Maker API can't call them.
+        // Standard capabilities give Rule Machine, dashboards, HomeKit and voice
+        // on/off, volume, mute and input. Custom commands cover the rest.
+        capability "Switch"
+        capability "AudioVolume"
+        capability "MediaInputSource"
+        capability "IlluminanceMeasurement"   // the TV's ambient light sensor
+        capability "Battery"                  // the Magic Remote
         capability "Refresh"
         capability "Initialize"
         capability "Actuator"
 
-        attribute "switch", "enum", ["on", "off"]
-        attribute "volume", "number"
-        attribute "mute", "string"
+        command "setPictureMode", [[name: "mode*", type: "STRING", description: "A mode from supportedPictureModes (value or label)"]]
+        command "screenOn"
+        command "screenOff"
+        command "launchApp", [[name: "appId*", type: "STRING", description: "App id (for example netflix) or title"]]
+        command "sendKey", [[name: "key*", type: "ENUM", constraints: SEND_KEYS]]
+        command "setBacklight", [[name: "level*", type: "NUMBER", description: "0-100 (OLED Light on an OLED)"]]
+        command "setEnergySaving", [[name: "mode*", type: "ENUM", constraints: ENERGY_SAVING]]
+        command "setSoundOutput", [[name: "output*", type: "ENUM", constraints: SOUND_OUTPUTS.keySet() as List]]
+        command "setSleepTimer", [[name: "minutes*", type: "ENUM", constraints: SLEEP_TIMER]]
+        command "setLgSetting", [[name: "id*", type: "STRING", description: "Glasshouse setting id, for example filmMakerMode"],
+                                 [name: "value*", type: "STRING", description: "on or off for a switch setting, otherwise its value"]]
+        command "reboot"
+
+        // switch, volume, mute, supportedInputs, mediaInputSource, illuminance
+        // and battery come from the capabilities above.
         attribute "input", "string"
         attribute "currentApp", "string"
         attribute "pictureMode", "string"
         attribute "supportedPictureModes", "string"
-        attribute "supportedInputs", "string"
         attribute "screen", "string"
         attribute "healthStatus", "enum", ["online", "offline"]
+        attribute "dynamicRange", "string"
+        attribute "backlight", "number"
+        attribute "energySaving", "string"
+        attribute "soundOutput", "string"
+        attribute "soundMode", "string"
+        attribute "sleepTimer", "string"
+        attribute "powerStateLabel", "string"
+        attribute "tvTemperature", "number"
     }
 
     preferences {

@@ -21,6 +21,11 @@ def statsOn = { Map extra = [:] ->
 }
 
 def bodyOf = { Map req -> new groovy.json.JsonSlurper().parseText(req.params.body as String) }
+def resp = { Map m -> new harness.FakeResponse(data: groovy.json.JsonOutput.toJson(m)) }
+
+final List<String> ACCEPTED = ["up", "down", "left", "right", "ok", "back", "home", "settings",
+        "media:playPause", "media:play", "media:pause", "media:stop", "media:rewind", "media:fastForward",
+        "media:channelUp", "media:channelDown"]
 
 // ---- Metadata ----
 
@@ -31,8 +36,35 @@ test("definition follows STYLE.md and runs single-threaded") {
     assert d.definition.author == "David LaPorte"
     assert d.definition.importUrl == "https://raw.githubusercontent.com/dlaporte/Hubitat/main/LGglasshouse/device/LGTV-Glasshouse.groovy"
     assert d.definition.singleThreaded == true
-    assert d.capabilities == ["Refresh", "Initialize", "Actuator"]
-    assert d.commands.isEmpty()
+}
+
+test("capabilities make the TV a standard controllable device") {
+    assert fresh().capabilities == ["Switch", "AudioVolume", "MediaInputSource", "IlluminanceMeasurement", "Battery",
+                                    "Refresh", "Initialize", "Actuator"]
+}
+
+test("custom commands and their parameters") {
+    def d = fresh()
+    assert d.commands == ["setPictureMode", "screenOn", "screenOff", "launchApp", "sendKey", "setBacklight",
+                          "setEnergySaving", "setSoundOutput", "setSleepTimer", "setLgSetting", "reboot"]
+    def params = { String c -> d.commandDefs[c].collect { [it.name, it.type] } }
+    assert params("setPictureMode") == [["mode*", "STRING"]]
+    assert params("launchApp") == [["appId*", "STRING"]]
+    assert params("setBacklight") == [["level*", "NUMBER"]]
+    assert params("setLgSetting") == [["id*", "STRING"], ["value*", "STRING"]]
+    assert params("sendKey") == [["key*", "ENUM"]]
+    assert d.commandDefs.sendKey[0].constraints == ACCEPTED
+    assert d.commandDefs.setEnergySaving[0].constraints == ["auto", "off", "min", "med", "max", "screen_off"]
+    assert d.commandDefs.setSleepTimer[0].constraints == ["off", "10", "30", "60", "90", "120"]
+    assert d.commandDefs.setSoundOutput[0].constraints == ["TV Speaker", "HDMI ARC", "Optical", "Bluetooth",
+                                                         "Headphone / AUX", "TV Speaker + HDMI ARC"]
+    assert d.commandDefs.screenOn == [] && d.commandDefs.screenOff == [] && d.commandDefs.reboot == []
+}
+
+test("attributes the capabilities declare aren't declared again; the new stats attributes are") {
+    assert fresh().attributes*.name == ["input", "currentApp", "pictureMode", "supportedPictureModes", "screen",
+                                        "healthStatus", "dynamicRange", "backlight", "energySaving", "soundOutput",
+                                        "soundMode", "sleepTimer", "powerStateLabel", "tvTemperature"]
 }
 
 test("logging inputs come last; debugLogging is gone") {
@@ -111,10 +143,6 @@ test("an ARC slider move logs one info line, not two per step") {
 }
 
 // ---- Fixes: send key ----
-
-final List<String> ACCEPTED = ["up", "down", "left", "right", "ok", "back", "home", "settings",
-        "media:playPause", "media:play", "media:pause", "media:stop", "media:rewind", "media:fastForward",
-        "media:channelUp", "media:channelDown"]
 
 test("Send key offers exactly the keys Glasshouse accepts") {
     def d = fresh()

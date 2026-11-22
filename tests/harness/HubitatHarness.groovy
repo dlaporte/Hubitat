@@ -207,6 +207,7 @@ class Driver {
     final List<String> capabilities = []
     final List<Map> attributes = []
     final List<String> commands = []
+    final Map<String, List> commandDefs = [:]   // command name -> its parameter list, as declared
     final List<Map> inputs = []
     final List<Map> fingerprints = []
 
@@ -299,7 +300,10 @@ class Driver {
         binding.setVariable("attribute", { Object[] args ->
             attributes << [name: args[0], type: args.length > 1 ? args[1] : null, values: args.length > 2 ? args[2] : null]
         })
-        binding.setVariable("command", { Object[] args -> commands << (String) args[0] })
+        binding.setVariable("command", { Object[] args ->
+            commands << (String) args[0]
+            commandDefs[(String) args[0]] = args.length > 1 ? (List) args[1] : []
+        })
         binding.setVariable("fingerprint", { Map m -> fingerprints << m })
         binding.setVariable("input", { Object[] args ->
             Map opts = (Map) (args.find { it instanceof Map } ?: [:])
