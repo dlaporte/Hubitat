@@ -259,6 +259,8 @@ void updated() {
 
 void initialize() {
     unschedule()
+    state.remove("powerUpUntil")
+    state.remove("powerUpFrom")
     upgradeSettings()
     if (settings.logEnable) runIn(1800, "logsOff")
     if (!tvIp?.toString()?.trim()) {
@@ -375,6 +377,7 @@ def on() {
     log.info "Power on"
     sendWol()
     sendControl("powerOn")
+    startPowerUpPoll(0L)
 }
 
 def off() {
@@ -390,6 +393,43 @@ def screenOff() {
 def screenOn() {
     log.info "Screen on"
     sendControl("screenOn")
+}
+
+// Needs allowPower in Glasshouse's config; otherwise Glasshouse refuses and
+// the reason is logged.
+def reboot() {
+    log.info "Reboot"
+    sendControl("reboot")
+    // Glasshouse answers, then the TV goes down; a stats reply in the first
+    // 30 s is from before the reboot.
+    startPowerUpPoll(30_000L)
+}
+
+// A TV that is fully off, or rebooting, can't answer the refresh that follows
+// a command. Poll every 15 s for up to 2 minutes, until a stats reply shows
+// the TV on (applyStats stops it), so switch follows quickly.
+private void startPowerUpPoll(long ignoreOnForMs) {
+    state.powerUpUntil = now() + 120_000L
+    state.powerUpFrom = now() + ignoreOnForMs
+    runIn(15, "powerUpPoll")
+}
+
+void powerUpPoll() {
+    Long until = state.powerUpUntil as Long
+    if (until == null) return
+    if (now() >= until) {
+        stopPowerUpPoll()
+        logDebug "The TV didn't come up within 2 minutes; back to the normal poll"
+        return
+    }
+    refresh()
+    runIn(15, "powerUpPoll")
+}
+
+private void stopPowerUpPoll() {
+    state.remove("powerUpUntil")
+    state.remove("powerUpFrom")
+    unschedule("powerUpPoll")
 }
 
 // ---------------------------------------------------------------------------
@@ -494,6 +534,12 @@ def refresh() {
     fetchJson("/api/hdmi", "hdmiCallback")
 }
 
+// The refresh 2 s after a command, under its own name: a runIn for "refresh"
+// would replace the periodic poll's schedule.
+void refreshAfterCommand() {
+    refresh()
+}
+
 // ---------------------------------------------------------------------------
 // HTTP helpers
 // ---------------------------------------------------------------------------
@@ -581,6 +627,17 @@ void controlCallback(resp, data) {
         clearVolumeStepChain()
         return
     }
+    if (isUnreachable(resp)) {
+        clearVolumeStepChain()
+        if (action == "powerOn") {
+            log.info "${device.displayName} isn't on the network yet; waiting for Wake-on-LAN to wake it"
+        } else if (warnOnUnreachable()) {
+            log.warn "Glasshouse ${action} failed (${device.displayName} can't be reached): ${safeError(resp)}"
+        } else {
+            log.info "${action} not sent: ${device.displayName} is off or unreachable"
+        }
+        return
+    }
     if (resp.hasError() || (resp.status && (resp.status as Integer) >= 400)) {
         String err = safeError(resp)
         log.warn "Glasshouse ${action} failed: ${err}"
@@ -603,7 +660,7 @@ void controlCallback(resp, data) {
     if (action != "volume" && action != "volumeStep") {
         applyOptimistic(data)
     }
-    runIn(2, "refresh")
+    runIn(2, "refreshAfterCommand")
 }
 
 // Toast results are only logged: nothing on the TV changed, so no
@@ -724,6 +781,10 @@ private void applyStats(Map d) {
         systemOn = false
     }
     String sw = systemOn ? "on" : "off"
+    if (systemOn && state.powerUpUntil != null && now() >= ((state.powerUpFrom ?: 0L) as Long)) {
+        stopPowerUpPoll()
+        logDebug "The TV is on; power-up polling stopped"
+    }
     emitEvent(name: "switch", value: sw,
         descriptionText: "${device.displayName} is ${sw}")
 
@@ -971,6 +1032,9 @@ private void noteUnreachable(String label, String reason) {
     if (device.currentValue("healthStatus") != "offline") {
         emitEvent(name: "healthStatus", value: "offline", descriptionText: "${device.displayName} is offline")
     }
+    // A TV that can't be reached is off as far as rules and dashboards go.
+    emitEvent(name: "switch", value: "off", descriptionText: "${device.displayName} is off")
+    emitEvent(name: "screen", value: "off", descriptionText: "${device.displayName} screen is off")
     if (warnOnUnreachable()) {
         if (n == 1 || (n % 10) == 0) {
             log.warn "${device.displayName} can't be reached (${n} poll${n == 1 ? '' : 's'}): ${reason}"

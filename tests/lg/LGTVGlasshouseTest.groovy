@@ -296,4 +296,112 @@ test("healthStatus is declared") {
     assert fresh().attributes*.name.contains("healthStatus")
 }
 
+// ---- Power ----
+
+def unreachable = { new harness.FakeResponse(status: 408, errorMessage: "connect timed out") }
+
+test("on starts power-up polling: a refresh every 15 s until a stats reply shows the TV on") {
+    def d = fresh()
+    d.call("on")
+    assert d.schedules.powerUpPoll == 15
+    d.reset()
+    d.advance(15_000L)
+    d.call("powerUpPoll")
+    assert d.http*.params*.uri.collect { it.toString().replaceAll(/.*:8080/, "") } == ["/api/stats", "/api/picture", "/api/hdmi"]
+    assert d.schedules.powerUpPoll == 15
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    assert d.device.current.switch == "on"
+    assert !d.schedules.containsKey("powerUpPoll")
+    assert d.state.powerUpUntil == null
+}
+
+test("power-up polling gives up after 2 minutes") {
+    def d = fresh()
+    d.call("on")
+    int refreshes = 0
+    for (int i = 0; i < 12 && d.schedules.containsKey("powerUpPoll"); i++) {
+        d.schedules.remove("powerUpPoll")
+        d.advance(15_000L)
+        d.http.clear()
+        d.call("powerUpPoll")
+        if (d.httpMatching("/api/stats")) refreshes++
+    }
+    assert refreshes == 7          // at 15, 30 ... 105 s; at 120 s it stops
+    assert !d.schedules.containsKey("powerUpPoll")
+    assert d.state.powerUpUntil == null
+}
+
+test("reboot sends reboot and polls; a stats reply before the TV goes down doesn't stop it") {
+    def d = fresh()
+    d.call("reboot")
+    assert bodyOf(d.httpMatching("/api/control")[0]) == [action: "reboot"]
+    assert d.schedules.powerUpPoll == 15
+    d.advance(2_000L)
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    assert d.schedules.powerUpPoll == 15
+    d.advance(60_000L)
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    assert !d.schedules.containsKey("powerUpPoll")
+}
+
+test("a command reply refreshes through its own one-shot handler and leaves the poll schedule alone") {
+    def d = fresh()
+    d.call("initialize")
+    d.reset()
+    d.call("mute")
+    d.reply(d.http.find { it.method == "POST" }, json: [ok: true])
+    assert d.schedules.refreshAfterCommand == 2
+    assert d.schedules.refresh == "runEvery1Minute"
+    d.http.clear()
+    d.call("refreshAfterCommand")
+    assert d.httpMatching("/api/stats").size() == 1
+}
+
+test("initialize clears power-up polling") {
+    def d = fresh()
+    d.call("on")
+    d.call("initialize")
+    assert !d.schedules.containsKey("powerUpPoll")
+    assert d.state.powerUpUntil == null
+}
+
+test("an unreachable TV turns switch and screen off along with healthStatus") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    assert d.device.current.switch == "on" && d.device.current.screen == "on"
+    d.call("statsCallback", unreachable(), [path: "/api/stats"])
+    assert d.device.current.switch == "off" && d.device.current.screen == "off"
+    assert d.device.current.healthStatus == "offline"
+}
+
+test("a picture or hdmi miss alone doesn't turn the switch off") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    d.call("pictureCallback", unreachable(), [path: "/api/picture"])
+    d.call("hdmiCallback", unreachable(), [path: "/api/hdmi"])
+    assert d.device.current.switch == "on"
+}
+
+test("a command to an unreachable TV logs info, or a warning with warnUnreachable on") {
+    def d = fresh()
+    d.call("mute")
+    d.reply(d.http[0], status: 408, error: "connect timed out")
+    assert d.log.at("warn").isEmpty()
+    assert d.log.at("info").any { it.contains("mute not sent") && it.contains("off or unreachable") }
+    d.settings.warnUnreachable = true
+    d.call("mute")
+    d.reply(d.http[0], status: 408, error: "connect timed out")
+    assert d.log.at("warn").size() == 1
+}
+
+test("on for a TV that is fully off logs that it is waiting for Wake-on-LAN, not a warning") {
+    def d = fresh()
+    d.settings.tvMac = "AA:BB:CC:DD:EE:FF"
+    d.call("on")
+    d.reply(d.httpMatching("/api/control")[0], status: 408, error: "connect timed out")
+    assert d.log.at("warn").isEmpty()
+    assert d.log.at("info").any { it.contains("Wake-on-LAN") }
+    assert d.schedules.powerUpPoll == 15
+}
+
 finish()
