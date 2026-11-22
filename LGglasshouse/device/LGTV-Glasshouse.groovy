@@ -430,11 +430,25 @@ def unmute() {
     sendControl("mute", false)
 }
 
+// One volumeStep each, the same as Glasshouse's + / - buttons. Works on the TV
+// speakers and on HDMI ARC. A press cancels a setVolume step chain in progress.
+def volumeUp() {
+    log.info "Volume up"
+    clearVolumeStepChain()
+    sendControl("volumeStep", 1)
+}
+
+def volumeDown() {
+    log.info "Volume down"
+    clearVolumeStepChain()
+    sendControl("volumeStep", -1)
+}
+
 // ---------------------------------------------------------------------------
 // Commands: input, apps, keys, picture
 // ---------------------------------------------------------------------------
 
-def setInput(name) {
+def setInputSource(name) {
     String key = resolveInput(name)
     if (!key) {
         log.warn "Unknown input '${name}'. Known inputs: ${inputHelp()}"
@@ -642,8 +656,7 @@ private void applyOptimistic(Map data) {
         emitEvent(name: "screen", value: "off",
             descriptionText: "${device.displayName} screen is off")
     } else if (action == "input" && value) {
-        emitEvent(name: "input", value: value.toString(),
-            descriptionText: "${device.displayName} input is ${value}")
+        emitInput(value.toString(), "${device.displayName} input is ${value}")
     } else if (action == "pictureMode" && value) {
         String label = pictureModeLabel(value.toString()) ?: value.toString()
         emitEvent(name: "pictureMode", value: label,
@@ -773,11 +786,9 @@ private void applyStats(Map d) {
     }
     if (inputVal) {
         String label = inputs[inputVal] ?: inputVal
-        emitEvent(name: "input", value: inputVal,
-            descriptionText: "${device.displayName} input is ${label} (${inputVal})")
+        emitInput(inputVal, "${device.displayName} input is ${label} (${inputVal})")
     } else if (appKey) {
-        emitEvent(name: "input", value: appKey,
-            descriptionText: "${device.displayName} source is ${appKey}")
+        emitInput(appKey, "${device.displayName} source is ${appKey}")
     }
 
     if (title) {
@@ -804,6 +815,13 @@ private void applyStats(Map d) {
     }
 
     logDebug "State: switch=${sw} volume=${d.volume} muted=${d.muted} input=${inputVal} app=${title}"
+}
+
+// input (frozen) and MediaInputSource's mediaInputSource carry the same value,
+// one setInputSource accepts back. Only input logs a descriptionText.
+private void emitInput(String value, String descriptionText) {
+    emitEvent(name: "input", value: value, descriptionText: descriptionText)
+    sendEvent(name: "mediaInputSource", value: value)
 }
 
 private void applyPicture(Map d) {

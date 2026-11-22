@@ -210,11 +210,62 @@ test("the API token input sits in the Connection group as a password") {
 
 // ---- Fixes: dead code ----
 
-test("the unused toggle and volume-step methods are gone") {
+test("toggleMute and toggleScreen stay gone") {
     def d = fresh()
-    ["toggleMute", "toggleScreen", "volumeUp", "volumeDown"].each { m ->
+    ["toggleMute", "toggleScreen"].each { m ->
         try { d.call(m); assert false: "${m} still exists" } catch (MissingMethodException ignored) { }
     }
+}
+
+// ---- Standard commands ----
+
+test("volumeUp and volumeDown send one step each") {
+    def d = fresh()
+    d.call("volumeUp")
+    d.call("volumeDown")
+    assert d.http.collect { bodyOf(it) } == [[action: "volumeStep", value: 1], [action: "volumeStep", value: -1]]
+}
+
+test("Switch and AudioVolume commands send their Glasshouse actions") {
+    def d = fresh()
+    d.settings.tvMac = "AA:BB:CC:DD:EE:FF"
+    d.call("on"); d.call("off"); d.call("mute"); d.call("unmute"); d.call("setVolume", "25")
+    assert d.http.collect { bodyOf(it) } == [[action: "powerOn"], [action: "powerOff"], [action: "mute", value: true],
+                                            [action: "mute", value: false], [action: "volume", value: 25]]
+    assert d.hubCommands.size() == 1      // Wake-on-LAN with on
+}
+
+test("picture mode, screen and app commands send their Glasshouse actions") {
+    def d = fresh()
+    d.state.pictureModes = [[value: "cinema", label: "Cinema"]]
+    d.state.apps = [[id: "netflix", title: "Netflix"]]
+    d.call("setPictureMode", "Cinema"); d.call("screenOff"); d.call("screenOn"); d.call("launchApp", "netflix")
+    assert d.http.collect { bodyOf(it) } == [[action: "pictureMode", value: "cinema"], [action: "screenOff"],
+                                            [action: "screenOn"], [action: "launchApp", value: "netflix"]]
+}
+
+test("setInputSource accepts an input's id or label, ignoring case") {
+    def d = fresh()
+    d.call("hdmiCallback", resp([ok: true, inputs: [[port: 1, label: "Apple TV"], [port: 2, label: "PS5"]]]), [path: "/api/hdmi"])
+    d.call("setInputSource", "HDMI2")
+    d.call("setInputSource", "apple tv")
+    assert d.http.collect { bodyOf(it) } == [[action: "input", value: "hdmi2"], [action: "input", value: "hdmi1"]]
+}
+
+test("setInputSource with an unknown name warns once and sends nothing") {
+    def d = fresh()
+    d.call("setInputSource", "Xbox")
+    assert d.http.isEmpty()
+    assert d.log.at("warn").size() == 1
+}
+
+test("mediaInputSource carries the same value as input") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    assert d.device.current.input == "hdmi1" && d.device.current.mediaInputSource == "hdmi1"
+    d.call("setInputSource", "hdmi2")
+    d.reply(d.http[0], json: [ok: true])
+    assert d.device.current.input == "hdmi2" && d.device.current.mediaInputSource == "hdmi2"
 }
 
 test("the ARC chain no longer writes volumeStepTarget") {
