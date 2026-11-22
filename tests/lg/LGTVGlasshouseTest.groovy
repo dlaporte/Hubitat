@@ -311,48 +311,108 @@ test("healthStatus is declared") {
 
 def unreachable = { new harness.FakeResponse(status: 408, errorMessage: "connect timed out") }
 
-test("on starts power-up polling: a refresh every 15 s until a stats reply shows the TV on") {
+test("on starts the power watch: a refresh every 15 s until a stats reply shows the TV on") {
     def d = fresh()
     d.call("on")
-    assert d.schedules.powerUpPoll == 15
+    assert d.schedules.powerPoll == 15
     d.reset()
     d.advance(15_000L)
-    d.call("powerUpPoll")
+    d.call("powerPoll")
     assert d.http*.params*.uri.collect { it.toString().replaceAll(/.*:8080/, "") } == ["/api/stats", "/api/picture", "/api/hdmi"]
-    assert d.schedules.powerUpPoll == 15
+    assert d.schedules.powerPoll == 15
     d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
     assert d.device.current.switch == "on"
-    assert !d.schedules.containsKey("powerUpPoll")
-    assert d.state.powerUpUntil == null
+    assert !d.schedules.containsKey("powerPoll")
+    assert d.state.powerTarget == null
 }
 
-test("power-up polling gives up after 2 minutes") {
+test("the power watch gives up after 2 minutes") {
     def d = fresh()
     d.call("on")
     int refreshes = 0
-    for (int i = 0; i < 12 && d.schedules.containsKey("powerUpPoll"); i++) {
-        d.schedules.remove("powerUpPoll")
+    for (int i = 0; i < 12 && d.schedules.containsKey("powerPoll"); i++) {
+        d.schedules.remove("powerPoll")
         d.advance(15_000L)
         d.http.clear()
-        d.call("powerUpPoll")
+        d.call("powerPoll")
         if (d.httpMatching("/api/stats")) refreshes++
     }
     assert refreshes == 7          // at 15, 30 ... 105 s; at 120 s it stops
-    assert !d.schedules.containsKey("powerUpPoll")
-    assert d.state.powerUpUntil == null
+    assert !d.schedules.containsKey("powerPoll")
+    assert d.state.powerTarget == null
 }
 
 test("reboot sends reboot and polls; a stats reply before the TV goes down doesn't stop it") {
     def d = fresh()
     d.call("reboot")
     assert bodyOf(d.httpMatching("/api/control")[0]) == [action: "reboot"]
-    assert d.schedules.powerUpPoll == 15
+    assert d.schedules.powerPoll == 15
     d.advance(2_000L)
     d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
-    assert d.schedules.powerUpPoll == 15
+    assert d.schedules.powerPoll == 15
     d.advance(60_000L)
     d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
-    assert !d.schedules.containsKey("powerUpPoll")
+    assert !d.schedules.containsKey("powerPoll")
+}
+
+// The values an attribute actually changed through (repeats collapsed), as rules see them.
+def changes = { List values -> values.inject([]) { List seen, v -> (seen && seen[-1] == v) ? seen : seen + [v] } }
+
+// A stats reply for a TV in standby (reachable, switched off).
+def statsStandby = { -> statsOn(powerState: [systemOn: false, raw: "Active Standby", screenOn: false]) }
+
+test("off: a stale 'on' reply right after doesn't bounce switch; an 'off' reply ends the watch") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    d.call("off")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
+    assert d.device.current.switch == "off" && d.device.current.screen == "off"
+    d.advance(2_000L)
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    assert d.device.current.switch == "off" && d.device.current.screen == "off"
+    assert changes(d.eventsNamed("switch")*.value) == ["on", "off"]
+    assert d.schedules.powerPoll == 15
+    d.advance(13_000L)
+    d.call("statsCallback", resp(statsStandby()), [path: "/api/stats"])
+    assert d.state.powerTarget == null && !d.schedules.containsKey("powerPoll")
+    assert changes(d.eventsNamed("switch")*.value) == ["on", "off"]
+}
+
+test("on from standby: a standby reply right after doesn't bounce switch") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsStandby()), [path: "/api/stats"])
+    assert d.device.current.switch == "off"
+    d.call("on")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
+    d.advance(2_000L)
+    d.call("statsCallback", resp(statsStandby()), [path: "/api/stats"])
+    assert d.device.current.switch == "on"
+    d.advance(13_000L)
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    assert d.state.powerTarget == null
+    assert changes(d.eventsNamed("switch")*.value) == ["off", "on"]
+}
+
+test("a power command the TV doesn't follow gives way to the TV's report after 2 minutes") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    d.call("off")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
+    d.advance(120_000L)
+    d.call("powerPoll")
+    assert d.state.powerTarget == null
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    assert d.device.current.switch == "on"
+}
+
+test("off to a TV that then drops off the network ends the watch") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    d.call("off")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
+    d.call("statsCallback", unreachable(), [path: "/api/stats"])
+    assert d.state.powerTarget == null && !d.schedules.containsKey("powerPoll")
+    assert d.device.current.switch == "off"
 }
 
 test("a command reply refreshes through its own one-shot handler and leaves the poll schedule alone") {
@@ -368,12 +428,12 @@ test("a command reply refreshes through its own one-shot handler and leaves the 
     assert d.httpMatching("/api/stats").size() == 1
 }
 
-test("initialize clears power-up polling") {
+test("initialize clears the power watch") {
     def d = fresh()
     d.call("on")
     d.call("initialize")
-    assert !d.schedules.containsKey("powerUpPoll")
-    assert d.state.powerUpUntil == null
+    assert !d.schedules.containsKey("powerPoll")
+    assert d.state.powerTarget == null
 }
 
 test("an unreachable TV turns switch and screen off along with healthStatus") {
@@ -412,7 +472,7 @@ test("on for a TV that is fully off logs that it is waiting for Wake-on-LAN, not
     d.reply(d.httpMatching("/api/control")[0], status: 408, error: "connect timed out")
     assert d.log.at("warn").isEmpty()
     assert d.log.at("info").any { it.contains("Wake-on-LAN") }
-    assert d.schedules.powerUpPoll == 15
+    assert d.schedules.powerPoll == 15
 }
 
 // ---- Readings ----

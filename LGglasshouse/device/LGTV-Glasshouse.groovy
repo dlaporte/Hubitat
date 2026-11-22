@@ -269,8 +269,7 @@ void updated() {
 
 void initialize() {
     unschedule()
-    state.remove("powerUpUntil")
-    state.remove("powerUpFrom")
+    ["powerTarget", "powerWatchUntil", "powerWatchFrom"].each { state.remove(it) }
     upgradeSettings()
     if (settings.logEnable) runIn(1800, "logsOff")
     if (!tvIp?.toString()?.trim()) {
@@ -387,12 +386,13 @@ def on() {
     log.info "Power on"
     sendWol()
     sendControl("powerOn")
-    startPowerUpPoll(0L)
+    startPowerWatch("on", 0L)
 }
 
 def off() {
     log.info "Power off"
     sendControl("powerOff")
+    startPowerWatch("off", 0L)
 }
 
 def screenOff() {
@@ -412,34 +412,58 @@ def reboot() {
     sendControl("reboot")
     // Glasshouse answers, then the TV goes down; a stats reply in the first
     // 30 s is from before the reboot.
-    startPowerUpPoll(30_000L)
+    startPowerWatch("on", 30_000L)
 }
 
-// A TV that is fully off, or rebooting, can't answer the refresh that follows
-// a command. Poll every 15 s for up to 2 minutes, until a stats reply shows
-// the TV on (applyStats stops it), so switch follows quickly.
-private void startPowerUpPoll(long ignoreOnForMs) {
-    state.powerUpUntil = now() + 120_000L
-    state.powerUpFrom = now() + ignoreOnForMs
-    runIn(15, "powerUpPoll")
+// The power watch, after on, off or reboot. A TV that is fully off, or
+// rebooting, can't answer the refresh that follows a command, and one that is
+// switching can still report its old state. So: poll every 15 s for up to
+// 2 minutes until a stats reply agrees with the command (applyStats ends the
+// watch), and meanwhile don't let a reply that disagrees flip switch back,
+// which rules and HomeKit would see as two changes.
+private void startPowerWatch(String target, long ignoreForMs) {
+    state.powerTarget = target
+    state.powerWatchUntil = now() + 120_000L
+    state.powerWatchFrom = now() + ignoreForMs
+    runIn(15, "powerPoll")
 }
 
-void powerUpPoll() {
-    Long until = state.powerUpUntil as Long
-    if (until == null) return
-    if (now() >= until) {
-        stopPowerUpPoll()
-        logDebug "The TV didn't come up within 2 minutes; back to the normal poll"
+void powerPoll() {
+    if (!state.powerTarget) return
+    if (now() >= ((state.powerWatchUntil ?: 0L) as Long)) {
+        logDebug "The TV didn't turn ${state.powerTarget} within 2 minutes; back to the normal poll"
+        stopPowerWatch()
         return
     }
     refresh()
-    runIn(15, "powerUpPoll")
+    runIn(15, "powerPoll")
 }
 
-private void stopPowerUpPoll() {
-    state.remove("powerUpUntil")
-    state.remove("powerUpFrom")
-    unschedule("powerUpPoll")
+private void stopPowerWatch() {
+    state.remove("powerTarget")
+    state.remove("powerWatchUntil")
+    state.remove("powerWatchFrom")
+    unschedule("powerPoll")
+}
+
+// True while a power command is waiting for the TV to agree and this reply
+// still disagrees; ends the watch once it agrees (or has run out).
+private boolean holdPowerState(String reported) {
+    String target = state.powerTarget as String
+    if (!target) return false
+    if (now() >= ((state.powerWatchUntil ?: 0L) as Long)) {
+        stopPowerWatch()
+        return false
+    }
+    if (reported != target) {
+        logDebug "The TV still reports ${reported} after ${target}; holding switch at ${device.currentValue('switch')}"
+        return true
+    }
+    if (now() >= ((state.powerWatchFrom ?: 0L) as Long)) {
+        stopPowerWatch()
+        logDebug "The TV is ${reported}; power watch ended"
+    }
+    return false
 }
 
 // ---------------------------------------------------------------------------
@@ -872,12 +896,11 @@ private void applyStats(Map d) {
         systemOn = false
     }
     String sw = systemOn ? "on" : "off"
-    if (systemOn && state.powerUpUntil != null && now() >= ((state.powerUpFrom ?: 0L) as Long)) {
-        stopPowerUpPoll()
-        logDebug "The TV is on; power-up polling stopped"
+    boolean holdPower = holdPowerState(sw)
+    if (!holdPower) {
+        emitEvent(name: "switch", value: sw,
+            descriptionText: "${device.displayName} is ${sw}")
     }
-    emitEvent(name: "switch", value: sw,
-        descriptionText: "${device.displayName} is ${sw}")
 
     // Remember how volume can be changed, for setVolume's ARC path.
     if (d.volume_control != null) {
@@ -912,8 +935,10 @@ private void applyStats(Map d) {
         screenOn = true
     }
     String screenVal = screenOn ? "on" : "off"
-    emitEvent(name: "screen", value: screenVal,
-        descriptionText: "${device.displayName} screen is ${screenVal}")
+    if (!holdPower) {
+        emitEvent(name: "screen", value: screenVal,
+            descriptionText: "${device.displayName} screen is ${screenVal}")
+    }
 
     // Fallback input map used until /api/hdmi answers. applyHdmi overwrites this.
     if (d.inputs instanceof Map && !inputList()) {
@@ -1194,7 +1219,9 @@ private void noteUnreachable(String label, String reason) {
     if (device.currentValue("healthStatus") != "offline") {
         emitEvent(name: "healthStatus", value: "offline", descriptionText: "${device.displayName} is offline")
     }
-    // A TV that can't be reached is off as far as rules and dashboards go.
+    // A TV that can't be reached is off as far as rules and dashboards go,
+    // which is also what an off command was waiting for.
+    if (state.powerTarget == "off") stopPowerWatch()
     emitEvent(name: "switch", value: "off", descriptionText: "${device.displayName} is off")
     emitEvent(name: "screen", value: "off", descriptionText: "${device.displayName} screen is off")
     if (warnOnUnreachable()) {
