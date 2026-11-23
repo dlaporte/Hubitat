@@ -10,7 +10,8 @@
  *         custom picture, sound and power commands), so rules, dashboards, HomeKit and voice
  *         can use them; the controls left Preferences. New picture, sound, light sensor, remote
  *         battery and temperature attributes. switch goes off when the TV can't be reached.
- *         A value a command sets is held briefly against a read-back that lags.
+ *         A value a command sets is held briefly against a read-back that lags. Picture
+ *         readings keep their values while the TV is in standby.
  *  v0.11.0 (2026-11-20) - Send key offers only keys Glasshouse accepts; optional API token;
  *         healthStatus; runs single-threaded; ARC volume steps log at debug; standard
  *         logging and lifecycle; unused toggle and volume step methods removed.
@@ -649,8 +650,8 @@ private List<Map> lgSettingPayloads(String key, String raw) {
 }
 
 def refresh() {
+    // /api/picture follows from statsCallback, only while the TV is on.
     fetchJson("/api/stats", "statsCallback")
-    fetchJson("/api/picture", "pictureCallback")
     fetchJson("/api/hdmi", "hdmiCallback")
 }
 
@@ -909,6 +910,12 @@ void statsCallback(resp, data) {
     if (!(json instanceof Map)) return
     noteReachable()
     applyStats(json)
+    // In standby the TV reports its standby picture (Eco, a lower backlight,
+    // SDR), which isn't what it shows when on; asking only while it's on
+    // keeps pictureMode at what the viewer last saw.
+    if (reportsOn(json.powerState instanceof Map ? json.powerState : [:])) {
+        fetchJson("/api/picture", "pictureCallback")
+    }
 }
 
 void pictureCallback(resp, data) {
@@ -953,13 +960,16 @@ private def requireJson(resp, String label) {
     return json
 }
 
+// Whether a stats reply's powerState says the TV is on. Active Standby and
+// Standby both mean it is powered down from the user's point of view.
+private boolean reportsOn(Map ps) {
+    if (ps.raw == "Standby" || ps.raw == "Active Standby") return false
+    return (ps.systemOn == true || ps.label == "On" || ps.raw == "Active")
+}
+
 private void applyStats(Map d) {
     Map ps = (d.powerState instanceof Map) ? d.powerState : [:]
-    boolean systemOn = (ps.systemOn == true || ps.label == "On" || ps.raw == "Active")
-    // Active Standby and Standby both mean the TV is powered down from the user's point of view.
-    if (ps.raw == "Standby" || ps.raw == "Active Standby") {
-        systemOn = false
-    }
+    boolean systemOn = reportsOn(ps)
     String sw = systemOn ? "on" : "off"
     boolean holdPower = holdPowerState(sw)
     if (!holdPower) {
@@ -1043,8 +1053,9 @@ private void applyStats(Map d) {
             descriptionText: "${device.displayName} is showing ${title}")
     }
 
-    // Picture modes from /api/picture take precedence; use stats only as a fallback.
-    if (!pictureModeList() && d.picture instanceof Map) {
+    // Picture modes from /api/picture take precedence; use stats only as a
+    // fallback, and not in standby (see statsCallback).
+    if (systemOn && !pictureModeList() && d.picture instanceof Map) {
         applyPictureFromStats(d.picture)
     }
 
@@ -1071,7 +1082,8 @@ private void applyStats(Map d) {
 // skipped rather than cleared.
 private void applyReadings(Map d, Map ps) {
     String name = device.displayName
-    Map pic = (d.picture instanceof Map) ? d.picture : [:]
+    // Not in standby, where the TV reports its standby picture (see statsCallback).
+    Map pic = (d.picture instanceof Map && reportsOn(ps)) ? d.picture : [:]
     if (pic.dynamicRange) {
         emitEvent(name: "dynamicRange", value: pic.dynamicRange.toString(),
             descriptionText: "${name} dynamic range is ${pic.dynamicRange}")

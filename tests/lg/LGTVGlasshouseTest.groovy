@@ -172,7 +172,7 @@ test("an ARC slider move logs one info line, not two per step") {
 test("refresh no longer fetches /api/remotekeys") {
     def d = fresh()
     d.call("refresh")
-    assert d.http*.params*.uri.collect { it.toString().replaceAll(/.*:8080/, "") } == ["/api/stats", "/api/picture", "/api/hdmi"]
+    assert d.http*.params*.uri.collect { it.toString().replaceAll(/.*:8080/, "") } == ["/api/stats", "/api/hdmi"]
 }
 
 test("sendKey sends accepted keys and refuses the ones Glasshouse rejects") {
@@ -275,7 +275,7 @@ test("mediaInputSource carries the same value as input") {
     d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
     assert d.device.current.input == "hdmi1" && d.device.current.mediaInputSource == "hdmi1"
     d.call("setInputSource", "hdmi2")
-    d.reply(d.http[0], json: [ok: true])
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
     assert d.device.current.input == "hdmi2" && d.device.current.mediaInputSource == "hdmi2"
 }
 
@@ -318,7 +318,7 @@ test("on starts the power watch: a refresh every 15 s until a stats reply shows 
     d.reset()
     d.advance(15_000L)
     d.call("powerPoll")
-    assert d.http*.params*.uri.collect { it.toString().replaceAll(/.*:8080/, "") } == ["/api/stats", "/api/picture", "/api/hdmi"]
+    assert d.http*.params*.uri.collect { it.toString().replaceAll(/.*:8080/, "") } == ["/api/stats", "/api/hdmi"]
     assert d.schedules.powerPoll == 15
     d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
     assert d.device.current.switch == "on"
@@ -601,6 +601,38 @@ test("a power command drops every hold") {
     d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
     d.call("off")
     assert !d.state.holds
+}
+
+// ---- Standby ----
+
+def uris = { d -> d.http*.params*.uri.collect { it.toString().replaceAll(/.*:8080/, "") } }
+
+test("picture settings are asked for only once a stats reply shows the TV on") {
+    def d = fresh()
+    d.call("refresh")
+    assert uris(d) == ["/api/stats", "/api/hdmi"]
+    d.http.clear()
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    assert uris(d) == ["/api/picture"]
+    d.http.clear()
+    d.call("statsCallback", resp(statsStandby()), [path: "/api/stats"])
+    assert uris(d).isEmpty()
+    d.call("statsCallback", unreachable(), [path: "/api/stats"])
+    assert uris(d).isEmpty()
+}
+
+test("in standby the picture readings keep their values; the rest still update") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsFull()), [path: "/api/stats"])
+    d.call("statsCallback", resp(statsFull(
+            powerState: [systemOn: false, raw: "Active Standby", label: "Standby", screenOn: false],
+            picture: [dynamicRange: "SDR", backlight_raw: 55, energySaving: "auto", mode: "Eco", mode_raw: "eco",
+                      modes: [[value: "eco", label: "Eco"]]],
+            sleepTimer: "30", temp: 40)), [path: "/api/stats"])
+    def c = d.device.current
+    assert c.dynamicRange == "Dolby Vision" && c.backlight == 80 && c.energySaving == "off"
+    assert c.pictureMode == null && c.supportedPictureModes == null
+    assert c.switch == "off" && c.powerStateLabel == "Standby" && c.sleepTimer == "30" && c.tvTemperature == 40
 }
 
 test("a sleep timer the 2 s read misses shows after the later refresh") {

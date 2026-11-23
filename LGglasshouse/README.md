@@ -190,6 +190,15 @@ each message to Glasshouse.
   The recovery line says how long the TV was unreachable. The power
   button still switches the TV fully off. Other failures, where the TV
   answers with an error, are always warnings.
+- In standby the TV reports a standby picture (Eco mode, a lower
+  backlight, SDR). So while it is in standby, `pictureMode`,
+  `supportedPictureModes`, `dynamicRange`, `backlight` and `energySaving`
+  keep the values from when it was last on.
+- Hubitat's HomeKit integration has no TV accessory type, so the TV
+  appears in Apple Home as a switch (on/off), not under Speakers & TVs.
+  For a TV tile with inputs and the Control Center remote, add the TV to
+  Apple Home through LG's own AirPlay and HomeKit settings, on models that
+  have them.
 - After a command the driver reads the TV again 2 seconds and 45 seconds
   later. The TV sometimes reports the old value for a few seconds after a
   change, so after mute, screen, input and picture mode commands the
