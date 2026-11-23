@@ -42,7 +42,7 @@ Then create a device:
 | Username | required | Local camera account |
 | Password | required | Local camera password |
 | Motion/AI poll interval | 5 sec | How often to poll for motion / AI events |
-| Keep floodlight on indefinitely | on | Re-asserts state every 2 min (firmware auto-off workaround on models without native keep-on) |
+| After On, keep the floodlight on until Off | on | Only after Hubitat turns the light on (On or Set Level): sends On again every 2 minutes until Hubitat turns it off. For cameras whose firmware turns a manually switched-on light off by itself; it has no effect on cameras with Reolink's own keep-on. While it's on, a light switched off in the Reolink app comes back on within 2 minutes, because Hubitat still thinks it's on. Turn it off from Hubitat |
 | Publish snapshotURL attribute | **off** | When on, exposes a `Snap` URL with embedded credentials — convenient for image tiles but leaks the password into event history / hub backups. |
 | Enable debug logging | off | Verbose logging; turns itself off after 30 minutes |
 | Enable descriptionText logging | on | Logs one line when a user-facing attribute changes (light, motion, AI detections, modes, health) |
