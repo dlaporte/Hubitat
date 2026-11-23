@@ -402,7 +402,7 @@ test("initialize connects with the token, subscribes and asks the app for a read
     assert d.mqtt.subscribes*.getAt(0) == ["user/A1/device/reported", "user/A1/device/desired"]
     assert d.device.current.healthStatus == "online"
     assert d.parent.callsTo("refreshEquipment") == [["refreshEquipment", "rheem:" + ID]]
-    assert d.device.data.driverVersion == "2.4.0"
+    assert d.device.data.driverVersion == "2.4.1"
     assert d.device.current.supportedThermostatFanModes == "[]"
     assert d.log.at("warn").isEmpty()
 }
@@ -904,6 +904,26 @@ test("modes are checked by name") {
     d.call("emergencyHeat")
     d.call("confirmCommand")
     assert d.log.at("warn")[0] == "Water Heater didn't take mode HIGH DEMAND (it reports ENERGY SAVING)"
+}
+
+// ---- 2.4.1 ----
+
+test("Rheem's multi-line status text becomes one line") {
+    def d = driverWith(gasHeater())
+    d.call("parse", mqtt(["@SCHEDULESTATUS": "Schedule overridden\n Until 10:00 AM", "@RUNNING": "Heating\n  burner on"]))
+    assert d.device.current.scheduleStatus == "Schedule overridden Until 10:00 AM"
+    assert d.device.current.runningState == "Heating burner on"
+    assert d.log.at("info").contains("Water Heater scheduleStatus is Schedule overridden Until 10:00 AM")
+}
+
+test("15 s after resumeSchedule the driver reads the heater, to pick up the schedule's setpoint") {
+    def d = connected(gasHeater("@SCHEDULESTATUS": "Schedule overridden Until 10:00 AM", "@SETPOINT": [value: 121]))
+    d.parent.answers.refreshEquipment = { String dni -> gasHeater("@SCHEDULESTATUS": "Following Schedule", "@SETPOINT": [value: 120]) }
+    d.call("resumeSchedule")
+    assert d.schedules.confirmCommand == 15
+    d.call("confirmCommand")
+    assert d.device.current.heatingSetpoint == 120 && d.device.current.scheduleStatus == "Following Schedule"
+    assert d.log.at("warn").isEmpty()
 }
 
 finish()
