@@ -55,7 +55,10 @@ Then:
 - **`daysRemaining`** — `gallons / usageRate`, rounded. When the window
   shows no consumption (flat readings, or just after a refill), it uses the
   last measured usage rate instead
-- **`lowFuel`** — `"true"` when level falls below the threshold
+- **`runOutDate`** — when the tank runs out at that rate: today plus
+  `daysRemaining`, as `yyyy-MM-dd` in the hub's time zone. Not set until
+  there's a usage rate. The tile shows it as "Runs out around Dec 15"
+- **`lowFuel`** — `true` / `false`: `true` when the level falls below the threshold
 - **`lastRefillAt`** / **`lastRefillGallons`** — emitted when a refill is
   detected (gallons rose by more than the threshold). `lastRefillAt` is
   `yyyy-MM-dd HH:mm:ss` in the hub's time zone
@@ -85,7 +88,10 @@ web tile access token** in the app settings.
 
 ## Notes
 
-- The driver caches the Droplet API token across polls (1-hour lease).
+- The driver caches the Droplet API token across polls (1-hour lease). The
+  hourly check and a tank's Refresh ask Droplet in the background, so the hub
+  isn't held up waiting; the settings page asks directly, because it lists
+  your tanks while it loads.
 - The gauge uploads less often than the hourly poll. A usage sample is
   recorded only when the gauge's `last_read` changes, so repeated readings
   don't skew the usage rate or refill timing.

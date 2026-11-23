@@ -37,7 +37,7 @@ test("app definition follows STYLE.md") {
     assert a.definition.namespace == "dlaporte"
     assert a.definition.author == "David LaPorte"
     assert a.definition.importUrl == "https://raw.githubusercontent.com/dlaporte/Hubitat/main/SmartOilGauge/app/smartoilgauge.groovy"
-    assert a.call("appVersion") == "0.1.0"
+    assert a.call("appVersion") == "0.2.0"
 }
 
 test("child driver definition follows STYLE.md") {
@@ -63,7 +63,7 @@ test("initialize removes showDebug, records the version and polls hourly") {
     tanksReply(a, [tank()])
     a.call("initialize")
     assert a.app.removedSettings.contains("showDebug")
-    assert a.state.appVersion == "0.1.0"
+    assert a.state.appVersion == "0.2.0"
     assert a.children.size() == 1
     // Creating a device re-runs updated() 5 s later; that run schedules the poll.
     assert a.schedules.updated == 5
@@ -85,7 +85,7 @@ test("logsOff is scheduled after unschedule; logsOff turns debug off") {
 test("the child records driverVersion when the app sends it a reading") {
     def c = HubitatHarness.load(CHILD)
     c.call("generateEvent", [gallons: 100])
-    assert c.device.data.driverVersion == "0.1.0"
+    assert c.device.data.driverVersion == "0.2.0"
     assert c.device.current.gallons == 100
 }
 

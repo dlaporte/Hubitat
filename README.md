@@ -74,6 +74,7 @@ Per-tank attributes:
   `accountNumber`
 - `usageRate` (gal/day, smoothed over a configurable window)
 - `daysRemaining` (gallons / usageRate)
+- `runOutDate` (yyyy-MM-dd: today + daysRemaining)
 - `lowFuel` (`true` / `false` vs. a configurable threshold)
 - `lastRefillAt` / `lastRefillGallons` (refills auto-detected from gallons
   jumping above the threshold)

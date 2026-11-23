@@ -8,6 +8,8 @@
  *  Based on: the Tank Utility app by EricS, itself based on Joshua Spain's work.
  *
  *  Changelog:
+ *  v0.2.0 (2026-11-23) - The hourly check runs in the background; a bad Client ID / Secret is
+ *         reported as such (it was logged as an outage); runOutDate per tank and on the tile.
  *  v0.1.0 (2026-11-20) - Repeated readings no longer skew usage rate or refill timing; new tanks
  *         get a device without re-saving; tile turns red at the low-fuel setting; API calls time
  *         out; outage logging; healthStatus per tank; standard logging and lifecycle.
@@ -42,7 +44,7 @@ import groovy.transform.Field
 import java.text.SimpleDateFormat
 import groovyx.net.http.HttpResponseException
 
-@Field static final String VERSION = "0.1.0"
+@Field static final String VERSION = "0.2.0"
 
 definition(
     name: "Smart Oil Gauge (Connect)",
