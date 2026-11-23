@@ -68,7 +68,8 @@ on/off switch.
   running). Off sends `powerOff`. A TV that is fully off takes a while to
   boot, so after On (and Reboot) the driver checks every 15 seconds for up
   to 2 minutes, and `switch` turns on within about 15 seconds of the TV
-  answering.
+  answering. If the TV hasn't followed On, Off or Reboot after 2
+  minutes, a warning is logged.
 - **Volume** — `setVolume` sets the TV volume. When audio goes over HDMI
   ARC/eARC, a soundbar or receiver may ignore the numeric volume and only
   follow volume up/down steps. In that case the driver sends `volumeStep`
