@@ -1,11 +1,11 @@
 {
   "packageName": "LG TV (Glasshouse)",
   "author": "David LaPorte",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "minimumHEVersion": "2.2.9",
-  "dateReleased": "2026-11-21",
+  "dateReleased": "2026-11-23",
   "documentationLink": "https://github.com/dlaporte/Hubitat/blob/main/LGglasshouse/README.md",
-  "releaseNotes": "Send key now offers only the keys Glasshouse accepts, including Channel up and Channel down. New optional API token setting. New healthStatus attribute, and the 'reachable again' line says how long the TV was unreachable. The driver runs single-threaded, and ARC volume steps log at debug. Debug logging now turns itself off after 30 minutes, and a new descriptionText logging option (on by default) logs value changes. The Notifier's version now matches the TV driver. After updating, click Initialize on the TV device. Requires Hubitat 2.2.9+.",
+  "releaseNotes": "TV controls are now commands (Switch, AudioVolume and MediaInputSource, plus picture, sound and power commands), so Rule Machine, dashboards, HomeKit, voice assistants and Maker API can use them; the controls left the Preferences page. New picture, sound, light sensor, remote battery and TV temperature attributes. switch and screen go off when the TV can't be reached. A value a command sets is held briefly against a read-back that lags, picture readings keep their values while the TV is in standby, and a power command the TV doesn't follow within 2 minutes logs a warning. After updating, click Initialize on the TV device (it removes the old control settings). If the TV is in Hubitat's HomeKit integration, press Restart integration there. Requires Hubitat 2.2.9+.",
   "drivers": [
     {
       "id": "d4d3a183-19c8-46dc-bdaf-6d21682e2ab3",
