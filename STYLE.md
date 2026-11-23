@@ -7,8 +7,10 @@ mechanical parts, and CI runs it on every pull request.
 
 ## Scope
 
-This guide covers every package except the Xiaomi Vacuums fork
-(`XiaomiVacuums/`), which stays a verbatim upstream copy.
+This guide covers every package except the two forks of other people's
+code: Xiaomi Vacuums (`XiaomiVacuums/`), which stays a verbatim upstream
+copy, and Rheem EcoNet (`RheemEcoNet/`), which keeps Dominick Meglio's
+names and header. Upstream has no license, so it carries no Apache block.
 
 ## Never rename these
 

@@ -54,8 +54,25 @@ class HubitatHarness {
                 HubAction(Object... a) { args = a as List }
                 String toString() { "HubAction" + args }
             }""", "HubAction.groovy")
+        // Hubitat's httpPost/httpGet throw this for an HTTP error status.
+        gcl.parseClass("""package groovyx.net.http
+            class HttpResponseException extends Exception {
+                int statusCode
+                Map response
+                HttpResponseException(Integer status, String message, Object data) {
+                    super(message)
+                    statusCode = status
+                    response = [status: status, data: data]
+                }
+            }""", "HttpResponseException.groovy")
         File file = new File(path)
-        Class scriptClass = gcl.parseClass(file.getText("UTF-8"), file.name)
+        String text = file.getText("UTF-8")
+        // The hub's sandbox rejects some property names at run time ("Subscript property
+        // 'fields' is not allowed from app or driver code", found on a hub at deploy).
+        // Fail at load here, so a test run catches it.
+        def banned = (text =~ /\.(fields)\b(?!\s*\()/)
+        if (banned.find()) throw new SecurityException("Subscript property '${banned.group(1)}' is not allowed from app or driver code (Hubitat sandbox)")
+        Class scriptClass = gcl.parseClass(text, file.name)
         Driver d = new Driver(gcl)
         d.script = (Script) scriptClass.getDeclaredConstructor().newInstance()
         d.script.binding = d.binding
@@ -87,6 +104,7 @@ class DriverBinding extends Binding {
 class FakeDevice {
     Object id = 1
     String displayName = "Test Device"
+    String deviceNetworkId
     Map<String, Object> current = [:]       // attribute -> latest value
     Map<String, Object> staleValues = [:]   // attribute -> value currentValue() keeps returning (simulates lag)
     Map<String, String> data = [:]
@@ -136,6 +154,51 @@ class FakeChildDevice {
     String getLabel() { label }
     void generateEvent(Map m) { m.each { k, v -> events << [name: k, value: v]; current[k] = v } }
     def currentValue(String n) { current[n] }
+}
+
+/** A child device whose driver methods the test wants to see: any call is recorded. */
+class RecordingChild extends FakeChildDevice {
+    Map<String, String> data = [:]
+    List<List> calls = []
+    String getDataValue(String key) { data[key] }
+    void updateDataValue(String key, String value) { data[key] = value }
+    def methodMissing(String name, Object args) { calls << ([name] + (args as List)); null }
+    List<List> callsTo(String name) { calls.findAll { it[0] == name } }
+}
+
+/** interfaces.mqtt: records what the driver does, and can be made to fail. */
+class FakeMqtt {
+    boolean connected = false
+    String failWith
+    List<Map> connects = []
+    List<List> subscribes = []
+    List<List> publishes = []
+    int disconnects = 0
+    void connect(Map opts, String url, String clientId, String user, String pass) {
+        connects << [url: url, clientId: clientId, user: user, pass: pass, opts: opts]
+        if (failWith) throw new Exception(failWith)
+        connected = true
+    }
+    void connect(String url, String clientId, String user, String pass) { connect([:], url, clientId, user, pass) }
+    boolean isConnected() { connected }
+    void disconnect() { disconnects++; connected = false }
+    void subscribe(String topic, Integer qos = 1) { subscribes << [topic, qos] }
+    void publish(String topic, String payload, Integer qos = 1, Boolean retained = false) { publishes << [topic, payload] }
+    /** Tests pass JSON of [topic:, payload:] as the "message". */
+    Map parseMessage(String message) { new groovy.json.JsonSlurper().parseText(message) as Map }
+}
+
+/** A parent app that records calls; `answers` holds return values or closures. */
+class FakeParent {
+    List<List> calls = []
+    Map<String, Object> answers = [getClientId: "hub-uid", getAccessToken: "token-abcd1234", getAccountId: "A1"]
+    def methodMissing(String name, Object args) {
+        List a = args as List
+        calls << ([name] + a)
+        def answer = answers[name]
+        answer instanceof Closure ? ((Closure) answer).call(*a) : answer
+    }
+    List<List> callsTo(String name) { calls.findAll { it[0] == name } }
 }
 
 /** The `app` object for app scripts. */
@@ -201,12 +264,18 @@ class Driver {
     final FakeApp app = new FakeApp()
     final List<Map> syncHttp = []           // queued replies for httpPost/httpGet: [status:, data:] or [exception:]
     int nextChildId = 100
+    final List<String> paragraphs = []      // every paragraph text an app page showed
+    final FakeMqtt mqtt = new FakeMqtt()
+    FakeParent parent
+    Closure childFactory = { Map props -> new FakeChildDevice(props) }
+    boolean syncHttpThrows = false          // true: an error status throws HttpResponseException, as on the hub
 
     // Recorded from metadata { }
     Map definition = [:]
     final List<String> capabilities = []
     final List<Map> attributes = []
     final List<String> commands = []
+    final Map<String, List> commandDefs = [:]   // command name -> its parameter list, as declared
     final List<Map> inputs = []
     final List<Map> fingerprints = []
 
@@ -222,6 +291,7 @@ class Driver {
             zwave         : zwave,
             zwaveHubNodeId: 1,
             location      : [timeZone: TimeZone.getTimeZone("America/New_York")],
+            interfaces    : [mqtt: mqtt],
         ]
         vars.each { k, v -> binding.setVariable(k, v) }
 
@@ -257,8 +327,8 @@ class Driver {
         binding.setVariable("getChildDevices", { -> children.values() as List })
         binding.setVariable("getAllChildDevices", { -> children.values() as List })
         binding.setVariable("addChildDevice", { String ns, String type, String dni, Map props = [:] ->
-            children[dni] = new FakeChildDevice(id: nextChildId++, deviceNetworkId: dni, typeName: type,
-                    name: props.name ?: type, label: props.label)
+            children[dni] = childFactory.call([id: nextChildId++, deviceNetworkId: dni, typeName: type,
+                    name: props.name ?: type, label: props.label])
         })
         binding.setVariable("deleteChildDevice", { String dni -> children.remove(dni) })
 
@@ -275,12 +345,19 @@ class Driver {
             http << [method: method, params: params]
             Map r = syncHttp ? syncHttp.remove(0) : [exception: "no reply queued"]
             if (r.exception) throw new Exception(r.exception as String)
-            cb.call([status: r.status ?: 200, data: r.data])
+            Integer status = (r.status ?: 200) as Integer
+            if (syncHttpThrows && status >= 400) {
+                throw (Exception) loader.loadClass("groovyx.net.http.HttpResponseException")
+                        .newInstance([status, "HTTP ${status}".toString(), r.data] as Object[])
+            }
+            cb.call([status: status, data: r.data])
         }
         binding.setVariable("httpPost", { Map params, Closure cb -> syncCall("SYNC_POST", params, cb) })
         binding.setVariable("httpGet", { Map params, Closure cb -> syncCall("SYNC_GET", params, cb) })
         binding.setVariable("updateDataValue", { String k, String v -> device.updateDataValue(k, v) })
         binding.setVariable("getDataValue", { String k -> device.getDataValue(k) })
+        binding.setVariable("pauseExecution", { Number ms -> })
+        binding.setVariable("getHubUID", { -> "hub-uid" })
 
         // metadata { } DSL: record everything, run nested closures.
         def runNested = { Object[] args -> args.find { it instanceof Closure }?.call() }
@@ -290,7 +367,10 @@ class Driver {
         binding.setVariable("page", { Object... args -> })
         binding.setVariable("mappings", { Closure c -> })
         binding.setVariable("dynamicPage", runNested)
-        binding.setVariable("paragraph", { Object... args -> })
+        binding.setVariable("paragraph", { Object... args ->
+            def text = args.find { it instanceof CharSequence }
+            if (text != null) paragraphs << text.toString()
+        })
         binding.setVariable("definition", { Object[] args ->
             definition = (Map) args.find { it instanceof Map } ?: [:]
             args.find { it instanceof Closure }?.call()
@@ -299,7 +379,10 @@ class Driver {
         binding.setVariable("attribute", { Object[] args ->
             attributes << [name: args[0], type: args.length > 1 ? args[1] : null, values: args.length > 2 ? args[2] : null]
         })
-        binding.setVariable("command", { Object[] args -> commands << (String) args[0] })
+        binding.setVariable("command", { Object[] args ->
+            commands << (String) args[0]
+            commandDefs[(String) args[0]] = args.length > 1 ? (List) args[1] : []
+        })
         binding.setVariable("fingerprint", { Map m -> fingerprints << m })
         binding.setVariable("input", { Object[] args ->
             Map opts = (Map) (args.find { it instanceof Map } ?: [:])
@@ -337,6 +420,13 @@ class Driver {
     List<Map> httpMatching(String text) { http.findAll { it.params.toString().contains(text) } }
 
     void advance(long ms) { clock += ms }
+
+    /** Bind a recording parent app as `parent`. */
+    FakeParent withParent(FakeParent p = new FakeParent()) {
+        parent = p
+        binding.setVariable("parent", p)
+        p
+    }
 
     /** Format a clock value the way our drivers stamp ISO timestamps (yyyy-MM-dd'T'HH:mm:ssZ). */
     String iso(long ms) {
