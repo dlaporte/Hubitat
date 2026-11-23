@@ -107,18 +107,24 @@ def installed = {
 
 def child = { a, String id = "S1" -> a.children["55.${id}"] }
 
+// The background requests the hourly check makes, and a helper that runs one and answers it.
+def tankRequest = { a -> a.http.find { it.method == "POST" && it.params.path == "/auto/get_tank_data.php" } }
+def tokenRequest = { a -> a.http.find { it.method == "POST" && it.params.path == "/brand_token.php" } }
+def pollWith = { a, List tanks ->
+    a.call("pollChildren")
+    a.reply(tankRequest(a), json: [result: "ok", data: tanks])
+}
+
 // ---- Fixes: repeated readings ----
 
 test("a poll that returns the same reading adds no usage sample") {
     def a = installed()
     int before = (a.state.tankHistory["S1"] as List).size()
     a.advance(3_600_000L)
-    tanksReply(a, [tank()])                                // same last_read
-    a.call("pollChildren")
+    pollWith(a, [tank()])                                  // same last_read
     assert (a.state.tankHistory["S1"] as List).size() == before
     a.advance(3_600_000L)
-    tanksReply(a, [tank(gallons: "149.0", lastRead: readAt(0))])
-    a.call("pollChildren")
+    pollWith(a, [tank(gallons: "149.0", lastRead: readAt(0))])
     assert (a.state.tankHistory["S1"] as List).size() == before + 1
 }
 
@@ -133,8 +139,7 @@ test("saving the app (cached data) adds no usage sample") {
 
 test("a tank that appears later gets a device at the next poll") {
     def a = installed()
-    tanksReply(a, [tank(), tank(id: "S2", num: "2")])
-    a.call("pollChildren")
+    pollWith(a, [tank(), tank(id: "S2", num: "2")])
     assert child(a, "S2")?.displayName == "Tank 2"
     assert child(a, "S2").current.gallons == 150.0f
 }
@@ -174,43 +179,32 @@ test("the unused groovy.json import and the v0.0.7 state cleanup are gone") {
 
 // ---- Fixes: outage handling and healthStatus ----
 
-test("rejected credentials are an error, not an outage warning") {
-    def a = fresh()
-    a.state.APIToken = null
-    a.syncHttp << [status: 401, data: [error: "invalid_client"]]
-    a.call("pollChildren")
-    assert a.log.at("error").size() == 1 && a.log.at("error")[0].contains("rejected the Client ID / Secret")
-}
-
 test("an API outage logs once, reminds hourly, recovers with its length; tanks go offline and back") {
     def a = installed()
     assert child(a).current.healthStatus == "online"
-    a.syncHttp << [exception: "Read timed out"]
     a.call("pollChildren")
+    a.reply(tankRequest(a), error: "Read timed out")
     assert a.log.at("warn").size() == 1 && a.log.at("warn")[0].contains("isn't answering")
     assert child(a).current.healthStatus == "offline"
     a.advance(3_600_000L)
-    a.syncHttp << [exception: "Read timed out"]
-    a.call("pollChildren")
+    a.call("pollChildren")                                   // the failure dropped the token
+    a.reply(tokenRequest(a), error: "Read timed out")
     assert a.log.at("warn").size() == 2 && a.log.at("warn")[1].contains("after 1h 0m")
     assert a.log.at("error").isEmpty()
     a.advance(3_600_000L)
-    // A failed fetch drops the token, so recovery starts with a new one.
-    a.syncHttp << [status: 200, data: [access_token: "t3", expires_in: 3600]]
-    tanksReply(a, [tank(lastRead: readAt(0))])
     a.call("pollChildren")
+    a.reply(tokenRequest(a), json: [access_token: "t3", expires_in: 3600])
+    a.reply(tankRequest(a), json: [result: "ok", data: [tank(lastRead: readAt(0))]])
     assert a.log.at("info").any { it.contains("responding again after 2h 0m") }
     assert child(a).current.healthStatus == "online"
 }
 
 test("a tank whose last reading is over 96 hours old is offline") {
     def a = installed()
-    tanksReply(a, [tank(lastRead: readAt(97))])
-    a.call("pollChildren")
+    pollWith(a, [tank(lastRead: readAt(97))])
     assert child(a).current.healthStatus == "offline"
     assert a.log.at("warn").any { it.contains("Tank 1") && it.contains("hasn't reported") }
-    tanksReply(a, [tank(lastRead: readAt(0.5))])
-    a.call("pollChildren")
+    pollWith(a, [tank(lastRead: readAt(0.5))])
     assert child(a).current.healthStatus == "online"
 }
 
@@ -218,6 +212,63 @@ test("healthStatus is declared on the tank device; the lastRefillAt comment no l
     def c = HubitatHarness.load(CHILD)
     assert c.attributes*.name.contains("healthStatus")
     assert !new File(CHILD).text.contains("ISO timestamp")
+}
+
+// ---- 0.2.0: the hourly check runs in the background ----
+
+test("the hourly check asks Droplet in the background, with no direct call") {
+    def a = installed()
+    a.call("pollChildren")
+    assert a.http.size() == 1
+    def req = a.http[0]
+    assert req.method == "POST" && req.callback == "tankDataCallback"
+    assert req.params.path == "/auto/get_tank_data.php" && req.params.timeout == 15
+    assert req.params.requestContentType == "application/x-www-form-urlencoded"
+    assert req.params.body == "access_token=api-token&start_index=0&max_results=1000"
+    a.reply(req, json: [result: "ok", data: [tank(gallons: "140.0", lastRead: readAt(0))]])
+    assert child(a).current.gallons == 140.0f
+}
+
+test("with the token expired, the background check gets a new one first") {
+    def a = installed()
+    a.state.APITokenExpirationTime = a.clock - 1
+    a.call("pollChildren")
+    def tokenReq = tokenRequest(a)
+    assert a.http.size() == 1 && tokenReq.callback == "tokenCallback"
+    assert tokenReq.params.body == "grant_type=client_credentials&client_id=id&client_secret=secret"
+    a.reply(tokenReq, json: [access_token: "t9", expires_in: 3600])
+    assert a.state.APIToken == "t9"
+    assert tankRequest(a).params.body.startsWith("access_token=t9&")
+}
+
+test("a 401 from the background token request is a credentials error, not an outage") {
+    def a = installed()
+    a.state.APIToken = null
+    a.call("pollChildren")
+    a.reply(tokenRequest(a), status: 401, json: [error: "invalid_client"])
+    assert a.log.at("error").size() == 1 && a.log.at("error")[0].contains("rejected the Client ID / Secret")
+    assert a.log.at("warn").isEmpty()
+    assert child(a).current.healthStatus == "offline"
+    assert tankRequest(a) == null
+}
+
+test("a 401 from the settings page's direct token request is a credentials error too") {
+    def a = fresh()
+    a.syncHttpThrows = true
+    a.state.APIToken = null
+    a.syncHttp << [status: 401, data: [error: "invalid_client"]]
+    assert a.call("getToken") == false
+    assert a.log.at("error").size() == 1 && a.log.at("error")[0].contains("rejected the Client ID / Secret")
+    assert a.state.lastErr.contains("401")
+}
+
+test("a refill is still detected through the background check") {
+    def a = installed()
+    a.advance(3_600_000L)
+    pollWith(a, [tank(gallons: "260.0", lastRead: readAt(0))])
+    assert child(a).current.lastRefillGallons == 110.0f
+    assert child(a).current.lastRefillAt == "2027-01-15 04:00:00"
+    assert a.log.at("info").any { it.contains("refill detected on Tank 1 +110.0 gal") }
 }
 
 finish()

@@ -40,6 +40,7 @@
 
 import groovy.transform.Field
 import java.text.SimpleDateFormat
+import groovyx.net.http.HttpResponseException
 
 @Field static final String VERSION = "0.1.0"
 
@@ -225,70 +226,97 @@ private boolean isTokenExpired() {
     return now() >= (state.APITokenExpirationTime as Long)
 }
 
+// ---- Droplet requests ----
+// The settings page and first install call Droplet directly, because they need the
+// answer while the page loads. The hourly check and a tank's Refresh ask in the
+// background (tokenCallback, tankDataCallback), so the hub isn't held up waiting.
+
+private Map tokenForm() {
+    return [grant_type: "client_credentials", client_id: settings.ClientId, client_secret: settings.ClientSecret]
+}
+
+private Map tankDataForm() {
+    return [access_token: state.APIToken, start_index: 0, max_results: 1000]
+}
+
+private Map dropletRequest(String path, Map form) {
+    return [uri: DROPLET_API(), path: path, headers: dropletHeaders(), timeout: 15, body: form]
+}
+
+private Map backgroundRequest(String path, Map form) {
+    return dropletRequest(path, form) + [body: formBody(form), requestContentType: "application/x-www-form-urlencoded"]
+}
+
+private String formBody(Map form) {
+    return form.collect { k, v ->
+        URLEncoder.encode(k.toString(), "UTF-8") + "=" + URLEncoder.encode(v == null ? "" : v.toString(), "UTF-8")
+    }.join("&")
+}
+
+private void storeToken(json) {
+    state.APIToken = json.access_token
+    // Use the server-supplied lease (default 3600 s), less 60 s of slack, so the token is
+    // renewed before the server-side expiry lands.
+    Integer ttlSec = (json.expires_in ?: 3600) as Integer
+    state.APITokenExpirationTime = now() + ((ttlSec - 60) * 1000L)
+    state.lastErr = ""
+    logDebug "Token refresh OK — lease ${ttlSec}s"
+}
+
+private void clearToken() {
+    state.APIToken = null
+    state.APITokenExpirationTime = 0L
+}
+
+// Keep the cached tank list on failure: overwriting it with [:] emptied state.devices,
+// and the poll then bailed every hour until the app was re-saved.
+private void storeTankData(Map deviceData) {
+    state.deviceData = deviceData
+    state.devices = deviceData.keySet() as List
+    noteCommSuccess()
+}
+
 private boolean getAPIToken() {
     logDebug "getAPIToken: requesting a new API token"
-    def params = [
-        uri: DROPLET_API(),
-        path: "/brand_token.php",
-        headers: dropletHeaders(),
-        timeout: 15,
-        body: [
-            grant_type: "client_credentials",
-            client_id: settings.ClientId,
-            client_secret: settings.ClientSecret
-        ]
-    ]
     boolean ok = false
     String failKind = "down"
+    state.lastErr = ""
     try {
-        httpPost(params) { resp ->
+        httpPost(dropletRequest("/brand_token.php", tokenForm())) { resp ->
             if (resp.status == 200 && resp.data?.access_token) {
-                state.APIToken = resp.data.access_token
-                // Use the server-supplied lease (defaults to 3600s) rather than a
-                // hardcoded 1-hour bucket. Subtract 60s of slack so we refresh
-                // before the server-side expiry actually lands.
-                Integer ttlSec = (resp.data.expires_in ?: 3600) as Integer
-                state.APITokenExpirationTime = now() + ((ttlSec - 60) * 1000L)
-                state.lastErr = ""
+                storeToken(resp.data)
                 ok = true
-                logDebug "Token refresh OK — lease ${ttlSec}s"
             } else {
                 state.lastErr = "Token request returned ${resp.status}: ${resp.data?.error ?: resp.data}"
                 if (resp.status in [400, 401, 403]) failKind = "auth"
             }
         }
+    } catch (HttpResponseException e) {
+        // httpPost throws for an HTTP error status; 400/401/403 means a bad Client ID / Secret.
+        state.lastErr = "Token request returned ${e.statusCode}: ${e.message}"
+        if (e.statusCode in [400, 401, 403]) failKind = "auth"
     } catch (Exception e) {
         state.lastErr = "Token request exception: ${e.message}"
     }
     if (state.lastErr) {
         noteCommFailure(failKind, state.lastErr as String)
-        state.APIToken = null
-        state.APITokenExpirationTime = 0L
+        clearToken()
     }
     return ok
 }
 
-// Single source of truth for the upstream call. Returns a Map keyed by
-// sensor_id, or [:] on any failure. On success, also refreshes
-// state.devices (list of sensor_ids) and state.deviceData (the full Map).
+// The direct tank-data call (settings page, first install). Returns a Map keyed by
+// sensor_id, or [:] on any failure.
 private Map fetchTankData() {
     logDebug "fetchTankData()"
     Map deviceData = [:]
     boolean ok = false
     if (!getToken()) return deviceData
-    def params = [
-        uri: DROPLET_API(),
-        path: "/auto/get_tank_data.php",
-        headers: dropletHeaders(),
-        timeout: 15,
-        body: [access_token: state.APIToken, start_index: 0, max_results: 1000]
-    ]
     try {
-        httpPost(params) { resp ->
+        httpPost(dropletRequest("/auto/get_tank_data.php", tankDataForm())) { resp ->
             if (resp.status != 200) {
                 noteCommFailure("down", "get_tank_data returned HTTP ${resp.status}")
-                state.APIToken = null
-                state.APITokenExpirationTime = 0L
+                clearToken()
                 return
             }
             def obs = parseJson(resp.data.toString())
@@ -301,40 +329,102 @@ private Map fetchTankData() {
         }
     } catch (Exception e) {
         noteCommFailure("down", "get_tank_data: ${e.message}")
-        state.APIToken = null
-        state.APITokenExpirationTime = 0L
+        clearToken()
     }
-    // Keep the cached tank list on failure. Overwriting it with [:] emptied
-    // state.devices, and pollChildren() then bailed every hour until the app
-    // was re-saved.
-    if (ok) {
-        state.deviceData = deviceData
-        state.devices = deviceData.keySet() as List
-        noteCommSuccess()
-    }
+    if (ok) storeTankData(deviceData)
     return deviceData
 }
 
-// ---- Polling — pushes events to each child device and updates derived metrics ----
+// ---- Polling ----
 
+// The hourly check and a tank's Refresh (updateData true) ask Droplet in the
+// background. A save (false) re-applies the cached readings without calling Droplet.
 void pollChildren(boolean updateData = true) {
     logDebug "pollChildren(updateData=${updateData})"
-    if (!getToken()) {
-        logDebug "pollChildren: skipping — no API token"
+    if (updateData) pollInBackground()
+    else applyTankData((state.deviceData ?: [:]) as Map)
+}
+
+private void pollInBackground() {
+    if (!settings.ClientId || !settings.ClientSecret) {
+        logDebug "pollChildren: no Client ID / Secret yet"
+        return
+    }
+    if (state.APIToken && !isTokenExpired()) requestTankData()
+    else asynchttpPost("tokenCallback", backgroundRequest("/brand_token.php", tokenForm()))
+}
+
+private void requestTankData() {
+    asynchttpPost("tankDataCallback", backgroundRequest("/auto/get_tank_data.php", tankDataForm()))
+}
+
+void tokenCallback(response, data) {
+    Integer status = statusOf(response)
+    def json = jsonOf(response)
+    if (status == 200 && json?.access_token) {
+        storeToken(json)
+        requestTankData()
+        return
+    }
+    // A background request hands back the HTTP status rather than throwing.
+    String detail = "Token request returned ${status ?: 'no response'}: ${json?.error ?: errorText(response)}"
+    state.lastErr = detail
+    noteCommFailure(status in [400, 401, 403] ? "auth" : "down", detail)
+    clearToken()
+    setAllTanksHealth("offline")
+}
+
+void tankDataCallback(response, data) {
+    Integer status = statusOf(response)
+    if (status != 200) {
+        noteCommFailure("down", "get_tank_data: ${status ? "HTTP ${status}" : errorText(response)}")
+        clearToken()
         setAllTanksHealth("offline")
         return
     }
-    // Fetch before reading state.devices so an empty cached list (e.g. the
-    // first-install fetch failed) is retried on every poll.
-    Map deviceData = updateData ? fetchTankData() : (state.deviceData ?: [:])
-    if (updateData && state.commFailSince != null) {
-        // fetchTankData logged the failure; the tanks' last readings stand.
+    def obs = jsonOf(response)
+    if (obs?.result != "ok") {
+        noteCommFailure("down", "get_tank_data error: ${obs?.error_msg ?: obs}")
         setAllTanksHealth("offline")
         return
     }
+    Map deviceData = [:]
+    obs.data?.each { dev -> deviceData[dev.sensor_id] = dev }
+    storeTankData(deviceData)
+    applyTankData(deviceData)
+}
+
+private Integer statusOf(response) {
+    try {
+        return response?.status as Integer
+    } catch (Exception e) {
+        return null
+    }
+}
+
+private def jsonOf(response) {
+    try {
+        def body = response?.data
+        return body ? parseJson(body.toString()) : null
+    } catch (Exception e) {
+        return null
+    }
+}
+
+private String errorText(response) {
+    try {
+        return response?.getErrorMessage() ?: "no response"
+    } catch (Exception e) {
+        return "no response"
+    }
+}
+
+// Turns Droplet's tank map into events on each tank device: readings, usage, refills
+// and health.
+private void applyTankData(Map deviceData) {
     List devices = state.devices ?: []
     if (!devices) {
-        logDebug "pollChildren: no known devices"
+        logDebug "applyTankData: no known devices"
         return
     }
 
@@ -342,7 +432,7 @@ void pollChildren(boolean updateData = true) {
         try {
             Map devData = deviceData[sensorId]
             if (!devData) {
-                logDebug "pollChildren: no API data for ${sensorId}"
+                logDebug "applyTankData: no API data for ${sensorId}"
                 return
             }
             def d = ensureChild(sensorId, devData)
@@ -379,7 +469,7 @@ void pollChildren(boolean updateData = true) {
             }
             events.each { evt -> d.generateEvent(evt) }
         } catch (Exception e) {
-            log.error "pollChildren: error for sensor ${sensorId}: ${e.message}"
+            log.error "applyTankData: error for sensor ${sensorId}: ${e.message}"
         }
     }
 }
