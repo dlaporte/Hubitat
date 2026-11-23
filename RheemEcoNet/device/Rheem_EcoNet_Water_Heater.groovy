@@ -228,7 +228,7 @@ private void remindOutage() {
 
 // offline once the outage warning is out, or while the heater itself reports it isn't connected.
 private void updateHealth() {
-    Map f = fields()
+    Map f = heaterFields()
     boolean heaterConnected = f.containsKey("@CONNECTED") ? truthy(val(f["@CONNECTED"])) : true
     String health = (state.outageWarnedAt == null && heaterConnected) ? "online" : "offline"
     emitEvent(name: "healthStatus", value: health, descriptionText: "${device.displayName} is ${health}")
@@ -331,7 +331,7 @@ void applyUsage(String type, Map response) {
 private String energyUnit(Object message) {
     String word = message?.toString()?.tokenize(" ")?.collect { it.replaceAll(/[^A-Za-z]/, "") }?.find { it ==~ /(?i)k?(wh|btu)/ }
     if (word) return word.toLowerCase().contains("btu") ? "kBTU" : "kWh"
-    return val(fields()["@TYPE"]) == "gasWaterHeater" ? "kBTU" : "kWh"
+    return val(heaterFields()["@TYPE"]) == "gasWaterHeater" ? "kBTU" : "kWh"
 }
 
 private boolean isForThisHeater(Map p) {
@@ -343,7 +343,7 @@ private boolean isForThisHeater(Map p) {
 // pyeconet's merge: a dict merges into the stored dict; a bare value replaces the stored
 // dict's value, or the stored value.
 private void mergeFields(Map update) {
-    Map f = fields()
+    Map f = heaterFields()
     update.each { k, v ->
         String key = k.toString()
         if (!FIELDS_KEPT.contains(key)) return
@@ -364,7 +364,7 @@ private void mergeFields(Map update) {
             f[key] = v
         }
     }
-    state.fields = f
+    state.heaterFields = f
 }
 
 // An update that carries both a position and a name: the name wins (pyeconet).
@@ -379,7 +379,7 @@ private void alignModeValue(Map mode) {
 // Works out every attribute from the stored fields. One whose field the heater doesn't
 // report is left alone.
 private void applyFields() {
-    Map f = fields()
+    Map f = heaterFields()
     if (!f) return
     def setpoint = val(f["@SETPOINT"])
     if (isNumeric(setpoint)) {
@@ -507,8 +507,8 @@ def refresh() {
     if (equip instanceof Map) applySnapshot(equip as Map)
 }
 
-private Map fields() {
-    return (state.fields ?: [:]) as Map
+private Map heaterFields() {
+    return (state.heaterFields ?: [:]) as Map
 }
 
 private def val(Object field) {
@@ -520,7 +520,7 @@ private boolean truthy(Object v) {
 }
 
 private void sendSupportedModes() {
-    Map f = fields()
+    Map f = heaterFields()
     List<String> modes
     if (f) {
         modes = f["@MODE"] != null ? ["off", "heat", "emergency heat", "auto"] : (f.containsKey("@ENABLED") ? ["off", "heat"] : [])
@@ -558,7 +558,7 @@ def setHeatingSetpoint(temperature) {
 
 // The heater's limits from its @SETPOINT field, or before the first reading from the data values.
 private List<BigDecimal> setpointLimits() {
-    def setpoint = fields()["@SETPOINT"]
+    def setpoint = heaterFields()["@SETPOINT"]
     def c = setpoint instanceof Map ? setpoint.constraints : null
     def lo = c instanceof Map ? c.lowerLimit : device.getDataValue("minTemp")
     def hi = c instanceof Map ? c.upperLimit : device.getDataValue("maxTemp")
@@ -606,7 +606,7 @@ def emergencyHeat() {
 }
 
 def setWaterHeaterMode(String requested) {
-    Map f = fields()
+    Map f = heaterFields()
     List<String> names = modeList(f)
     boolean turnOff = canonicalMode(requested) == "OFF"
     if (names) {
@@ -627,7 +627,7 @@ def setWaterHeaterMode(String requested) {
 }
 
 def setAway(String value) {
-    Map f = fields()
+    Map f = heaterFields()
     if (!(f.containsKey("@AWAY") || f.containsKey("@AWAYCONFIG"))) {
         log.warn "${device.displayName} doesn't report away mode; setAway isn't supported"
         return
@@ -636,7 +636,7 @@ def setAway(String value) {
 }
 
 def resumeSchedule() {
-    if (!fields().containsKey("@SCHEDULESTATUS")) {
+    if (!heaterFields().containsKey("@SCHEDULESTATUS")) {
         log.warn "${device.displayName} doesn't report a schedule; resumeSchedule isn't supported"
         return
     }
@@ -685,7 +685,7 @@ private boolean hasOnOff(Map f) {
 // @ENABLED where the heater has it, plus a mode where it has modes: Off, or for heat its
 // current heating mode, else its first of Heat Pump Only, Electric and Gas.
 private Map onOffMessage(boolean on) {
-    Map f = fields()
+    Map f = heaterFields()
     List<String> names = modeList(f)
     Map msg = [:]
     if (hasOnOff(f)) msg["@ENABLED"] = on ? 1 : 0
@@ -706,7 +706,7 @@ private Integer heatingModeIndex(Map f, List<String> names) {
 }
 
 private void selectMode(String command, List<String> wanted) {
-    Map f = fields()
+    Map f = heaterFields()
     List<String> names = modeList(f)
     Integer i = wanted.findResult { modeIndex(names, it) }
     if (i == null) {

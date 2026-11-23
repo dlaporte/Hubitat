@@ -66,7 +66,13 @@ class HubitatHarness {
                 }
             }""", "HttpResponseException.groovy")
         File file = new File(path)
-        Class scriptClass = gcl.parseClass(file.getText("UTF-8"), file.name)
+        String text = file.getText("UTF-8")
+        // The hub's sandbox rejects some property names at run time ("Subscript property
+        // 'fields' is not allowed from app or driver code", found on a hub at deploy).
+        // Fail at load here, so a test run catches it.
+        def banned = (text =~ /\.(fields)\b(?!\s*\()/)
+        if (banned.find()) throw new SecurityException("Subscript property '${banned.group(1)}' is not allowed from app or driver code (Hubitat sandbox)")
+        Class scriptClass = gcl.parseClass(text, file.name)
         Driver d = new Driver(gcl)
         d.script = (Script) scriptClass.getDeclaredConstructor().newInstance()
         d.script.binding = d.binding

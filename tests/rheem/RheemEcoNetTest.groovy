@@ -545,7 +545,7 @@ test("an MQTT value replaces the value inside a stored field and keeps its limit
     d.call("parse", mqtt(["@SETPOINT": 118, "@ENABLED": 0]))
     assert d.device.current.heatingSetpoint == 118
     assert d.device.current.thermostatMode == "off"
-    assert d.state.fields["@SETPOINT"].constraints.upperLimit == 140
+    assert d.state.heaterFields["@SETPOINT"].constraints.upperLimit == 140
 }
 
 test("@ACTIVE no longer sets the mode") {
@@ -639,8 +639,8 @@ test("updates for another heater are ignored; a signal update with another seria
 
 test("network details aren't kept in state") {
     def d = driverWith(gasHeater())
-    assert !d.state.fields.containsKey("@SSID") && !d.state.fields.containsKey("@IP_ADDRESS")
-    assert d.state.fields.containsKey("@SETPOINT")
+    assert !d.state.heaterFields.containsKey("@SSID") && !d.state.heaterFields.containsKey("@IP_ADDRESS")
+    assert d.state.heaterFields.containsKey("@SETPOINT")
 }
 
 test("an unreadable MQTT message is ignored") {
@@ -830,7 +830,7 @@ test("refresh asks the app and applies the heater's fields") {
     d.parent.answers.refreshEquipment = { String dni -> gasHeater("@SETPOINT": [value: 119]) }
     d.call("refresh")
     assert d.device.current.heatingSetpoint == 119
-    assert d.state.fields["@SETPOINT"].constraints.upperLimit == 140
+    assert d.state.heaterFields["@SETPOINT"].constraints.upperLimit == 140
 }
 
 test("before the first reading, a mode command on a heater of unknown type warns") {
