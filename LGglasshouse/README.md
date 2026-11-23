@@ -190,6 +190,11 @@ each message to Glasshouse.
   The recovery line says how long the TV was unreachable. The power
   button still switches the TV fully off. Other failures, where the TV
   answers with an error, are always warnings.
+- After a command the driver reads the TV again 2 seconds and 45 seconds
+  later. The TV sometimes reports the old value for a few seconds after a
+  change, so after mute, screen, input and picture mode commands the
+  driver keeps the value it set for up to 15 seconds unless the TV agrees
+  sooner.
 - The driver runs single-threaded (an option added in Hubitat 2.2.9), so
   the poll callbacks can't race on shared state. Hub firmware floor:
   **2.2.9**.
