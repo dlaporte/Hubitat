@@ -11,7 +11,8 @@
  *         can use them; the controls left Preferences. New picture, sound, light sensor, remote
  *         battery and temperature attributes. switch goes off when the TV can't be reached.
  *         A value a command sets is held briefly against a read-back that lags. Picture
- *         readings keep their values while the TV is in standby.
+ *         readings keep their values while the TV is in standby. A power command the TV
+ *         doesn't follow within 2 minutes is a warning.
  *  v0.11.0 (2026-11-20) - Send key offers only keys Glasshouse accepts; optional API token;
  *         healthStatus; runs single-threaded; ARC volume steps log at debug; standard
  *         logging and lifecycle; unused toggle and volume step methods removed.
@@ -283,7 +284,7 @@ void updated() {
 
 void initialize() {
     unschedule()
-    ["powerTarget", "powerWatchUntil", "powerWatchFrom", "holds"].each { state.remove(it) }
+    ["powerTarget", "powerWatchUntil", "powerWatchFrom", "powerError", "holds"].each { state.remove(it) }
     upgradeSettings()
     if (settings.logEnable) runIn(1800, "logsOff")
     if (!tvIp?.toString()?.trim()) {
@@ -437,6 +438,7 @@ def reboot() {
 // which rules and HomeKit would see as two changes.
 private void startPowerWatch(String target, long ignoreForMs) {
     state.remove("holds")
+    state.remove("powerError")
     state.powerTarget = target
     state.powerWatchUntil = now() + 120_000L
     state.powerWatchFrom = now() + ignoreForMs
@@ -446,8 +448,7 @@ private void startPowerWatch(String target, long ignoreForMs) {
 void powerPoll() {
     if (!state.powerTarget) return
     if (now() >= ((state.powerWatchUntil ?: 0L) as Long)) {
-        logDebug "The TV didn't turn ${state.powerTarget} within 2 minutes; back to the normal poll"
-        stopPowerWatch()
+        powerWatchExpired()
         return
     }
     refresh()
@@ -458,7 +459,18 @@ private void stopPowerWatch() {
     state.remove("powerTarget")
     state.remove("powerWatchUntil")
     state.remove("powerWatchFrom")
+    state.remove("powerError")
     unschedule("powerPoll")
+}
+
+// The watch ran out with the TV still not following the command: the one
+// warning for a power command that didn't work (Wake-on-LAN that didn't wake
+// the TV, an off the TV ignored).
+private void powerWatchExpired() {
+    String target = state.powerTarget as String
+    String err = state.powerError as String
+    stopPowerWatch()
+    log.warn "${device.displayName} didn't turn ${target} within 2 minutes${err ? " (Glasshouse: ${err})" : ''}"
 }
 
 // True while a power command is waiting for the TV to agree and this reply
@@ -467,7 +479,11 @@ private boolean holdPowerState(String reported) {
     String target = state.powerTarget as String
     if (!target) return false
     if (now() >= ((state.powerWatchUntil ?: 0L) as Long)) {
-        stopPowerWatch()
+        if (reported != target) {
+            powerWatchExpired()
+        } else {
+            stopPowerWatch()
+        }
         return false
     }
     if (reported != target) {
@@ -782,6 +798,15 @@ void controlCallback(resp, data) {
                 json.error?.toString()?.contains("not one this setting takes")) {
             logDebug "Glasshouse refused ${data.value}; trying ${data.fallback}"
             sendControl("lgSetting", data.fallback)
+            return
+        }
+        // On from deep sleep: Wake-on-LAN can still be bringing the TV up when
+        // Glasshouse gives up on powerOn (seen live: the TV came on 14 s
+        // later). The power watch keeps checking and warns after 2 minutes.
+        if (action == "powerOn" && state.powerTarget == "on" &&
+                json.error?.toString()?.contains("stayed in standby")) {
+            state.powerError = json.error.toString()
+            log.info "Glasshouse powerOn: ${json.error}; ${device.displayName} may still be waking from Wake-on-LAN, checking for up to 2 minutes"
             return
         }
         log.warn "Glasshouse ${action} rejected: ${json.error ?: json}"

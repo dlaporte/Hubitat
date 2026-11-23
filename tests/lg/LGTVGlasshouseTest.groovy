@@ -29,6 +29,9 @@ def statsFull = { Map extra = [:] ->
              sleepTimer: "off", lightSensor: [lux: 41.6], remote: [battery: 76], temp: 52] + extra)
 }
 
+// A stats reply for a TV in standby (reachable, switched off).
+def statsStandby = { -> statsOn(powerState: [systemOn: false, raw: "Active Standby", screenOn: false]) }
+
 def bodyOf = { Map req -> new groovy.json.JsonSlurper().parseText(req.params.body as String) }
 def resp = { Map m -> new harness.FakeResponse(data: groovy.json.JsonOutput.toJson(m)) }
 
@@ -328,6 +331,7 @@ test("on starts the power watch: a refresh every 15 s until a stats reply shows 
 
 test("the power watch gives up after 2 minutes") {
     def d = fresh()
+    d.settings.tvMac = "AA:BB:CC:DD:EE:FF"
     d.call("on")
     int refreshes = 0
     for (int i = 0; i < 12 && d.schedules.containsKey("powerPoll"); i++) {
@@ -340,6 +344,62 @@ test("the power watch gives up after 2 minutes") {
     assert refreshes == 7          // at 15, 30 ... 105 s; at 120 s it stops
     assert !d.schedules.containsKey("powerPoll")
     assert d.state.powerTarget == null
+    assert d.log.at("warn").size() == 1
+    assert d.log.at("warn")[0].contains("didn't turn on within 2 minutes")
+}
+
+// Runs powerPoll every 15 s until the watch stops.
+def pollOut = { d ->
+    for (int i = 0; i < 12 && d.schedules.containsKey("powerPoll"); i++) {
+        d.schedules.remove("powerPoll")
+        d.advance(15_000L)
+        d.call("powerPoll")
+    }
+}
+
+test("Glasshouse's 'stayed in standby' during On is info while the watch waits; the TV coming on ends it quietly") {
+    def d = fresh()
+    d.settings.tvMac = "AA:BB:CC:DD:EE:FF"
+    d.call("statsCallback", resp(statsStandby()), [path: "/api/stats"])
+    d.call("on")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: false, error: "the TV stayed in standby"])
+    assert d.log.at("warn").isEmpty()
+    assert d.log.at("info").any { it.contains("the TV stayed in standby") }
+    d.advance(15_000L)
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    assert d.device.current.switch == "on" && d.state.powerTarget == null
+    assert d.log.at("warn").isEmpty()
+}
+
+test("if the TV never comes on, the 2-minute warning carries Glasshouse's reason") {
+    def d = fresh()
+    d.settings.tvMac = "AA:BB:CC:DD:EE:FF"
+    d.call("statsCallback", resp(statsStandby()), [path: "/api/stats"])
+    d.call("on")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: false, error: "the TV stayed in standby"])
+    pollOut(d)
+    assert d.log.at("warn").size() == 1
+    assert d.log.at("warn")[0].contains("didn't turn on within 2 minutes") && d.log.at("warn")[0].contains("stayed in standby")
+    assert d.state.powerError == null
+}
+
+test("any other refusal of On still warns at once") {
+    def d = fresh()
+    d.settings.tvMac = "AA:BB:CC:DD:EE:FF"
+    d.call("on")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: false, error: "power actions disabled (set allowPower)"])
+    assert d.log.at("warn").size() == 1 && d.log.at("warn")[0].contains("allowPower")
+}
+
+test("a TV still on 2 minutes after Off warns once, whether a poll or a reply sees it first") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    d.call("off")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
+    d.advance(120_000L)
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    assert d.state.powerTarget == null && d.device.current.switch == "on"
+    assert d.log.at("warn").size() == 1 && d.log.at("warn")[0].contains("didn't turn off within 2 minutes")
 }
 
 test("reboot sends reboot and polls; a stats reply before the TV goes down doesn't stop it") {
@@ -358,8 +418,6 @@ test("reboot sends reboot and polls; a stats reply before the TV goes down doesn
 // The values an attribute actually changed through (repeats collapsed), as rules see them.
 def changes = { List values -> values.inject([]) { List seen, v -> (seen && seen[-1] == v) ? seen : seen + [v] } }
 
-// A stats reply for a TV in standby (reachable, switched off).
-def statsStandby = { -> statsOn(powerState: [systemOn: false, raw: "Active Standby", screenOn: false]) }
 
 test("off: a stale 'on' reply right after doesn't bounce switch; an 'off' reply ends the watch") {
     def d = fresh()
