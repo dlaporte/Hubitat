@@ -85,6 +85,14 @@ import groovy.transform.Field
 // (see holdValue).
 @Field static final long COMMAND_HOLD_MS = 15_000L
 
+// Holds an accepted command makes stale: a volume change unmutes the TV, and
+// an input or app change can change the input and the picture mode. Power
+// commands drop every hold (startPowerWatch).
+@Field static final Map<String, List<String>> HOLDS_DROPPED_BY = [
+    volume: ["mute"], volumeStep: ["mute"],
+    input: ["pictureMode"], launchApp: ["input", "pictureMode"]
+]
+
 // Settings earlier versions used. The TV controls moved from Preferences to
 // commands in 0.12.0.
 @Field static final List<String> RETIRED_SETTINGS = ["debugLogging", "prefPower", "prefLaunchApp", "prefSendKey",
@@ -427,7 +435,7 @@ def reboot() {
 // watch), and meanwhile don't let a reply that disagrees flip switch back,
 // which rules and HomeKit would see as two changes.
 private void startPowerWatch(String target, long ignoreForMs) {
-    clearHold("screen")
+    state.remove("holds")
     state.powerTarget = target
     state.powerWatchUntil = now() + 120_000L
     state.powerWatchFrom = now() + ignoreForMs
@@ -780,6 +788,7 @@ void controlCallback(resp, data) {
         return
     }
     logDebug "Glasshouse ${action} ok"
+    HOLDS_DROPPED_BY[action]?.each { clearHold(it) }
     // Volume is never applied optimistically: only applyStats (the TV
     // read-back) may set the volume attribute. Other actions still get
     // a prompt UI update, then refresh confirms.
@@ -865,8 +874,9 @@ private void applyOptimistic(Map data) {
 // later although the TV was muted. Glasshouse's own dashboard holds a value it
 // has just set in the same way. So for COMMAND_HOLD_MS a read that disagrees
 // doesn't change the attribute; one that agrees ends the hold. A newer command
-// replaces it. switch is the power watch's (startPowerWatch), and currentApp
-// isn't held: launchApp shows the app id, the TV reports its title.
+// replaces it, and one that can change it drops it (HOLDS_DROPPED_BY). switch
+// is the power watch's (startPowerWatch), and currentApp isn't held:
+// launchApp shows the app id, the TV reports its title.
 private void holdValue(String attr, String value) {
     Map holds = (state.holds instanceof Map) ? (state.holds as Map) : [:]
     holds[attr] = [value: value, until: now() + COMMAND_HOLD_MS]

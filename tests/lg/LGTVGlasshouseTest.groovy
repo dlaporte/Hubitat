@@ -562,6 +562,47 @@ test("initialize and an unreachable TV clear the holds") {
     assert !u.state.holds
 }
 
+test("a volume command drops the mute hold: a volume step unmutes the TV") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    d.call("mute")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
+    d.http.clear()
+    d.call("volumeUp")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
+    d.advance(2_000L)
+    d.call("statsCallback", resp(statsOn(muted: false, volume: 13)), [path: "/api/stats"])
+    assert d.device.current.mute == "unmuted"
+}
+
+test("launchApp drops the input and picture mode holds") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsOn(inputs: [hdmi1: "Apple TV", hdmi2: "PS5"])), [path: "/api/stats"])
+    d.call("pictureCallback", resp(pictureReply("cinema")), [path: "/api/picture"])
+    d.call("setPictureMode", "Vivid")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
+    d.http.clear()
+    d.call("setInputSource", "hdmi2")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
+    assert !d.state.holds.containsKey("pictureMode")
+    d.http.clear()
+    d.call("launchApp", "netflix")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
+    assert !d.state.holds
+    d.advance(2_000L)
+    d.call("statsCallback", resp(statsOn(app: "netflix", app_id: "netflix", display_title: "Netflix",
+            inputs: [hdmi1: "Apple TV", hdmi2: "PS5"])), [path: "/api/stats"])
+    assert d.device.current.input == "netflix"
+}
+
+test("a power command drops every hold") {
+    def d = fresh()
+    d.call("mute")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
+    d.call("off")
+    assert !d.state.holds
+}
+
 test("a sleep timer the 2 s read misses shows after the later refresh") {
     def d = fresh()
     d.call("statsCallback", resp(statsFull()), [path: "/api/stats"])
