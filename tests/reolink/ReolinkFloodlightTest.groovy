@@ -42,6 +42,14 @@ test("preferences keep their names; logging inputs replace debug") {
     assert d.inputs*.name == ["ip", "username", "password", "pollInterval", "keepLightOn", "publishSnapshotURL", "logEnable", "txtEnable"]
 }
 
+test("the keep-on setting's title says it acts only after On, until Off") {
+    def d = fresh()
+    Map keep = d.inputs.find { it.name == "keepLightOn" }
+    assert keep.title == "After On, keep the floodlight on until Off (sends On again every 2 min)"
+    assert keep.description == "For cameras that turn a manually switched-on light off by themselves. Has no effect on cameras with Reolink's own keep-on."
+    assert keep.defaultValue == true
+}
+
 // ---- Lifecycle ----
 
 test("initialize removes the old debug setting and records driverVersion") {
@@ -49,7 +57,7 @@ test("initialize removes the old debug setting and records driverVersion") {
     d.settings.debug = true
     d.call("initialize")
     assert d.device.removedSettings.contains("debug")
-    assert d.device.data.driverVersion == "0.10.0"
+    assert d.device.data.driverVersion == "0.10.1"
 }
 
 test("logsOff is scheduled after unschedule, so Initialize can't cancel it") {
@@ -77,7 +85,7 @@ test("updated logs 'Preferences saved' and re-initializes") {
     def d = fresh()
     d.call("updated")
     assert d.log.at("info").contains("Preferences saved")
-    assert d.device.data.driverVersion == "0.10.0"
+    assert d.device.data.driverVersion == "0.10.1"
 }
 
 // ---- Logging ----

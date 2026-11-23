@@ -6,6 +6,7 @@
  *  Documentation: https://github.com/dlaporte/Hubitat/blob/main/ReolinkFloodlight/README.md
  *
  *  Changelog:
+ *  v0.10.1 (2026-11-23) - The keep-on setting's title says it acts only after On, until Off.
  *  v0.10.0 (2026-11-20) - Re-login after a camera reboot (expired-token replies were missed);
  *         one login at a time; device info refreshes every 30 minutes; logs out on Initialize;
  *         healthStatus; debug logging turns itself off; standard logging and lifecycle.
@@ -52,7 +53,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import groovy.transform.Field
 
-@Field static final String VERSION = "0.10.0"
+@Field static final String VERSION = "0.10.1"
 
 // WhiteLed "mode" values, by index.
 @Field static final List<String> FLOODLIGHT_MODES = ["Off", "NightSmart", "AlwaysAtNight", "Schedule"]
@@ -135,7 +136,9 @@ metadata {
         input name: "username", type: "text", title: "Username", required: true
         input name: "password", type: "password", title: "Password", required: true
         input name: "pollInterval", type: "number", title: "Motion/AI poll interval (seconds)", defaultValue: 5, range: "5..300", required: true
-        input name: "keepLightOn", type: "bool", title: "Keep floodlight on indefinitely (re-asserts state every 2 min)", defaultValue: true
+        input name: "keepLightOn", type: "bool", title: "After On, keep the floodlight on until Off (sends On again every 2 min)",
+                description: "For cameras that turn a manually switched-on light off by themselves. Has no effect on cameras with Reolink's own keep-on.",
+                defaultValue: true
         input name: "publishSnapshotURL", type: "bool", title: "Publish snapshotURL attribute (embeds username/password in plaintext — only enable if you use it in an image tile)", defaultValue: false
         input name: "logEnable", type: "bool", title: "Enable debug logging", description: "Turns itself off after 30 minutes", defaultValue: false
         input name: "txtEnable", type: "bool", title: "Enable descriptionText logging", defaultValue: true
