@@ -402,7 +402,7 @@ test("initialize connects with the token, subscribes and asks the app for a read
     assert d.mqtt.subscribes*.getAt(0) == ["user/A1/device/reported", "user/A1/device/desired"]
     assert d.device.current.healthStatus == "online"
     assert d.parent.callsTo("refreshEquipment") == [["refreshEquipment", "rheem:" + ID]]
-    assert d.device.data.driverVersion == "2.4.1"
+    assert d.device.data.driverVersion == "2.4.2"
     assert d.device.current.supportedThermostatFanModes == "[]"
     assert d.log.at("warn").isEmpty()
 }
@@ -866,6 +866,9 @@ test("15 s after a command the driver reads the heater and warns if it didn't ta
     d.call("confirmCommand")
     assert d.log.at("warn").size() == 1
     assert d.log.at("warn")[0] == "Water Heater didn't take away on (it reports off)"
+    d.call("off")
+    d.call("confirmCommand")
+    assert d.log.at("warn")[1] == "Water Heater didn't take power off (it reports on)"
     assert d.device.current.away == "off"
     assert !d.state.containsKey("commandCheck")
 }
