@@ -86,7 +86,10 @@ An attribute the heater doesn't report stays empty.
 | `refresh` | Reads the heater from Rheem now |
 
 A command or mode the heater doesn't support logs a warning that names what it
-offers, and sends nothing. Cooling and fan commands from the Thermostat
+offers, and sends nothing. Fifteen seconds after a command, the driver reads the
+heater from Rheem and logs a warning if it didn't take it (for example, away mode
+on a heater that doesn't have it enabled). Attributes follow the heater's own
+reports, not the commands sent to it. Cooling and fan commands from the Thermostat
 capability log a warning. A command sent while disconnected goes out when the
 connection is back, if that's within 15 minutes.
 
@@ -96,15 +99,18 @@ Verified on my heater, a gas heater with on/off (no modes), on 2026-11-23:
 
 - Connects on Initialize, `healthStatus` online, and the full reading arrives
   through the app (firmware, alerts, away, vacation, schedule status, Wi-Fi).
-- Setpoint reads as a number. `setHeatingSetpoint` 121, then 120: each showed in a
-  fresh reading from Rheem's server afterwards, so the heater took both.
+- Setpoint reads as a number. `setHeatingSetpoint` 121, then 120: the heater
+  reported each within 3 seconds, and the check 15 seconds later agreed.
 - Heat/off reads correctly (`heat`, `ON`), and pressing Done no longer flips it to off.
 - Refresh reads the heater without logging in. Opening the settings page logs in
   once; pressing Done doesn't log in again.
 - Energy and water use: Rheem answers that this heater doesn't report them, so
   `energyToday` and `waterToday` stay empty (checked again daily).
-- Not tried on hardware: `heat`/`off` commands, `setAway`, `resumeSchedule` (and
-  its confirmation prompt), and recovery from a real outage.
+- `setAway on` isn't taken by this heater. It reports no `@AWAYCONFIG`, which
+  pyeconet reads as away mode not being enabled for it, so Rheem ignores `@AWAY`.
+  `away` stays `off`, and the driver logs "didn't take away on (it reports off)".
+- Not tried on hardware: `heat`/`off` commands, `resumeSchedule` (and its
+  confirmation prompt), and recovery from a real outage.
 
 Heat pump modes, hot water, tank and compressor health, and the shut-off valve
 are tested only against sample data shaped like pyeconet's.
