@@ -342,4 +342,57 @@ test("the unreachable error names HTTPS only when it is on") {
     assert h.log.at("error")[0].contains("HTTPS is on: check the camera has HTTPS enabled, or turn Use HTTPS off.")
 }
 
+// ---- 0.11.0: Reboot ----
+
+def rebootOk = { -> [[cmd: "Reboot", code: 0, value: [rspCode: 200]]] }
+
+test("Reboot sends the command; when the camera accepts, an info line and a fresh login next") {
+    def d = withToken(fresh())
+    assert d.commands.contains("reboot")
+    d.call("reboot")
+    def req = d.httpMatching("cmd=Reboot")[0]
+    assert cmdsOf(req) == ["Reboot"]
+    d.reply(req, json: rebootOk())
+    assert d.log.at("info").contains("Driveway Camera rebooting; back in about 1–2 minutes")
+    assert d.state.rebootStartedAt == d.clock
+    assert d.state.token == null
+}
+
+test("a refused Reboot warns with the camera's reason and changes nothing") {
+    def d = withToken(fresh())
+    d.call("reboot")
+    d.reply(d.httpMatching("cmd=Reboot")[0], json: [[cmd: "Reboot", code: 1, error: [rspCode: -26, detail: "ability error"]]])
+    assert d.log.at("warn") == ["camera refused Reboot (ability error, rspCode -26); the account may need admin rights"]
+    assert d.state.rebootStartedAt == null && d.state.token == "tok-live"
+}
+
+test("while the camera reboots, failures log no error; its return logs one info line") {
+    def d = withToken(fresh())
+    d.call("reboot")
+    d.reply(d.httpMatching("cmd=Reboot")[0], json: rebootOk())
+    d.advance(20_000L)
+    d.call("pollStatus")
+    d.reply(d.httpMatching("cmd=Login")[0], error: "connect timed out")
+    assert d.log.at("error").isEmpty()
+    assert d.device.current.healthStatus == "offline"
+    d.advance(70_000L)
+    d.call("pollStatus")
+    d.reply(d.httpMatching("cmd=Login")[0], json: loginOk("tok-new"))
+    assert d.log.at("info").contains("Driveway Camera is back after 1m (reboot)")
+    assert d.device.current.healthStatus == "online"
+    assert d.state.rebootStartedAt == null
+    assert !d.log.at("info").any { it.contains("responding again") }
+}
+
+test("a camera still down 5 minutes after Reboot gets the normal outage error") {
+    def d = withToken(fresh())
+    d.call("reboot")
+    d.reply(d.httpMatching("cmd=Reboot")[0], json: rebootOk())
+    d.advance(301_000L)
+    d.call("pollStatus")
+    d.reply(d.httpMatching("cmd=Login")[0], error: "connect timed out")
+    assert d.log.at("error").size() == 1 && d.log.at("error")[0].contains("isn't answering")
+    assert d.state.rebootStartedAt == null
+}
+
 finish()

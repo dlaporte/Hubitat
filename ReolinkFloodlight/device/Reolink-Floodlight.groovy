@@ -54,6 +54,7 @@ import groovy.json.JsonSlurper
 import groovy.transform.Field
 
 @Field static final String VERSION = "0.10.1"
+@Field static final long REBOOT_WINDOW_MS = 300_000L   // failures this soon after Reboot are expected
 
 // WhiteLed "mode" values, by index.
 @Field static final List<String> FLOODLIGHT_MODES = ["Off", "NightSmart", "AlwaysAtNight", "Schedule"]
@@ -129,6 +130,7 @@ metadata {
         command "setPowerLED", [[name: "state", type: "ENUM",
                 description: "Toggle the camera's status/power LED (only on models with one)",
                 constraints: ["On", "Off"]]]
+        command "reboot"
     }
 
     preferences {
@@ -462,6 +464,34 @@ def setPowerLED(String value) {
 
 def setPowerLEDHandler(result, data) {
     applySetResult(result, "powerLED", data.value, "setPowerLED")
+}
+
+// Restarts the camera. It is unreachable for a minute or two; for 5 minutes after the
+// camera accepts, connection failures are expected and aren't logged as errors.
+def reboot() {
+    logDebug "reboot()"
+    sendCmd([[cmd: "Reboot", param: [:]]], "rebootHandler", [:])
+}
+
+def rebootHandler(result, data) {
+    if (result == null) return   // no reply: noteCommFailure has logged it
+    def r = result instanceof List ? result[0] : null
+    if (r?.code == 0) {
+        log.info "${device.displayName} rebooting; back in about 1–2 minutes"
+        state.rebootStartedAt = now()
+        // The camera's session ends with the reboot, so the next request logs in fresh.
+        state.token = null
+        state.tokenExpiry = 0
+        return
+    }
+    def err = r?.error
+    String detail = err ? "${err.detail}, rspCode ${err.rspCode}" : "${result}"
+    log.warn "camera refused Reboot (${detail}); the account may need admin rights"
+}
+
+private boolean inRebootWindow() {
+    Long started = state.rebootStartedAt as Long
+    return started != null && now() - started < REBOOT_WINDOW_MS
 }
 
 // Shared body of the simple setter callbacks above.
@@ -811,6 +841,11 @@ private void noteCommFailure(String kind, String detail) {
     if (device.currentValue("healthStatus") != "offline") {
         emitEvent(name: "healthStatus", value: "offline", descriptionText: "${device.displayName} is offline")
     }
+    if (inRebootWindow()) {
+        logDebug "camera at ${ip} not answering yet after Reboot (${detail})"
+        return
+    }
+    state.remove("rebootStartedAt")   // the window is over: from here it's a normal outage
     if (state.commFailKey != key) {
         state.commFailKey = key
         state.commFailLastLog = nowMs
@@ -835,7 +870,13 @@ private void noteCommSuccess() {
         emitEvent(name: "healthStatus", value: "online", descriptionText: "${device.displayName} is online")
     }
     if (state.commFailSince == null) return
-    log.info "camera at ${ip} is responding again after ${formatDuration(now() - (state.commFailSince as Long))}"
+    Long rebootAt = state.rebootStartedAt as Long
+    if (rebootAt != null) {
+        log.info "${device.displayName} is back after ${formatDuration(now() - rebootAt)} (reboot)"
+        state.remove("rebootStartedAt")
+    } else {
+        log.info "camera at ${ip} is responding again after ${formatDuration(now() - (state.commFailSince as Long))}"
+    }
     state.remove("commFailSince")
     state.remove("commFailKey")
     state.remove("commFailLastLog")
