@@ -375,4 +375,151 @@ test("a heater without usage reports is skipped until the next day") {
     assert a.http.size() == 2
 }
 
+// ---- Driver: metadata ----
+
+test("the driver declares the new attributes, commands and logging inputs") {
+    def d = driver()
+    assert d.definition.singleThreaded == true
+    assert d.capabilities.containsAll(["Initialize", "Refresh", "Thermostat", "ThermostatMode", "ThermostatHeatingSetpoint"])
+    assert d.attributes*.name.containsAll(["waterHeaterMode", "supportedWaterHeaterModes", "runningState", "hotWaterAvailable",
+            "tankHealth", "compressorHealth", "shutoffValve", "alertCount", "away", "vacation", "scheduleStatus",
+            "wifiSignal", "firmwareVersion", "healthStatus", "energyToday", "waterToday"])
+    assert d.commands.containsAll(["setWaterHeaterMode", "setAway", "resumeSchedule"])
+    List modes = d.commandDefs.setWaterHeaterMode[0].constraints
+    assert modes.containsAll(["Heat Pump", "Energy Saver", "High Demand", "Normal", "Vacation", "Off",
+            "Energy Saving", "Heat Pump Only", "Electric", "Gas", "Performance"])
+    assert d.inputs*.name == ["logEnable", "txtEnable"]
+}
+
+// ---- Driver: connection ----
+
+test("initialize connects with the token, subscribes and asks the app for a reading") {
+    def d = driver()
+    d.call("initialize")
+    Map c = d.mqtt.connects[0]
+    assert c.url == "ssl://rheem.clearblade.com:1884" && c.clientId == "hub-uid"
+    assert c.user == "token-abcd1234" && c.pass == "e2e699cb0bb0bbb88fc8858cb5a401" && c.opts.cleanSession == false
+    assert d.mqtt.subscribes*.getAt(0) == ["user/A1/device/reported", "user/A1/device/desired"]
+    assert d.device.current.healthStatus == "online"
+    assert d.parent.callsTo("refreshEquipment") == [["refreshEquipment", "rheem:" + ID]]
+    assert d.device.data.driverVersion == "2.4.0"
+    assert d.device.current.supportedThermostatFanModes == "[]"
+    assert d.log.at("warn").isEmpty()
+}
+
+test("initialize with debug on turns it off after 30 minutes") {
+    def d = driver()
+    d.settings.logEnable = true
+    d.call("initialize")
+    assert d.schedules.logsOff == 1800
+}
+
+test("a failed connect asks the app to log in again and backs off 15, 60, 300, 900, then 1800 s") {
+    def d = driver()
+    d.mqtt.failWith = "Not authorized to connect"
+    d.call("initialize")
+    List delays = [d.schedules.mqttConnectUntilSuccessful]
+    5.times {
+        d.call("mqttConnectUntilSuccessful")
+        delays << d.schedules.mqttConnectUntilSuccessful
+    }
+    assert delays == [15, 60, 300, 900, 1800, 1800]
+    assert d.parent.callsTo("relogin").size() == 6
+}
+
+test("an outage warns once after 60 s, reminds hourly and reports the recovery with its length") {
+    def d = driver()
+    d.mqtt.failWith = "Connection refused"
+    d.call("initialize")
+    assert d.log.at("warn").isEmpty()
+    assert d.schedules.outageCheck == 60
+    d.advance(15_000); d.call("mqttConnectUntilSuccessful")
+    d.advance(45_000); d.call("outageCheck")
+    assert d.log.at("warn").size() == 1 && d.log.at("warn")[0].contains("Connection refused")
+    assert d.device.current.healthStatus == "offline"
+    d.advance(60_000); d.call("mqttConnectUntilSuccessful")
+    d.advance(300_000); d.call("mqttConnectUntilSuccessful")
+    assert d.log.at("warn").size() == 1
+    d.advance(3_600_000); d.call("mqttConnectUntilSuccessful")
+    assert d.log.at("warn").size() == 2 && d.log.at("warn")[1].contains("still can't connect")
+    d.mqtt.failWith = null
+    d.advance(1_800_000); d.call("mqttConnectUntilSuccessful")
+    assert d.log.at("info").any { it.contains("reconnected to Rheem EcoNet after 1 h") }
+    assert d.device.current.healthStatus == "online"
+    assert !d.schedules.containsKey("outageCheck")
+}
+
+test("a failure that recovers within 60 s logs no warning and no recovery line") {
+    def d = driver()
+    d.mqtt.failWith = "Connection refused"
+    d.call("initialize")
+    d.mqtt.failWith = null
+    d.advance(15_000); d.call("mqttConnectUntilSuccessful")
+    assert !d.schedules.containsKey("outageCheck")
+    d.call("outageCheck")
+    assert d.log.at("warn").isEmpty()
+    assert !d.log.at("info").any { it.contains("reconnected") }
+}
+
+test("a lost connection retries after 15 s when it had lasted, and backs off when it hadn't") {
+    def d = driver()
+    d.call("initialize")
+    d.advance(3_600_000)
+    d.call("mqttClientStatus", "Error: Connection lost: Connection reset")
+    assert d.schedules.mqttConnectUntilSuccessful == 15
+    assert d.mqtt.disconnects >= 1
+    d.call("mqttConnectUntilSuccessful")
+    d.advance(10_000)
+    d.call("mqttClientStatus", "Error: Connection lost: Connection reset")
+    assert d.schedules.mqttConnectUntilSuccessful == 60
+}
+
+test("a status message while a reconnect is pending doesn't schedule another") {
+    def d = driver()
+    d.mqtt.failWith = "Connection refused"
+    d.call("initialize")
+    d.call("mqttClientStatus", "Error: Client is not connected")
+    assert d.schedules.mqttConnectUntilSuccessful == 15
+    assert d.state.retryStep == 1
+}
+
+test("other status messages are only logged at debug") {
+    def d = driver()
+    d.call("mqttClientStatus", "Status: something new")
+    assert d.log.at("warn").isEmpty() && d.runIns.isEmpty()
+}
+
+test("a command while disconnected is queued and sent on reconnect") {
+    def d = driver()
+    d.mqtt.failWith = "down"
+    d.call("publishWithRetry", ["@SETPOINT": 121])
+    assert d.mqtt.publishes.isEmpty()
+    assert d.log.at("warn").any { it.contains("isn't connected") }
+    d.mqtt.failWith = null
+    d.call("mqttConnectUntilSuccessful")
+    assert published(d)*."@SETPOINT" == [121]
+    assert !d.state.containsKey("queuedMessage")
+}
+
+test("a queued command older than 15 minutes is dropped, not sent") {
+    def d = driver()
+    d.mqtt.failWith = "down"
+    d.call("publishWithRetry", ["@AWAY": true])
+    d.advance(16 * 60_000L)
+    d.mqtt.failWith = null
+    d.call("mqttConnectUntilSuccessful")
+    assert d.mqtt.publishes.isEmpty()
+    assert d.log.at("info").any { it.contains("dropped a command") }
+}
+
+test("published messages carry the heater's ids and a transaction id") {
+    def d = driver()
+    d.mqtt.connected = true
+    d.call("publishWithRetry", ["@SETPOINT": 121])
+    assert d.mqtt.publishes[0][0] == "user/A1/device/desired"
+    Map m = published(d)[0]
+    assert m.device_name == DN && m.serial_number == SERIAL
+    assert m.transactionId == "ANDROID_2027-01-15T03:00:00"
+}
+
 finish()
