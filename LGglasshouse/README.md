@@ -57,6 +57,10 @@ app and send key) moved from the Preferences page to commands. Click
 **Initialize** once after updating; it removes the old settings. Rules
 that read the attributes keep working.
 
+If the TV was already selected in Hubitat's HomeKit integration, open it
+and press **Restart integration**, so Apple Home sees the TV's new
+on/off switch.
+
 ## Features
 
 - **Power** — On sends a Wake-on-LAN magic packet and Glasshouse's
