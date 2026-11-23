@@ -41,6 +41,7 @@ Then create a device:
 | IP address | required | The camera's LAN IP |
 | Username | required | Local camera account |
 | Password | required | Local camera password |
+| Use HTTPS | off | Sends the login and commands over HTTPS. The camera's certificate is self-signed, so it is accepted without being checked: it stops someone listening on the network, not someone impersonating the camera. Turn it off if the camera has HTTPS disabled |
 | Motion/AI poll interval | 5 sec | How often to poll for motion / AI events |
 | After On, keep the floodlight on until Off | on | Only after Hubitat turns the light on (On or Set Level): sends On again every 2 minutes until Hubitat turns it off. For cameras whose firmware turns a manually switched-on light off by itself; it has no effect on cameras with Reolink's own keep-on. While it's on, a light switched off in the Reolink app comes back on within 2 minutes, because Hubitat still thinks it's on. Turn it off from Hubitat |
 | Publish snapshotURL attribute | **off** | When on, exposes a `Snap` URL with embedded credentials — convenient for image tiles but leaks the password into event history / hub backups. |
@@ -95,6 +96,7 @@ SwitchLevel capabilities, `Initialize` and `Refresh`, plus:
 - `Set Day Night Mode (mode)` — Auto / Color / Black&White
 - `Set Microphone (state)` — On / Off
 - `Set Power LED (state)` — On / Off (only on models with a controllable status LED)
+- `Reboot` — restarts the camera. It's unreachable for a minute or two; for 5 minutes the driver doesn't log that as an error, then logs one "back after" line. Needs an admin camera account
 
 ## Notes
 
@@ -107,6 +109,10 @@ SwitchLevel capabilities, `Initialize` and `Refresh`, plus:
   request. It never runs more than one login at a time, since the camera
   limits concurrent sessions, and it logs out when you click
   **Initialize** or save preferences.
+- **HTTPS:** with **Use HTTPS** on, the driver uses `https://` for everything,
+  including the snapshot URL. A browser shows the snapshot image only after you've
+  opened the camera's address once and accepted its certificate. If the camera has
+  HTTPS turned off, the "isn't answering" error says to check it.
 
 - **"The light still comes on at night with mode Off":** newer firmware arms
   per-AI floodlight triggers (person/vehicle/animal) independently of the

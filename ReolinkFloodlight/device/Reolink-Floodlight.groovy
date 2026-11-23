@@ -6,6 +6,9 @@
  *  Documentation: https://github.com/dlaporte/Hubitat/blob/main/ReolinkFloodlight/README.md
  *
  *  Changelog:
+ *  v0.11.0 (2026-11-23) - Use HTTPS setting (off by default): the login, commands and snapshot
+ *         URL go over HTTPS, accepting the camera's self-signed certificate. Reboot command;
+ *         for 5 minutes after it, the camera being unreachable isn't logged as an error.
  *  v0.10.1 (2026-11-23) - The keep-on setting's title says it acts only after On, until Off.
  *  v0.10.0 (2026-11-20) - Re-login after a camera reboot (expired-token replies were missed);
  *         one login at a time; device info refreshes every 30 minutes; logs out on Initialize;
@@ -53,7 +56,7 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import groovy.transform.Field
 
-@Field static final String VERSION = "0.10.1"
+@Field static final String VERSION = "0.11.0"
 @Field static final long REBOOT_WINDOW_MS = 300_000L   // failures this soon after Reboot are expected
 
 // WhiteLed "mode" values, by index.

@@ -32,6 +32,7 @@ Exposes:
 - RTSP main/sub stream URLs and an optional snapshot URL for dashboard tiles
 - SD-card capacity / free / mounted attributes, refreshed every 30 minutes
 - `healthStatus` (online/offline)
+- Optional HTTPS (self-signed certificate accepted) and a Reboot command
 
 Async HTTP throughout; 5-second poll loop for motion/AI with epoch-guarded
 self-rescheduling. Does **not** expose any siren or alarm-trigger commands

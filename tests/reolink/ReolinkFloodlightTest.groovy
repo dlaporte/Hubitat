@@ -57,7 +57,7 @@ test("initialize removes the old debug setting and records driverVersion") {
     d.settings.debug = true
     d.call("initialize")
     assert d.device.removedSettings.contains("debug")
-    assert d.device.data.driverVersion == "0.10.1"
+    assert d.device.data.driverVersion == "0.11.0"
 }
 
 test("logsOff is scheduled after unschedule, so Initialize can't cancel it") {
@@ -85,7 +85,7 @@ test("updated logs 'Preferences saved' and re-initializes") {
     def d = fresh()
     d.call("updated")
     assert d.log.at("info").contains("Preferences saved")
-    assert d.device.data.driverVersion == "0.10.1"
+    assert d.device.data.driverVersion == "0.11.0"
 }
 
 // ---- Logging ----
