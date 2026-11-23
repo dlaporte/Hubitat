@@ -7,6 +7,7 @@
  *  Based on: the Tank Utility driver from EricS
  *
  *  Changelog:
+ *  v0.2.0 (2026-11-23) - runOutDate attribute; lowFuel declared as a true/false enum.
  *  v0.1.0 (2026-11-20) - healthStatus; version aligned with Smart Oil Gauge (Connect).
  *
  *  Copyright 2021 David LaPorte
@@ -23,7 +24,7 @@
 
 import groovy.transform.Field
 
-@Field static final String VERSION = "0.1.0"
+@Field static final String VERSION = "0.2.0"
 
 metadata {
     definition(
@@ -48,7 +49,8 @@ metadata {
         attribute "accountNumber", "string"
         attribute "usageRate", "number"           // gallons per day (smoothed)
         attribute "daysRemaining", "number"       // gallons / usageRate
-        attribute "lowFuel", "string"             // "true" / "false" vs threshold
+        attribute "runOutDate", "string"          // yyyy-MM-dd: today + daysRemaining
+        attribute "lowFuel", "enum", ["true", "false"]   // vs the low-fuel threshold
         attribute "lastRefillAt", "string"        // time of the last detected refill (yyyy-MM-dd HH:mm:ss, hub time)
         attribute "lastRefillGallons", "number"   // delta gallons at the refill
         attribute "healthStatus", "enum", ["online", "offline"]   // offline: API failing, or no reading for 96 h

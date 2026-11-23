@@ -1,12 +1,12 @@
 {
   "packageName": "Smart Oil Gauge",
   "author": "David LaPorte",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "minimumHEVersion": "2.2.9",
-  "dateReleased": "2026-11-21",
+  "dateReleased": "2026-11-23",
   "documentationLink": "https://github.com/dlaporte/Hubitat/blob/main/SmartOilGauge/README.md",
   "communityLink": "https://community.hubitat.com/t/smart-oil-gauge-app-and-device/63078",
-  "releaseNotes": "Repeated readings from the gauge no longer skew the usage rate or refill detection. A newly added tank gets its device without re-saving the app. The tile turns red at your low-fuel setting, and API calls time out instead of hanging. New healthStatus attribute on each tank (offline when the API is failing or the tank hasn't reported for 96 hours); outages are logged once, with an hourly reminder and a recovery line. After updating, open the app and click Done. Requires Hubitat 2.2.9+.",
+  "releaseNotes": "New runOutDate attribute on each tank (yyyy-MM-dd: today plus the days remaining), also shown on the tile. lowFuel is now declared as a true/false enum, so rules can pick its value, and it is sent after the other readings, so a rule it triggers sees the current level and run-out date. The hourly check runs in the background instead of holding the hub. A rejected Client ID or Secret is now reported as such, not as an API outage. Requires Hubitat 2.2.9+.",
   "apps": [
     {
       "id": "22278792-e18b-4bc1-8b85-7de24b8e8832",
