@@ -11,7 +11,8 @@
  *
  *  Changelog:
  *  v2.4.1 (2026-11-23) - Status text Rheem sends on several lines (such as "Schedule overridden"
- *                        with its end time) is kept on one line.
+ *                        with its end time) is kept on one line. Every command, resumeSchedule
+ *                        included, is followed by a fresh reading 15 s later.
  *  v2.4.0 (2026-11-23) - David LaPorte's fork. Reconnects with backoff (15 s up to every 30
  *                        minutes) and asks the app for a new login, with one warning per outage
  *                        instead of one every 15 seconds. Adds healthStatus, hot water, tank and
@@ -277,14 +278,15 @@ private void sendQueued(String account) {
     noteCommandSent(new JsonSlurper().parseText(json) as Map)
 }
 
-// Remembers what a command set, to check 15 s later that the heater took it.
+// Remembers what a command set, to check 15 s later that the heater took it. Every command
+// gets the later reading: some change things the heater doesn't report over MQTT (after
+// resumeSchedule, the schedule's setpoint sometimes arrives only in a fresh reading).
 private void noteCommandSent(Map msg) {
     Map check = (state.commandCheck ?: [:]) as Map
     msg.each { k, v ->
         if (CHECKED_FIELDS.containsKey(k.toString())) check[k.toString()] = v
     }
-    if (!check) return
-    state.commandCheck = check
+    if (check) state.commandCheck = check
     runIn(CONFIRM_AFTER_SEC, "confirmCommand")
 }
 
@@ -292,7 +294,7 @@ private void noteCommandSent(Map msg) {
 void confirmCommand() {
     Map sent = (state.commandCheck ?: [:]) as Map
     state.remove("commandCheck")
-    if (!pullSnapshot() || !sent) return
+    if (!pullSnapshot() || !sent) return   // the reading is applied either way
     Map f = heaterFields()
     List<String> missed = []
     sent.each { k, v ->

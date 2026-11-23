@@ -916,4 +916,14 @@ test("Rheem's multi-line status text becomes one line") {
     assert d.log.at("info").contains("Water Heater scheduleStatus is Schedule overridden Until 10:00 AM")
 }
 
+test("15 s after resumeSchedule the driver reads the heater, to pick up the schedule's setpoint") {
+    def d = connected(gasHeater("@SCHEDULESTATUS": "Schedule overridden Until 10:00 AM", "@SETPOINT": [value: 121]))
+    d.parent.answers.refreshEquipment = { String dni -> gasHeater("@SCHEDULESTATUS": "Following Schedule", "@SETPOINT": [value: 120]) }
+    d.call("resumeSchedule")
+    assert d.schedules.confirmCommand == 15
+    d.call("confirmCommand")
+    assert d.device.current.heatingSetpoint == 120 && d.device.current.scheduleStatus == "Following Schedule"
+    assert d.log.at("warn").isEmpty()
+}
+
 finish()

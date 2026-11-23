@@ -86,8 +86,10 @@ An attribute the heater doesn't report stays empty.
 | `refresh` | Reads the heater from Rheem now |
 
 A command or mode the heater doesn't support logs a warning that names what it
-offers, and sends nothing. Fifteen seconds after a command, the driver reads the
-heater from Rheem and logs a warning if it didn't take it (for example, away mode
+offers, and sends nothing. Fifteen seconds after every command, the driver reads the
+heater from Rheem. That picks up changes the heater doesn't always report on its own,
+such as the schedule's setpoint after `resumeSchedule`, and logs a warning if a
+command didn't take (for example, away mode
 on a heater that doesn't have it enabled). Attributes follow the heater's own
 reports, not the commands sent to it. Cooling and fan commands from the Thermostat
 capability log a warning. A command sent while disconnected goes out when the
