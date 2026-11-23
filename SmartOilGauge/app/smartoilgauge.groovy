@@ -457,8 +457,7 @@ private void applyTankData(Map deviceData) {
                 [lastreading: lastReadTime],
                 [battery: battery],
                 [accountNumber: acctNum],
-                [usageRate: derived.usageRate],
-                [lowFuel: derived.lowFuel ? "true" : "false"]
+                [usageRate: derived.usageRate]
             ]
             // Skip null derived metrics — sendEvent(value:null) stores the
             // literal string "null" on the attribute.
@@ -472,6 +471,8 @@ private void applyTankData(Map deviceData) {
                 events << [lastRefillGallons: derived.refillGallons]
                 log.info "refill detected on ${d.label} +${derived.refillGallons} gal"
             }
+            // Last, so a rule triggered by lowFuel reads this reading's level and runOutDate.
+            events << [lowFuel: derived.lowFuel ? "true" : "false"]
             events.each { evt -> d.generateEvent(evt) }
         } catch (Exception e) {
             log.error "applyTankData: error for sensor ${sensorId}: ${e.message}"

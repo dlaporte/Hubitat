@@ -289,6 +289,17 @@ test("each reading with a days-remaining estimate also sends runOutDate") {
     assert child(a).current.runOutDate == a.call("runOutDate", days as Integer)
 }
 
+test("lowFuel is sent last, so a rule it triggers reads this reading's level and runOutDate") {
+    def a = installed()
+    a.advance(3_600_000L)
+    def c = child(a)
+    c.events.clear()
+    pollWith(a, [tank(gallons: "149.0", lastRead: readAt(0))])
+    def names = c.events*.name
+    assert names.contains("runOutDate")
+    assert names[-1] == "lowFuel"
+}
+
 test("the tile shows the run-out date, and leaves the line out without one") {
     def a = installed()
     def c = child(a)
