@@ -39,7 +39,7 @@ test("definition follows STYLE.md") {
 
 test("preferences keep their names; logging inputs replace debug") {
     def d = fresh()
-    assert d.inputs*.name == ["ip", "username", "password", "pollInterval", "keepLightOn", "publishSnapshotURL", "logEnable", "txtEnable"]
+    assert d.inputs*.name == ["ip", "username", "password", "useHttps", "pollInterval", "keepLightOn", "publishSnapshotURL", "logEnable", "txtEnable"]
 }
 
 test("the keep-on setting's title says it acts only after On, until Off") {
@@ -57,7 +57,7 @@ test("initialize removes the old debug setting and records driverVersion") {
     d.settings.debug = true
     d.call("initialize")
     assert d.device.removedSettings.contains("debug")
-    assert d.device.data.driverVersion == "0.10.1"
+    assert d.device.data.driverVersion == "0.11.0"
 }
 
 test("logsOff is scheduled after unschedule, so Initialize can't cancel it") {
@@ -85,7 +85,7 @@ test("updated logs 'Preferences saved' and re-initializes") {
     def d = fresh()
     d.call("updated")
     assert d.log.at("info").contains("Preferences saved")
-    assert d.device.data.driverVersion == "0.10.1"
+    assert d.device.data.driverVersion == "0.11.0"
 }
 
 // ---- Logging ----
@@ -276,6 +276,136 @@ test("an outage logs one error and sets offline; recovery logs info and sets onl
 
 test("healthStatus is declared") {
     assert fresh().attributes*.name.contains("healthStatus")
+}
+
+// ---- 0.11.0: HTTPS ----
+
+test("Use HTTPS comes after the password, off by default, with its note") {
+    def d = fresh()
+    Map https = d.inputs.find { it.name == "useHttps" }
+    assert https.title == "Use HTTPS" && https.defaultValue == false
+    assert https.description == "Encrypts the login and commands. The camera's certificate is self-signed, so it is accepted without being checked. Turn this off if the camera has HTTPS disabled."
+}
+
+test("with HTTPS off, the login and commands use http:// and no TLS option") {
+    def d = fresh()
+    d.call("initialize")
+    def login = d.httpMatching("cmd=Login")[0]
+    assert login.params.uri.startsWith("http://10.0.0.5/cgi-bin/api.cgi?cmd=Login")
+    assert !login.params.containsKey("ignoreSSLIssues")
+    d.reply(login, json: loginOk())
+    def cmd = d.http.find { !it.params.uri.contains("cmd=Login") }
+    assert cmd.params.uri.startsWith("http://10.0.0.5/") && !cmd.params.containsKey("ignoreSSLIssues")
+}
+
+test("with HTTPS on, the login and commands use https:// and accept the camera's certificate") {
+    def d = fresh()
+    d.settings.useHttps = true
+    d.call("initialize")
+    def login = d.httpMatching("cmd=Login")[0]
+    assert login.params.uri.startsWith("https://10.0.0.5/cgi-bin/api.cgi?cmd=Login")
+    assert login.params.ignoreSSLIssues == true
+    d.reply(login, json: loginOk())
+    def cmd = d.http.find { !it.params.uri.contains("cmd=Login") }
+    assert cmd.params.uri.startsWith("https://10.0.0.5/") && cmd.params.ignoreSSLIssues == true
+}
+
+test("the snapshot URL follows Use HTTPS") {
+    def d = fresh()
+    d.settings.publishSnapshotURL = true
+    d.call("initialize")
+    assert d.device.current.snapshotURL.startsWith("http://10.0.0.5/cgi-bin/api.cgi?cmd=Snap&channel=0")
+    d.settings.useHttps = true
+    d.call("initialize")
+    assert d.device.current.snapshotURL.startsWith("https://10.0.0.5/cgi-bin/api.cgi?cmd=Snap&channel=0")
+}
+
+test("turning HTTPS on and saving logs out the old session and logs in over https") {
+    def d = withToken(fresh())
+    d.settings.useHttps = true
+    d.call("updated")
+    def logout = d.httpMatching("cmd=Logout")
+    assert logout.size() == 1 && logout[0].params.uri.contains("token=tok-live")
+    def login = d.httpMatching("cmd=Login")
+    assert login.size() == 1 && login[0].params.uri.startsWith("https://")
+}
+
+test("the unreachable error names HTTPS only when it is on") {
+    def d = withToken(fresh())
+    d.call("pollStatus")
+    d.reply(d.http[0], error: "connect timed out")
+    assert d.log.at("error").size() == 1 && !d.log.at("error")[0].contains("HTTPS")
+    def h = withToken(fresh())
+    h.settings.useHttps = true
+    h.call("pollStatus")
+    h.reply(h.http[0], error: "connect timed out")
+    assert h.log.at("error")[0].contains("HTTPS is on: check the camera has HTTPS enabled, or turn Use HTTPS off.")
+}
+
+// ---- 0.11.0: Reboot ----
+
+def rebootOk = { -> [[cmd: "Reboot", code: 0, value: [rspCode: 200]]] }
+
+test("Reboot sends the command; when the camera accepts, an info line and a fresh login next") {
+    def d = withToken(fresh())
+    assert d.commands.contains("reboot")
+    d.call("reboot")
+    def req = d.httpMatching("cmd=Reboot")[0]
+    assert cmdsOf(req) == ["Reboot"]
+    d.reply(req, json: rebootOk())
+    assert d.log.at("info").contains("Driveway Camera rebooting; back in about 1–2 minutes")
+    assert d.state.rebootStartedAt == d.clock
+    assert d.state.token == null
+}
+
+test("a refused Reboot warns with the camera's reason and changes nothing") {
+    def d = withToken(fresh())
+    d.call("reboot")
+    d.reply(d.httpMatching("cmd=Reboot")[0], json: [[cmd: "Reboot", code: 1, error: [rspCode: -26, detail: "ability error"]]])
+    assert d.log.at("warn") == ["camera refused Reboot (ability error, rspCode -26); the account may need admin rights"]
+    assert d.state.rebootStartedAt == null && d.state.token == "tok-live"
+}
+
+test("while the camera reboots, failures log no error; its return logs one info line") {
+    def d = withToken(fresh())
+    d.call("reboot")
+    d.reply(d.httpMatching("cmd=Reboot")[0], json: rebootOk())
+    d.advance(20_000L)
+    d.call("pollStatus")
+    d.reply(d.httpMatching("cmd=Login")[0], error: "connect timed out")
+    assert d.log.at("error").isEmpty()
+    assert d.device.current.healthStatus == "offline"
+    d.advance(70_000L)
+    d.call("pollStatus")
+    d.reply(d.httpMatching("cmd=Login")[0], json: loginOk("tok-new"))
+    assert d.log.at("info").contains("Driveway Camera is back after 1m (reboot)")
+    assert d.device.current.healthStatus == "online"
+    assert d.state.rebootStartedAt == null
+    assert !d.log.at("info").any { it.contains("responding again") }
+}
+
+test("a camera still down 5 minutes after Reboot gets the normal outage error") {
+    def d = withToken(fresh())
+    d.call("reboot")
+    d.reply(d.httpMatching("cmd=Reboot")[0], json: rebootOk())
+    d.advance(301_000L)
+    d.call("pollStatus")
+    d.reply(d.httpMatching("cmd=Login")[0], error: "connect timed out")
+    assert d.log.at("error").size() == 1 && d.log.at("error")[0].contains("isn't answering")
+    assert d.state.rebootStartedAt == null
+}
+
+test("healthStatus changes are logged once even when the attribute lags behind") {
+    def d = withToken(fresh())
+    d.call("pollStatus")
+    d.reply(d.http[0], error: "connect timed out")
+    d.device.staleValues.healthStatus = "offline"      // Hubitat hasn't caught up with the next change yet
+    2.times {
+        d.call("pollStatus")
+        d.reply(d.httpMatching("cmd=GetMdState")[0], json: [[cmd: "GetMdState", code: 0, value: [state: 0]]])
+    }
+    assert d.log.at("info").count { it == "Driveway Camera is online" } == 1
+    assert d.eventsNamed("healthStatus")*.value == ["offline", "online"]
 }
 
 finish()

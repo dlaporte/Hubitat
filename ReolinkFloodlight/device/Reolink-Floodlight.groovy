@@ -6,6 +6,10 @@
  *  Documentation: https://github.com/dlaporte/Hubitat/blob/main/ReolinkFloodlight/README.md
  *
  *  Changelog:
+ *  v0.11.0 (2026-11-23) - Use HTTPS setting (off by default): the login, commands and snapshot
+ *         URL go over HTTPS, accepting the camera's self-signed certificate. Reboot command;
+ *         for 5 minutes after it, the camera being unreachable isn't logged as an error.
+ *         healthStatus changes are logged once (a quick login and poll logged "online" twice).
  *  v0.10.1 (2026-11-23) - The keep-on setting's title says it acts only after On, until Off.
  *  v0.10.0 (2026-11-20) - Re-login after a camera reboot (expired-token replies were missed);
  *         one login at a time; device info refreshes every 30 minutes; logs out on Initialize;
@@ -53,7 +57,8 @@ import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import groovy.transform.Field
 
-@Field static final String VERSION = "0.10.1"
+@Field static final String VERSION = "0.11.0"
+@Field static final long REBOOT_WINDOW_MS = 300_000L   // failures this soon after Reboot are expected
 
 // WhiteLed "mode" values, by index.
 @Field static final List<String> FLOODLIGHT_MODES = ["Off", "NightSmart", "AlwaysAtNight", "Schedule"]
@@ -129,12 +134,16 @@ metadata {
         command "setPowerLED", [[name: "state", type: "ENUM",
                 description: "Toggle the camera's status/power LED (only on models with one)",
                 constraints: ["On", "Off"]]]
+        command "reboot"
     }
 
     preferences {
         input name: "ip", type: "text", title: "IP address", required: true
         input name: "username", type: "text", title: "Username", required: true
         input name: "password", type: "password", title: "Password", required: true
+        input name: "useHttps", type: "bool", title: "Use HTTPS",
+                description: "Encrypts the login and commands. The camera's certificate is self-signed, so it is accepted without being checked. Turn this off if the camera has HTTPS disabled.",
+                defaultValue: false
         input name: "pollInterval", type: "number", title: "Motion/AI poll interval (seconds)", defaultValue: 5, range: "5..300", required: true
         input name: "keepLightOn", type: "bool", title: "After On, keep the floodlight on until Off (sends On again every 2 min)",
                 description: "For cameras that turn a manually switched-on light off by themselves. Has no effect on cameras with Reolink's own keep-on.",
@@ -182,7 +191,7 @@ void initialize() {
     // username/password, which would otherwise live in event history, hub
     // backups, and the Maker API.
     if (publishSnapshotURL) {
-        String snap = "http://${ip}/cgi-bin/api.cgi?cmd=Snap&channel=0&rs=hubitat" +
+        String snap = apiUrl("cmd=Snap&channel=0&rs=hubitat") +
                 "&user=${URLEncoder.encode(username, 'UTF-8')}&password=${URLEncoder.encode(password, 'UTF-8')}"
         sendEvent(name: "snapshotURL", value: snap)
     } else {
@@ -461,6 +470,34 @@ def setPowerLEDHandler(result, data) {
     applySetResult(result, "powerLED", data.value, "setPowerLED")
 }
 
+// Restarts the camera. It is unreachable for a minute or two; for 5 minutes after the
+// camera accepts, connection failures are expected and aren't logged as errors.
+def reboot() {
+    logDebug "reboot()"
+    sendCmd([[cmd: "Reboot", param: [:]]], "rebootHandler", [:])
+}
+
+def rebootHandler(result, data) {
+    if (result == null) return   // no reply: noteCommFailure has logged it
+    def r = result instanceof List ? result[0] : null
+    if (r?.code == 0) {
+        log.info "${device.displayName} rebooting; back in about 1–2 minutes"
+        state.rebootStartedAt = now()
+        // The camera's session ends with the reboot, so the next request logs in fresh.
+        state.token = null
+        state.tokenExpiry = 0
+        return
+    }
+    def err = r?.error
+    String detail = err ? "${err.detail}, rspCode ${err.rspCode}" : "${result}"
+    log.warn "camera refused Reboot (${detail}); the account may need admin rights"
+}
+
+private boolean inRebootWindow() {
+    Long started = state.rebootStartedAt as Long
+    return started != null && now() - started < REBOOT_WINDOW_MS
+}
+
 // Shared body of the simple setter callbacks above.
 private void applySetResult(result, String attr, value, String label) {
     if (result && result[0]?.code == 0) emitDesc(attr, value)
@@ -622,6 +659,17 @@ def pollStatusHandler(result, data) {
 
 // ---- Auth + HTTP (async) ----
 
+// The camera's API URL, over HTTPS when Use HTTPS is on.
+private String apiUrl(String query) {
+    return "${settings.useHttps ? 'https' : 'http'}://${ip}/cgi-bin/api.cgi?${query}"
+}
+
+// HTTPS requests accept the camera's self-signed certificate.
+private Map withTls(Map params) {
+    if (settings.useHttps) params.ignoreSSLIssues = true
+    return params
+}
+
 private boolean hasValidToken() {
     return state.token && state.tokenExpiry && now() < (state.tokenExpiry as Long) - 60_000L
 }
@@ -645,13 +693,13 @@ private sendCmd(List cmds, String successCallback, Map userData = [:]) {
 
     def body = cmds.collect { [cmd: it.cmd, action: 0, param: (it.param ?: [:])] }
     String firstCmd = cmds[0].cmd
-    def params = [
-            uri: "http://${ip}/cgi-bin/api.cgi?cmd=${firstCmd}&token=${state.token}",
+    def params = withTls([
+            uri: apiUrl("cmd=${firstCmd}&token=${state.token}"),
             contentType: "application/json",
             requestContentType: "application/json",
             body: JsonOutput.toJson(body),
             timeout: 10
-    ]
+    ])
     logDebug "POST ${firstCmd}"
 
     asynchttpPost("sendCmdResponseHandler", params, [
@@ -685,13 +733,13 @@ private loginAsync(List queuedCmds = null, String queuedCallback = null, Map que
     state.token = null
     state.loginStartedAt = now()
     def body = [[cmd: "Login", action: 0, param: [User: [Version: "0", userName: username, password: password]]]]
-    def params = [
-            uri: "http://${ip}/cgi-bin/api.cgi?cmd=Login",
+    def params = withTls([
+            uri: apiUrl("cmd=Login"),
             contentType: "application/json",
             requestContentType: "application/json",
             body: JsonOutput.toJson(body),
             timeout: 10
-    ]
+    ])
     asynchttpPost("loginResponseHandler", params, [
             queuedCmds: queuedCmds,
             queuedCallback: queuedCallback,
@@ -794,9 +842,12 @@ private void noteCommFailure(String kind, String detail) {
     String key = "${kind}|${ip}"
     Long nowMs = now()
     if (state.commFailSince == null) state.commFailSince = nowMs
-    if (device.currentValue("healthStatus") != "offline") {
-        emitEvent(name: "healthStatus", value: "offline", descriptionText: "${device.displayName} is offline")
+    setHealth("offline")
+    if (inRebootWindow()) {
+        logDebug "camera at ${ip} not answering yet after Reboot (${detail})"
+        return
     }
+    state.remove("rebootStartedAt")   // the window is over: from here it's a normal outage
     if (state.commFailKey != key) {
         state.commFailKey = key
         state.commFailLastLog = nowMs
@@ -805,8 +856,9 @@ private void noteCommFailure(String kind, String detail) {
                     "in preferences. Repeats are suppressed; reminder hourly."
         } else {
             log.error "camera at ${ip} isn't answering (${detail}) — it looks offline, off the network, " +
-                    "or at a different IP. This is a connection problem, not a username/password problem. " +
-                    "Repeats are suppressed; reminder hourly."
+                    "or at a different IP. This is a connection problem, not a username/password problem." +
+                    (settings.useHttps ? " HTTPS is on: check the camera has HTTPS enabled, or turn Use HTTPS off." : "") +
+                    " Repeats are suppressed; reminder hourly."
         }
     } else if (nowMs - ((state.commFailLastLog ?: 0L) as Long) >= 3_600_000L) {
         state.commFailLastLog = nowMs
@@ -815,12 +867,24 @@ private void noteCommFailure(String kind, String detail) {
     }
 }
 
+// Keyed on state, not the attribute: a login and the poll it releases succeed within
+// milliseconds, before Hubitat has caught up with the first change (STYLE.md, Lifecycle).
+private void setHealth(String value) {
+    if (state.health == value) return
+    state.health = value
+    emitEvent(name: "healthStatus", value: value, descriptionText: "${device.displayName} is ${value}")
+}
+
 private void noteCommSuccess() {
-    if (device.currentValue("healthStatus") != "online") {
-        emitEvent(name: "healthStatus", value: "online", descriptionText: "${device.displayName} is online")
-    }
+    setHealth("online")
     if (state.commFailSince == null) return
-    log.info "camera at ${ip} is responding again after ${formatDuration(now() - (state.commFailSince as Long))}"
+    Long rebootAt = state.rebootStartedAt as Long
+    if (rebootAt != null) {
+        log.info "${device.displayName} is back after ${formatDuration(now() - rebootAt)} (reboot)"
+        state.remove("rebootStartedAt")
+    } else {
+        log.info "camera at ${ip} is responding again after ${formatDuration(now() - (state.commFailSince as Long))}"
+    }
     state.remove("commFailSince")
     state.remove("commFailKey")
     state.remove("commFailLastLog")

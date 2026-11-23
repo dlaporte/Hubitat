@@ -1,11 +1,11 @@
 {
   "packageName": "Reolink Floodlight Camera",
   "author": "David LaPorte",
-  "version": "0.10.1",
+  "version": "0.11.0",
   "minimumHEVersion": "2.2.9",
   "dateReleased": "2026-11-23",
   "documentationLink": "https://github.com/dlaporte/Hubitat/blob/main/ReolinkFloodlight/README.md",
-  "releaseNotes": "The \"Keep floodlight on indefinitely\" setting is renamed \"After On, keep the floodlight on until Off\", with a note on what it does: it acts only after Hubitat turns the light on, sends On again every 2 minutes until Off, and has no effect on cameras with Reolink's own keep-on. The setting itself and its value are unchanged. Requires Hubitat 2.2.9+.",
+  "releaseNotes": "New Use HTTPS setting (off by default): the login, commands and snapshot URL go over HTTPS, accepting the camera's self-signed certificate. New Reboot command; for 5 minutes after it, the camera being unreachable isn't logged as an error, and one line says when it's back. healthStatus changes are logged once. Includes 0.10.1's clearer title for the keep-on setting. Requires Hubitat 2.2.9+.",
   "drivers": [
     {
       "id": "c1f9a4d2-3e8b-4f5c-9d2e-7a1b6c4f0d3e",
