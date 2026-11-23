@@ -96,8 +96,8 @@ Verified on my heater, a gas heater with on/off (no modes), on 2026-11-23:
 
 - Connects on Initialize, `healthStatus` online, and the full reading arrives
   through the app (firmware, alerts, away, vacation, schedule status, Wi-Fi).
-- Setpoint reads as a number. `setHeatingSetpoint` 121, then 120, each confirmed by
-  the heater within 3 seconds.
+- Setpoint reads as a number. `setHeatingSetpoint` 121, then 120: each showed in a
+  fresh reading from Rheem's server afterwards, so the heater took both.
 - Heat/off reads correctly (`heat`, `ON`), and pressing Done no longer flips it to off.
 - Refresh reads the heater without logging in. Opening the settings page logs in
   once; pressing Done doesn't log in again.
