@@ -135,6 +135,9 @@ metadata {
         input name: "ip", type: "text", title: "IP address", required: true
         input name: "username", type: "text", title: "Username", required: true
         input name: "password", type: "password", title: "Password", required: true
+        input name: "useHttps", type: "bool", title: "Use HTTPS",
+                description: "Encrypts the login and commands. The camera's certificate is self-signed, so it is accepted without being checked. Turn this off if the camera has HTTPS disabled.",
+                defaultValue: false
         input name: "pollInterval", type: "number", title: "Motion/AI poll interval (seconds)", defaultValue: 5, range: "5..300", required: true
         input name: "keepLightOn", type: "bool", title: "After On, keep the floodlight on until Off (sends On again every 2 min)",
                 description: "For cameras that turn a manually switched-on light off by themselves. Has no effect on cameras with Reolink's own keep-on.",
@@ -182,7 +185,7 @@ void initialize() {
     // username/password, which would otherwise live in event history, hub
     // backups, and the Maker API.
     if (publishSnapshotURL) {
-        String snap = "http://${ip}/cgi-bin/api.cgi?cmd=Snap&channel=0&rs=hubitat" +
+        String snap = apiUrl("cmd=Snap&channel=0&rs=hubitat") +
                 "&user=${URLEncoder.encode(username, 'UTF-8')}&password=${URLEncoder.encode(password, 'UTF-8')}"
         sendEvent(name: "snapshotURL", value: snap)
     } else {
@@ -622,6 +625,17 @@ def pollStatusHandler(result, data) {
 
 // ---- Auth + HTTP (async) ----
 
+// The camera's API URL, over HTTPS when Use HTTPS is on.
+private String apiUrl(String query) {
+    return "${settings.useHttps ? 'https' : 'http'}://${ip}/cgi-bin/api.cgi?${query}"
+}
+
+// HTTPS requests accept the camera's self-signed certificate.
+private Map withTls(Map params) {
+    if (settings.useHttps) params.ignoreSSLIssues = true
+    return params
+}
+
 private boolean hasValidToken() {
     return state.token && state.tokenExpiry && now() < (state.tokenExpiry as Long) - 60_000L
 }
@@ -645,13 +659,13 @@ private sendCmd(List cmds, String successCallback, Map userData = [:]) {
 
     def body = cmds.collect { [cmd: it.cmd, action: 0, param: (it.param ?: [:])] }
     String firstCmd = cmds[0].cmd
-    def params = [
-            uri: "http://${ip}/cgi-bin/api.cgi?cmd=${firstCmd}&token=${state.token}",
+    def params = withTls([
+            uri: apiUrl("cmd=${firstCmd}&token=${state.token}"),
             contentType: "application/json",
             requestContentType: "application/json",
             body: JsonOutput.toJson(body),
             timeout: 10
-    ]
+    ])
     logDebug "POST ${firstCmd}"
 
     asynchttpPost("sendCmdResponseHandler", params, [
@@ -685,13 +699,13 @@ private loginAsync(List queuedCmds = null, String queuedCallback = null, Map que
     state.token = null
     state.loginStartedAt = now()
     def body = [[cmd: "Login", action: 0, param: [User: [Version: "0", userName: username, password: password]]]]
-    def params = [
-            uri: "http://${ip}/cgi-bin/api.cgi?cmd=Login",
+    def params = withTls([
+            uri: apiUrl("cmd=Login"),
             contentType: "application/json",
             requestContentType: "application/json",
             body: JsonOutput.toJson(body),
             timeout: 10
-    ]
+    ])
     asynchttpPost("loginResponseHandler", params, [
             queuedCmds: queuedCmds,
             queuedCallback: queuedCallback,
@@ -805,8 +819,9 @@ private void noteCommFailure(String kind, String detail) {
                     "in preferences. Repeats are suppressed; reminder hourly."
         } else {
             log.error "camera at ${ip} isn't answering (${detail}) — it looks offline, off the network, " +
-                    "or at a different IP. This is a connection problem, not a username/password problem. " +
-                    "Repeats are suppressed; reminder hourly."
+                    "or at a different IP. This is a connection problem, not a username/password problem." +
+                    (settings.useHttps ? " HTTPS is on: check the camera has HTTPS enabled, or turn Use HTTPS off." : "") +
+                    " Repeats are suppressed; reminder hourly."
         }
     } else if (nowMs - ((state.commFailLastLog ?: 0L) as Long) >= 3_600_000L) {
         state.commFailLastLog = nowMs

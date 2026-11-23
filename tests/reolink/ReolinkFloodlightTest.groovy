@@ -39,7 +39,7 @@ test("definition follows STYLE.md") {
 
 test("preferences keep their names; logging inputs replace debug") {
     def d = fresh()
-    assert d.inputs*.name == ["ip", "username", "password", "pollInterval", "keepLightOn", "publishSnapshotURL", "logEnable", "txtEnable"]
+    assert d.inputs*.name == ["ip", "username", "password", "useHttps", "pollInterval", "keepLightOn", "publishSnapshotURL", "logEnable", "txtEnable"]
 }
 
 test("the keep-on setting's title says it acts only after On, until Off") {
@@ -276,6 +276,70 @@ test("an outage logs one error and sets offline; recovery logs info and sets onl
 
 test("healthStatus is declared") {
     assert fresh().attributes*.name.contains("healthStatus")
+}
+
+// ---- 0.11.0: HTTPS ----
+
+test("Use HTTPS comes after the password, off by default, with its note") {
+    def d = fresh()
+    Map https = d.inputs.find { it.name == "useHttps" }
+    assert https.title == "Use HTTPS" && https.defaultValue == false
+    assert https.description == "Encrypts the login and commands. The camera's certificate is self-signed, so it is accepted without being checked. Turn this off if the camera has HTTPS disabled."
+}
+
+test("with HTTPS off, the login and commands use http:// and no TLS option") {
+    def d = fresh()
+    d.call("initialize")
+    def login = d.httpMatching("cmd=Login")[0]
+    assert login.params.uri.startsWith("http://10.0.0.5/cgi-bin/api.cgi?cmd=Login")
+    assert !login.params.containsKey("ignoreSSLIssues")
+    d.reply(login, json: loginOk())
+    def cmd = d.http.find { !it.params.uri.contains("cmd=Login") }
+    assert cmd.params.uri.startsWith("http://10.0.0.5/") && !cmd.params.containsKey("ignoreSSLIssues")
+}
+
+test("with HTTPS on, the login and commands use https:// and accept the camera's certificate") {
+    def d = fresh()
+    d.settings.useHttps = true
+    d.call("initialize")
+    def login = d.httpMatching("cmd=Login")[0]
+    assert login.params.uri.startsWith("https://10.0.0.5/cgi-bin/api.cgi?cmd=Login")
+    assert login.params.ignoreSSLIssues == true
+    d.reply(login, json: loginOk())
+    def cmd = d.http.find { !it.params.uri.contains("cmd=Login") }
+    assert cmd.params.uri.startsWith("https://10.0.0.5/") && cmd.params.ignoreSSLIssues == true
+}
+
+test("the snapshot URL follows Use HTTPS") {
+    def d = fresh()
+    d.settings.publishSnapshotURL = true
+    d.call("initialize")
+    assert d.device.current.snapshotURL.startsWith("http://10.0.0.5/cgi-bin/api.cgi?cmd=Snap&channel=0")
+    d.settings.useHttps = true
+    d.call("initialize")
+    assert d.device.current.snapshotURL.startsWith("https://10.0.0.5/cgi-bin/api.cgi?cmd=Snap&channel=0")
+}
+
+test("turning HTTPS on and saving logs out the old session and logs in over https") {
+    def d = withToken(fresh())
+    d.settings.useHttps = true
+    d.call("updated")
+    def logout = d.httpMatching("cmd=Logout")
+    assert logout.size() == 1 && logout[0].params.uri.contains("token=tok-live")
+    def login = d.httpMatching("cmd=Login")
+    assert login.size() == 1 && login[0].params.uri.startsWith("https://")
+}
+
+test("the unreachable error names HTTPS only when it is on") {
+    def d = withToken(fresh())
+    d.call("pollStatus")
+    d.reply(d.http[0], error: "connect timed out")
+    assert d.log.at("error").size() == 1 && !d.log.at("error")[0].contains("HTTPS")
+    def h = withToken(fresh())
+    h.settings.useHttps = true
+    h.call("pollStatus")
+    h.reply(h.http[0], error: "connect timed out")
+    assert h.log.at("error")[0].contains("HTTPS is on: check the camera has HTTPS enabled, or turn Use HTTPS off.")
 }
 
 finish()
