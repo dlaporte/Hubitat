@@ -522,4 +522,167 @@ test("published messages carry the heater's ids and a transaction id") {
     assert m.transactionId == "ANDROID_2027-01-15T03:00:00"
 }
 
+// ---- Driver: fields ----
+
+test("the snapshot's setpoint is a number, not the constraints map") {
+    def d = driver()
+    d.call("applySnapshot", gasHeater())
+    assert d.device.current.heatingSetpoint == 120 && d.device.current.thermostatSetpoint == 120
+    assert d.eventsNamed("heatingSetpoint")[0].unit == "°F"
+}
+
+test("@ENABLED true and 1 read as heat; false and 0 as off") {
+    [[true, "heat", "ON"], [1, "heat", "ON"], [false, "off", "OFF"], [0, "off", "OFF"]].each { v, mode, whm ->
+        def d = driver()
+        d.call("applySnapshot", gasHeater("@ENABLED": [value: v]))
+        assert d.device.current.thermostatMode == mode: "${v}"
+        assert d.device.current.waterHeaterMode == whm
+    }
+}
+
+test("an MQTT value replaces the value inside a stored field and keeps its limits") {
+    def d = driverWith(gasHeater())
+    d.call("parse", mqtt(["@SETPOINT": 118, "@ENABLED": 0]))
+    assert d.device.current.heatingSetpoint == 118
+    assert d.device.current.thermostatMode == "off"
+    assert d.state.fields["@SETPOINT"].constraints.upperLimit == 140
+}
+
+test("@ACTIVE no longer sets the mode") {
+    def d = driverWith(gasHeater())
+    d.call("parse", mqtt(["@ACTIVE": false]))
+    assert d.device.current.thermostatMode == "heat"
+}
+
+test("the mode position maps through the heater's own list; a name wins over a position") {
+    def d = driverWith(heatPump())
+    assert d.device.current.waterHeaterMode == "ENERGY SAVING" && d.device.current.thermostatMode == "auto"
+    assert d.device.current.supportedWaterHeaterModes ==
+            JsonOutput.toJson(["OFF", "ENERGY SAVING", "HEAT PUMP ONLY", "HIGH DEMAND", "ELECTRIC MODE", "VACATION"])
+    assert d.device.current.supportedThermostatModes == JsonOutput.toJson(["off", "heat", "emergency heat", "auto"])
+    d.call("parse", mqtt(["@MODE": 3]))
+    assert d.device.current.waterHeaterMode == "HIGH DEMAND" && d.device.current.thermostatMode == "emergency heat"
+    d.call("parse", mqtt(["@MODE": [value: 0, status: "HEAT PUMP ONLY"]]))
+    assert d.device.current.waterHeaterMode == "HEAT PUMP ONLY" && d.device.current.thermostatMode == "heat"
+}
+
+test("a position-only update after a bare one isn't pulled back by a stale name") {
+    def d = driverWith(heatPump())
+    d.call("parse", mqtt(["@MODE": 3]))
+    d.call("parse", mqtt(["@MODE": [value: 4]]))
+    assert d.device.current.waterHeaterMode == "ELECTRIC MODE"
+}
+
+test("a mode name it doesn't know counts as heat") {
+    def d = driverWith(heatPump("@MODE": [constraints: [enumText: ["OFF", "ELECTRIC/GAS"]], value: 1]))
+    assert d.device.current.thermostatMode == "heat"
+    assert d.device.current.waterHeaterMode == "ELECTRIC/GAS"
+}
+
+test("David's gas heater: its readings, and nothing for fields it doesn't have") {
+    def d = driver()
+    d.call("applySnapshot", gasHeater())
+    Map c = d.device.current
+    assert c.alertCount == 0 && c.away == "off" && c.vacation == "off" && c.scheduleStatus == "none"
+    assert c.firmwareVersion == "RH-WIFI-00-01-06" && c.wifiSignal == -52
+    assert c.thermostatOperatingState == "idle" && c.runningState == "idle"
+    assert c.healthStatus == "online"
+    assert c.supportedThermostatModes == JsonOutput.toJson(["off", "heat"])
+    ["hotWaterAvailable", "tankHealth", "compressorHealth", "shutoffValve", "supportedWaterHeaterModes"].each {
+        assert d.eventsNamed(it).isEmpty(): it
+    }
+}
+
+test("the heat pump's readings") {
+    def d = driverWith(heatPump())
+    Map c = d.device.current
+    assert c.hotWaterAvailable == 66 && c.tankHealth == 95 && c.compressorHealth == 88
+    assert c.alertCount == 2 && c.away == "on" && c.vacation == "off"
+    assert c.scheduleStatus == "Following Schedule" && c.firmwareVersion == "HP-5.1"
+    assert c.runningState == "Compressor Running" && c.thermostatOperatingState == "heating"
+}
+
+test("hot water icons read as 100, 66, 33 and 0%") {
+    ["ic_tank_hundread_percent.png": 100, "ic_tank_fourty_percent.png": 66, "ic_tank_ten_percent.png": 33,
+     "ic_tank_empty.png": 0, "ic_tank_zero_percent.png": 0].each { icon, pct ->
+        def d = driverWith(heatPump("@HOTWATER": icon))
+        assert d.device.current.hotWaterAvailable == pct: icon
+    }
+}
+
+test("the leak kit's shut-off valve reads open, then closed") {
+    def d = driverWith(leakKit())
+    assert d.device.current.shutoffValve == "open"
+    d.call("parse", mqtt(["@VALVESTATUS": [title: "Shut-OFF Valve - Closed"]]))
+    assert d.device.current.shutoffValve == "closed"
+}
+
+test("the heater reporting @CONNECTED false makes healthStatus offline") {
+    def d = driverWith(gasHeater())
+    d.call("parse", mqtt(["@CONNECTED": false]))
+    assert d.device.current.healthStatus == "offline"
+    d.call("parse", mqtt(["@CONNECTED": true]))
+    assert d.device.current.healthStatus == "online"
+}
+
+test("updates for another heater are ignored; a signal update with another serial is taken") {
+    def d = driverWith(gasHeater())
+    d.call("parse", JsonOutput.toJson([topic: "user/A1/device/reported",
+            payload: JsonOutput.toJson([device_name: "9999", serial_number: SERIAL, "@SETPOINT": 100])]))
+    d.call("parse", JsonOutput.toJson([topic: "user/A1/device/reported",
+            payload: JsonOutput.toJson([device_name: DN, serial_number: "OTHER", "@SETPOINT": 101])]))
+    assert d.device.current.heatingSetpoint == 120
+    d.call("parse", JsonOutput.toJson([topic: "user/A1/device/reported",
+            payload: JsonOutput.toJson([device_name: DN, serial_number: "WIFI-MODULE", "@SIGNAL": -60])]))
+    assert d.device.current.wifiSignal == -60
+}
+
+test("network details aren't kept in state") {
+    def d = driverWith(gasHeater())
+    assert !d.state.fields.containsKey("@SSID") && !d.state.fields.containsKey("@IP_ADDRESS")
+    assert d.state.fields.containsKey("@SETPOINT")
+}
+
+test("an unreadable MQTT message is ignored") {
+    def d = driverWith(gasHeater())
+    d.call("parse", JsonOutput.toJson([topic: "user/A1/device/reported", payload: "not json"]))
+    assert d.events.isEmpty() && d.log.at("warn").isEmpty()
+}
+
+test("descriptionText is logged once per change; Wi-Fi signal changes aren't logged") {
+    def d = driverWith(gasHeater())
+    d.call("parse", mqtt(["@SETPOINT": 121]))
+    assert d.log.at("info") == ["Water Heater heatingSetpoint is 121°F", "Water Heater thermostatSetpoint is 121°F"]
+    d.call("parse", mqtt(["@SIGNAL": -60]))
+    assert d.log.at("info").size() == 2
+    d.settings.txtEnable = false
+    d.call("parse", mqtt(["@SETPOINT": 122]))
+    assert d.log.at("info").size() == 2
+}
+
+// ---- Driver: usage ----
+
+test("applyUsage sums today's energy; the unit comes from Rheem's message, else the heater type") {
+    def d = driverWith(gasHeater())
+    d.call("applyUsage", "energyUsage", usage("energy_usage", [1.25, 2.5, 0], "Energy usage shown in kBTU"))
+    assert d.device.current.energyToday == 3.75
+    assert d.eventsNamed("energyToday")[-1].unit == "kBTU"
+    d.call("applyUsage", "energyUsage", usage("energy_usage", [1], "Usage"))
+    assert d.eventsNamed("energyToday")[-1].unit == "kBTU"
+    def hp = driverWith(heatPump())
+    hp.call("applyUsage", "energyUsage", usage("energy_usage", [0.5], "Showing energy in KWH today"))
+    assert hp.eventsNamed("energyToday")[-1].unit == "kWh"
+    hp.call("applyUsage", "energyUsage", usage("energy_usage", [0.5]))
+    assert hp.eventsNamed("energyToday")[-1].unit == "kWh"
+}
+
+test("applyUsage sums today's water in gallons; a report without data emits nothing") {
+    def d = driverWith(heatPump())
+    d.call("applyUsage", "waterUsage", usage("water_usage", [12.4, 3.1]))
+    assert d.device.current.waterToday == 15.5 && d.eventsNamed("waterToday")[0].unit == "gal"
+    d.reset()
+    d.call("applyUsage", "waterUsage", [success: true, results: [:]])
+    assert d.events.isEmpty()
+}
+
 finish()

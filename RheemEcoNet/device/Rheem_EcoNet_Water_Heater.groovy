@@ -79,6 +79,14 @@ import java.text.SimpleDateFormat
 @Field static final long REMINDER_MS = 3_600_000L
 @Field static final long STABLE_MS = 60_000L          // a connection this old resets the backoff when lost
 @Field static final long QUEUE_MAX_AGE_MS = 900_000L  // a queued command older than this is dropped
+// The fields the driver reads. The rest of what Rheem sends (network details, screen
+// layouts) isn't kept.
+@Field static final List<String> FIELDS_KEPT = ["@SETPOINT", "@ENABLED", "@MODE", "@RUNNING", "@HOTWATER", "@TANK",
+        "@COMBUSTION", "@VALVESTATUS", "@ALERTCOUNT", "@AWAY", "@AWAYCONFIG", "@VACATION", "@SCHEDULESTATUS",
+        "@SIGNAL", "@CONNECTED", "@VERSION", "@TYPE"]
+// pyeconet's mode names: some are the same mode under another name.
+@Field static final Map<String, String> MODE_ALIASES = [ENERGYSAVER: "ENERGYSAVING", HEATPUMP: "HEATPUMPONLY",
+        ELECTRICMODE: "ELECTRIC", NORMAL: "ELECTRIC"]
 
 // ---- Lifecycle ----
 
@@ -276,9 +284,224 @@ def getSerialNumber() {
 // ---- Fields ----
 
 def parse(String message) {
+    def msg = interfaces.mqtt.parseMessage(message)
+    def payload
+    try {
+        payload = new JsonSlurper().parseText(msg.payload as String)
+    } catch (e) {
+        logDebug "Unreadable MQTT message on ${msg.topic}: ${e.message}"
+        return
+    }
+    if (!(payload instanceof Map) || !isForThisHeater(payload as Map)) return
+    logDebug "MQTT ${msg.topic}: ${msg.payload}"
+    if (payload.dialog instanceof Map) {
+        confirmDialog(payload.dialog as Map)
+        return
+    }
+    mergeFields(payload as Map)
+    applyFields()
 }
 
+// From the app: the heater's full field set from Rheem's REST API.
 void applySnapshot(Map equip) {
+    mergeFields(equip)
+    applyFields()
+}
+
+// From the app's hourly poll: today's energy or water use from Rheem's usage report.
+void applyUsage(String type, Map response) {
+    Map report = (response?.results ?: [:]) as Map
+    def section = report[type == "energyUsage" ? "energy_usage" : "water_usage"]
+    List data = section instanceof Map ? section.data as List : null
+    if (data == null) {
+        logDebug "No ${type} data in Rheem's report"
+        return
+    }
+    BigDecimal total = data.inject(BigDecimal.ZERO) { BigDecimal sum, item ->
+        isNumeric(item?.value) ? sum + new BigDecimal(item.value.toString()) : sum
+    }
+    BigDecimal rounded = Math.round(total.doubleValue() * 100) / 100
+    if (type == "energyUsage") emitAttr("energyToday", rounded, energyUnit(section.message))
+    else emitAttr("waterToday", rounded, "gal")
+}
+
+// The unit is a word in Rheem's message (pyeconet reads the fourth word). Without one, gas
+// heaters report kBTU and the others kWh.
+private String energyUnit(Object message) {
+    String word = message?.toString()?.tokenize(" ")?.collect { it.replaceAll(/[^A-Za-z]/, "") }?.find { it ==~ /(?i)k?(wh|btu)/ }
+    if (word) return word.toLowerCase().contains("btu") ? "kBTU" : "kWh"
+    return val(fields()["@TYPE"]) == "gasWaterHeater" ? "kBTU" : "kWh"
+}
+
+private boolean isForThisHeater(Map p) {
+    if (p.device_name?.toString() != getDeviceName()) return false
+    // Signal updates can carry the Wi-Fi module's serial number instead of the heater's (pyeconet).
+    return p.serial_number?.toString() == getSerialNumber() || p.containsKey("@SIGNAL")
+}
+
+// pyeconet's merge: a dict merges into the stored dict; a bare value replaces the stored
+// dict's value, or the stored value.
+private void mergeFields(Map update) {
+    Map f = fields()
+    update.each { k, v ->
+        String key = k.toString()
+        if (!FIELDS_KEPT.contains(key)) return
+        def old = f[key]
+        if (v instanceof Map) {
+            Map merged = old instanceof Map ? new LinkedHashMap(old as Map) : [:]
+            merged.putAll(v as Map)
+            if (key == "@MODE" && (v as Map).containsKey("status")) alignModeValue(merged)
+            f[key] = merged
+        } else if (old instanceof Map) {
+            if ((old as Map).containsKey("value")) {
+                Map m = new LinkedHashMap(old as Map)
+                m.value = v
+                if (key == "@MODE") m.remove("status")   // the stored name no longer describes the value
+                f[key] = m
+            }
+        } else {
+            f[key] = v
+        }
+    }
+    state.fields = f
+}
+
+// An update that carries both a position and a name: the name wins (pyeconet).
+private void alignModeValue(Map mode) {
+    String status = mode.status?.toString()?.trim()
+    List names = mode.constraints instanceof Map ? mode.constraints.enumText as List : null
+    if (!status || !names) return
+    int i = names.findIndexOf { it?.toString()?.trim()?.equalsIgnoreCase(status) }
+    if (i >= 0) mode.value = i
+}
+
+// Works out every attribute from the stored fields. One whose field the heater doesn't
+// report is left alone.
+private void applyFields() {
+    Map f = fields()
+    if (!f) return
+    def setpoint = val(f["@SETPOINT"])
+    if (isNumeric(setpoint)) {
+        BigDecimal t = new BigDecimal(setpoint.toString())
+        emitAttr("heatingSetpoint", t, "°F")
+        emitAttr("thermostatSetpoint", t, "°F")
+    }
+    applyMode(f)
+    if (f.containsKey("@RUNNING")) {
+        String running = val(f["@RUNNING"])?.toString()?.trim() ?: ""
+        String opState = running ? "heating" : "idle"
+        emitEvent(name: "thermostatOperatingState", value: opState, descriptionText: "${device.displayName} is ${opState}")
+        emitAttr("runningState", running ?: "idle")
+    }
+    Integer hot = hotWaterPercent(f["@HOTWATER"])
+    if (hot != null) emitAttr("hotWaterAvailable", hot, "%")
+    emitNumber(f, "@TANK", "tankHealth", "%")
+    emitNumber(f, "@COMBUSTION", "compressorHealth", "%")
+    String valve = valveState(f["@VALVESTATUS"])
+    if (valve) emitAttr("shutoffValve", valve)
+    emitNumber(f, "@ALERTCOUNT", "alertCount", null)
+    if (f.containsKey("@AWAY")) emitAttr("away", truthy(val(f["@AWAY"])) ? "on" : "off")
+    if (f.containsKey("@VACATION")) emitAttr("vacation", truthy(val(f["@VACATION"])) ? "on" : "off")
+    if (f.containsKey("@SCHEDULESTATUS")) emitAttr("scheduleStatus", val(f["@SCHEDULESTATUS"])?.toString()?.trim() ?: "none")
+    def signal = val(f["@SIGNAL"])
+    if (isNumeric(signal)) sendEvent(name: "wifiSignal", value: new BigDecimal(signal.toString()), unit: "dBm")  // changes often; not logged
+    def version = val(f["@VERSION"])
+    if (version != null && version.toString()) emitAttr("firmwareVersion", version.toString())
+    sendSupportedModes()
+    updateHealth()
+}
+
+private void applyMode(Map f) {
+    Boolean enabled = enabledFlag(f)
+    String name = currentModeName(f)
+    if (enabled == null && f["@MODE"] == null && !f.containsKey("@SETPOINT")) return
+    String mode = enabled == false ? "off" : (name != null ? thermostatModeFor(name) : "heat")
+    emitAttr("thermostatMode", mode)
+    String heaterMode = enabled == false ? "OFF" : (name ?: (enabled != null ? "ON" : null))
+    if (heaterMode != null) emitAttr("waterHeaterMode", heaterMode)
+    List<String> names = modeList(f)
+    if (names) emitEvent(name: "supportedWaterHeaterModes", value: JsonOutput.toJson(names))
+}
+
+private Boolean enabledFlag(Map f) {
+    return f.containsKey("@ENABLED") ? truthy(val(f["@ENABLED"])) : null
+}
+
+// The heater's own mode names, trimmed, in Rheem's order (a mode's value is its position).
+private List<String> modeList(Map f) {
+    def mode = f["@MODE"]
+    def names = mode instanceof Map && mode.constraints instanceof Map ? mode.constraints.enumText : null
+    return names instanceof List ? names.collect { it.toString().trim() } : []
+}
+
+private String currentModeName(Map f) {
+    def mode = f["@MODE"]
+    if (mode == null) return null
+    List<String> names = modeList(f)
+    def v = val(mode)
+    Integer i = isNumeric(v) ? (v.toString() as BigDecimal).intValue() : null
+    if (i != null && i >= 0 && i < names.size()) return names[i]
+    String status = mode instanceof Map ? mode.status?.toString()?.trim() : null
+    return status ?: null
+}
+
+// pyeconet's matching: case, spaces, underscores and slashes don't matter.
+private String canonicalMode(Object name) {
+    String n = name == null ? "" : name.toString().toUpperCase().replaceAll(/[\s_\/]/, "")
+    return MODE_ALIASES[n] ?: n
+}
+
+// A mode name it doesn't know (such as ELECTRIC/GAS) counts as heat.
+private String thermostatModeFor(String name) {
+    switch (canonicalMode(name)) {
+        case "ENERGYSAVING":
+            return "auto"
+        case "HIGHDEMAND":
+        case "PERFORMANCE":
+            return "emergency heat"
+        case "OFF":
+            return "off"
+        default:
+            return "heat"
+    }
+}
+
+private Integer hotWaterPercent(Object raw) {
+    if (raw == null) return null
+    String icon = (raw instanceof Map ? (raw.icon ?: raw.value) : raw)?.toString() ?: ""
+    if (icon.contains("hundread_percent") || icon.contains("hundred_percent")) return 100  // Rheem's spelling
+    if (icon.contains("fourty_percent")) return 66   // the app shows it as 2/3 full
+    if (icon.contains("ten_percent")) return 33      // the app shows it as 1/3 full
+    if (icon.contains("empty") || icon.contains("zero_percent")) return 0
+    logDebug "Unknown hot water icon: ${icon}"
+    return null
+}
+
+private String valveState(Object raw) {
+    String title = raw instanceof Map ? raw.title?.toString() : null
+    if (title == "Shut-OFF Valve - Open") return "open"
+    if (title == "Shut-OFF Valve - Closed") return "closed"
+    return null
+}
+
+private boolean isNumeric(Object v) {
+    return v != null && !(v instanceof Boolean) && v.toString().trim().isNumber()
+}
+
+private void emitNumber(Map f, String field, String name, String unit) {
+    def v = val(f[field])
+    if (isNumeric(v)) emitAttr(name, new BigDecimal(v.toString()), unit)
+}
+
+private void emitAttr(String name, Object value, String unit = null) {
+    String shown = unit == null ? "${value}" : (unit in ["%", "°F"] ? "${value}${unit}" : "${value} ${unit}")
+    Map evt = [name: name, value: value, descriptionText: "${device.displayName} ${name} is ${shown}"]
+    if (unit) evt.unit = unit
+    emitEvent(evt)
+}
+
+// Defined in the Commands section (Task 6).
+private void confirmDialog(Map dialog) {
 }
 
 def refresh() {
