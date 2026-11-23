@@ -841,4 +841,69 @@ test("before the first reading, a mode command on a heater of unknown type warns
     assert d.mqtt.publishes.isEmpty() && d.log.at("warn")[0].contains("no modes or on/off")
 }
 
+// ---- Driver: commands are checked against the heater ----
+
+test("field updates on the desired topic (commands, including our own echo) are ignored") {
+    def d = driverWith(gasHeater())
+    d.call("parse", mqtt(["@SETPOINT": 125, "@AWAY": true], "user/A1/device/desired"))
+    assert d.device.current.heatingSetpoint == 120 && d.device.current.away == "off"
+    d.call("parse", mqtt(["@SETPOINT": 125]))
+    assert d.device.current.heatingSetpoint == 125
+}
+
+test("a dialog on the desired topic is still confirmed") {
+    def d = connected(heatPump())
+    d.call("resumeSchedule")
+    d.call("parse", mqtt([dialog: [message: ["@SCHEDULERESUME": "resume"]]], "user/A1/device/desired"))
+    assert published(d).size() == 2
+}
+
+test("15 s after a command the driver reads the heater and warns if it didn't take it") {
+    def d = connected(gasHeater())
+    d.parent.answers.refreshEquipment = { String dni -> gasHeater() }
+    d.call("setAway", "on")
+    assert d.schedules.confirmCommand == 15
+    d.call("confirmCommand")
+    assert d.log.at("warn").size() == 1
+    assert d.log.at("warn")[0] == "Water Heater didn't take away on (it reports off)"
+    assert d.device.current.away == "off"
+    assert !d.state.containsKey("commandCheck")
+}
+
+test("a command the heater took gives no warning, and the reading shows it") {
+    def d = connected(gasHeater())
+    d.parent.answers.refreshEquipment = { String dni -> gasHeater("@SETPOINT": [value: 121], "@ENABLED": [value: false]) }
+    d.call("setHeatingSetpoint", 121)
+    d.call("off")
+    d.call("confirmCommand")
+    assert d.log.at("warn").isEmpty()
+    assert d.device.current.heatingSetpoint == 121 && d.device.current.thermostatMode == "off"
+}
+
+test("several commands in a row are checked once, against the latest values") {
+    def d = connected(gasHeater())
+    d.parent.answers.refreshEquipment = { String dni -> gasHeater("@SETPOINT": [value: 119]) }
+    d.call("setHeatingSetpoint", 121)
+    d.call("setHeatingSetpoint", 119)
+    d.call("confirmCommand")
+    assert d.log.at("warn").isEmpty()
+    assert d.parent.callsTo("refreshEquipment").size() == 1
+}
+
+test("no warning when the check can't read the heater") {
+    def d = connected(gasHeater())
+    d.parent.answers.refreshEquipment = { String dni -> null }
+    d.call("setAway", "on")
+    d.call("confirmCommand")
+    assert d.log.at("warn").isEmpty()
+}
+
+test("modes are checked by name") {
+    def d = connected(heatPump())
+    d.parent.answers.refreshEquipment = { String dni -> heatPump() }   // still ENERGY SAVING
+    d.call("emergencyHeat")
+    d.call("confirmCommand")
+    assert d.log.at("warn")[0] == "Water Heater didn't take mode HIGH DEMAND (it reports ENERGY SAVING)"
+}
+
 finish()

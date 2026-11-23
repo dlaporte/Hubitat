@@ -17,6 +17,8 @@
  *                        Wi-Fi signal, firmware, and energy and water use today; setAway,
  *                        resumeSchedule and refresh. Modes come from the heater's own list. Fixes
  *                        setWaterHeaterMode("Off") on on/off heaters and the setpoint reading.
+ *                        Attributes follow the heater's own reports, and 15 s after a command it
+ *                        reads the heater and warns if the command didn't take.
  *  v2.3.0 - Dominick Meglio's last release (2020-12).
  *
  *	If you find this useful, donations are always appreciated (to Dominick Meglio)
@@ -88,6 +90,9 @@ import java.text.SimpleDateFormat
 @Field static final Map<String, String> MODE_ALIASES = [ENERGYSAVER: "ENERGYSAVING", HEATPUMP: "HEATPUMPONLY",
         ELECTRICMODE: "ELECTRIC", NORMAL: "ELECTRIC"]
 @Field static final long DIALOG_WINDOW_MS = 60_000L
+// Fields a command sets that are checked against the heater afterwards, with their names in the warning.
+@Field static final Map<String, String> CHECKED_FIELDS = ["@SETPOINT": "setpoint", "@ENABLED": "on/off", "@MODE": "mode", "@AWAY": "away"]
+@Field static final int CONFIRM_AFTER_SEC = 15
 
 // ---- Lifecycle ----
 
@@ -244,6 +249,7 @@ private void publishWithRetry(Map msg) {
     if (interfaces.mqtt.isConnected()) {
         try {
             interfaces.mqtt.publish("user/${parent.getAccountId()}/device/desired", json)
+            noteCommandSent(msg)
             return
         } catch (e) {
             logDebug "MQTT publish failed: ${e.message}"
@@ -266,6 +272,50 @@ private void sendQueued(String account) {
         return
     }
     interfaces.mqtt.publish("user/${account}/device/desired", json)
+    noteCommandSent(new JsonSlurper().parseText(json) as Map)
+}
+
+// Remembers what a command set, to check 15 s later that the heater took it.
+private void noteCommandSent(Map msg) {
+    Map check = (state.commandCheck ?: [:]) as Map
+    msg.each { k, v ->
+        if (CHECKED_FIELDS.containsKey(k.toString())) check[k.toString()] = v
+    }
+    if (!check) return
+    state.commandCheck = check
+    runIn(CONFIRM_AFTER_SEC, "confirmCommand")
+}
+
+// 15 s after a command: reads the heater from Rheem and warns about anything it didn't take.
+void confirmCommand() {
+    Map sent = (state.commandCheck ?: [:]) as Map
+    state.remove("commandCheck")
+    if (!pullSnapshot() || !sent) return
+    Map f = heaterFields()
+    List<String> missed = []
+    sent.each { k, v ->
+        String key = k.toString()
+        if (!f.containsKey(key)) return
+        String want = describeField(key, v, f)
+        String have = describeField(key, val(f[key]), f)
+        if (want != have) missed << "${CHECKED_FIELDS[key]} ${want} (it reports ${have})".toString()
+    }
+    if (missed) log.warn "${device.displayName} didn't take ${missed.join(', ')}"
+}
+
+// A field value as words, so a command and a reading compare like for like.
+private String describeField(String key, Object v, Map f) {
+    switch (key) {
+        case "@ENABLED":
+        case "@AWAY":
+            return truthy(v) ? "on" : "off"
+        case "@MODE":
+            List<String> names = modeList(f)
+            Integer i = isNumeric(v) ? (v.toString() as BigDecimal).intValue() : null
+            return (i != null && i >= 0 && i < names.size()) ? names[i] : v?.toString()
+        default:
+            return isNumeric(v) ? new BigDecimal(v.toString()).stripTrailingZeros().toPlainString() : v?.toString()
+    }
 }
 
 def buildMQTTMessage() {
@@ -299,6 +349,9 @@ def parse(String message) {
         confirmDialog(payload.dialog as Map)
         return
     }
+    // The desired topic carries commands (ours echoed back, or another client's), not
+    // what the heater did. Only its reports update the attributes.
+    if (msg.topic?.toString()?.endsWith("/desired")) return
     mergeFields(payload as Map)
     applyFields()
 }
@@ -503,8 +556,15 @@ private void emitAttr(String name, Object value, String unit = null) {
 
 def refresh() {
     logDebug "Asking the app for a reading"
+    pullSnapshot()
+}
+
+// Reads this heater from Rheem through the app. False when the app couldn't.
+private boolean pullSnapshot() {
     def equip = parent.refreshEquipment(device.deviceNetworkId)
-    if (equip instanceof Map) applySnapshot(equip as Map)
+    if (!(equip instanceof Map)) return false
+    applySnapshot(equip as Map)
+    return true
 }
 
 private Map heaterFields() {
