@@ -685,4 +685,160 @@ test("applyUsage sums today's water in gallons; a report without data emits noth
     assert d.events.isEmpty()
 }
 
+// ---- Driver: commands ----
+
+test("setHeatingSetpoint sends the setpoint") {
+    def d = connected(gasHeater())
+    d.call("setHeatingSetpoint", 121)
+    assert published(d)*."@SETPOINT" == [121]
+}
+
+test("setpoints outside the heater's limits are clamped, with an info line") {
+    def d = connected(gasHeater())
+    d.call("setHeatingSetpoint", 150)
+    d.call("setHeatingSetpoint", 80)
+    assert published(d)*."@SETPOINT" == [140, 90]
+    assert d.log.at("info").count { it.contains("outside 90–140°F") } == 2
+}
+
+test("before the first reading, the setpoint limits come from the stored data values") {
+    def d = driver()
+    d.mqtt.connected = true
+    d.device.data.putAll(minTemp: "90", maxTemp: "140")
+    d.call("setHeatingSetpoint", 141)
+    assert published(d)*."@SETPOINT" == [140]
+}
+
+test("setWaterHeaterMode('Off') on an on/off heater turns it off (the 2.3.0 bug)") {
+    def d = connected(gasHeater())
+    d.call("setWaterHeaterMode", "Off")
+    d.call("setWaterHeaterMode", "Normal")
+    assert published(d).collect { it.findAll { k, v -> k.startsWith("@") } } == [["@ENABLED": 0], ["@ENABLED": 1]]
+}
+
+test("heat and off on an on/off heater send @ENABLED only") {
+    def d = connected(gasHeater())
+    d.call("heat"); d.call("off"); d.call("setThermostatMode", "heat")
+    assert published(d).collect { it.findAll { k, v -> k.startsWith("@") } } == [["@ENABLED": 1], ["@ENABLED": 0], ["@ENABLED": 1]]
+}
+
+test("modes are sent by position in the heater's own list, and the old names still work") {
+    def d = connected(heatPump())
+    ["Energy Saver": 1, "Heat Pump": 2, "High Demand": 3, "Normal": 4, "Electric": 4, "Vacation": 5,
+     "energy saving": 1, "HEAT_PUMP_ONLY": 2].each { name, idx ->
+        d.mqtt.publishes.clear()
+        d.call("setWaterHeaterMode", name)
+        assert published(d)[0]."@MODE" == idx: name
+        assert published(d)[0]."@ENABLED" == 1
+    }
+    d.mqtt.publishes.clear()
+    d.call("setWaterHeaterMode", "Off")
+    assert published(d)[0]."@MODE" == 0 && published(d)[0]."@ENABLED" == 0
+}
+
+test("Electric/Gas stands in for Electric or Gas, either way round") {
+    def d = connected(heatPump("@MODE": [constraints: [enumText: ["OFF", "ELECTRIC/GAS", "VACATION"]], value: 1]))
+    d.call("setWaterHeaterMode", "Gas")
+    assert published(d)[0]."@MODE" == 1
+    def g = connected(heatPump("@MODE": [constraints: [enumText: ["OFF", "GAS"]], value: 1]))
+    g.call("setWaterHeaterMode", "Electric/Gas")
+    assert published(g)[0]."@MODE" == 1
+}
+
+test("a mode the heater doesn't list warns, names what it offers, and sends nothing") {
+    def d = connected(heatPump())
+    d.call("setWaterHeaterMode", "Performance")
+    assert d.mqtt.publishes.isEmpty()
+    assert d.log.at("warn")[0].contains("it offers OFF, ENERGY SAVING, HEAT PUMP ONLY, HIGH DEMAND, ELECTRIC MODE, VACATION")
+}
+
+test("auto and emergencyHeat pick Energy Saving and High Demand; heat keeps a heating mode or picks Heat Pump") {
+    def d = connected(heatPump())
+    d.call("auto"); d.call("emergencyHeat"); d.call("heat")
+    assert published(d).collect { it."@MODE" } == [1, 3, 2]
+    d.call("parse", mqtt(["@MODE": 4]))
+    d.mqtt.publishes.clear()
+    d.call("heat"); d.call("off")
+    assert published(d).collect { [it."@MODE", it."@ENABLED"] } == [[4, 1], [0, 0]]
+}
+
+test("auto on a heater without Energy Saving warns and sends nothing") {
+    def d = connected(gasHeater())
+    d.call("auto")
+    assert d.mqtt.publishes.isEmpty()
+    assert d.log.at("warn")[0].contains("has no Energy Saving mode")
+}
+
+test("setThermostatMode cool warns") {
+    def d = connected(gasHeater())
+    d.call("setThermostatMode", "cool")
+    assert d.mqtt.publishes.isEmpty() && d.log.at("warn").size() == 1
+}
+
+test("setAway sends @AWAY where the heater has away mode, and warns where it doesn't") {
+    def d = connected(gasHeater())
+    d.call("setAway", "on"); d.call("setAway", "off")
+    assert published(d)*."@AWAY" == [true, false]
+    Map noAway = gasHeater()
+    noAway.remove("@AWAY")
+    def n = connected(noAway)
+    n.call("setAway", "on")
+    assert n.mqtt.publishes.isEmpty() && n.log.at("warn")[0].contains("away")
+}
+
+test("resumeSchedule sends resume and confirms Rheem's dialog once, only within 60 s") {
+    def d = connected(heatPump())
+    d.call("resumeSchedule")
+    assert published(d)[0]."@SCHEDULERESUME" == "resume"
+    d.advance(5_000)
+    d.call("parse", mqtt([dialog: [title: "End Away", message: ["@SCHEDULERESUME": "resume", "@AWAY": false]]]))
+    assert published(d).size() == 2 && published(d)[1]."@AWAY" == false
+    d.call("parse", mqtt([dialog: [message: ["@SCHEDULERESUME": "resume"]]]))
+    assert published(d).size() == 2
+    d.call("resumeSchedule")
+    d.advance(61_000)
+    d.call("parse", mqtt([dialog: [message: ["@X": 1]]]))
+    assert published(d).size() == 3
+}
+
+test("a dialog whose message is text is confirmed by sending the resume again") {
+    def d = connected(gasHeater())
+    d.call("resumeSchedule")
+    d.call("parse", mqtt([dialog: [title: "End Away", message: "Continuing will end Away Event"]]))
+    assert published(d)*."@SCHEDULERESUME" == ["resume", "resume"]
+    assert d.log.at("info").any { it.contains("confirming Rheem's prompt (End Away)") }
+}
+
+test("resumeSchedule on a heater without a schedule warns") {
+    Map equip = gasHeater()
+    equip.remove("@SCHEDULESTATUS")
+    def d = connected(equip)
+    d.call("resumeSchedule")
+    assert d.mqtt.publishes.isEmpty() && d.log.at("warn").size() == 1
+}
+
+test("Thermostat commands a water heater can't do warn, once each") {
+    def d = connected(gasHeater())
+    d.call("cool"); d.call("fanAuto"); d.call("fanCirculate"); d.call("fanOn")
+    d.call("setCoolingSetpoint", 70); d.call("setThermostatFanMode", "on"); d.call("setSchedule", "x")
+    assert d.log.at("warn").size() == 7 && d.log.at("warn").every { it.contains("not supported by a water heater") }
+    assert d.log.at("error").isEmpty() && d.mqtt.publishes.isEmpty()
+}
+
+test("refresh asks the app and applies the heater's fields") {
+    def d = driverWith(gasHeater())
+    d.parent.answers.refreshEquipment = { String dni -> gasHeater("@SETPOINT": [value: 119]) }
+    d.call("refresh")
+    assert d.device.current.heatingSetpoint == 119
+    assert d.state.fields["@SETPOINT"].constraints.upperLimit == 140
+}
+
+test("before the first reading, a mode command on a heater of unknown type warns") {
+    def d = driver()
+    d.mqtt.connected = true
+    d.device.data.putAll(enabledDisabled: "false", tempOnly: "false")
+    d.call("setWaterHeaterMode", "High Demand")
+    assert d.mqtt.publishes.isEmpty() && d.log.at("warn")[0].contains("no modes or on/off")
+}
+
 finish()

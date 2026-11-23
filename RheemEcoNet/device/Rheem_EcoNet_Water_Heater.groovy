@@ -87,6 +87,7 @@ import java.text.SimpleDateFormat
 // pyeconet's mode names: some are the same mode under another name.
 @Field static final Map<String, String> MODE_ALIASES = [ENERGYSAVER: "ENERGYSAVING", HEATPUMP: "HEATPUMPONLY",
         ELECTRICMODE: "ELECTRIC", NORMAL: "ELECTRIC"]
+@Field static final long DIALOG_WINDOW_MS = 60_000L
 
 // ---- Lifecycle ----
 
@@ -500,10 +501,6 @@ private void emitAttr(String name, Object value, String unit = null) {
     emitEvent(evt)
 }
 
-// Defined in the Commands section (Task 6).
-private void confirmDialog(Map dialog) {
-}
-
 def refresh() {
     logDebug "Asking the app for a reading"
     def equip = parent.refreshEquipment(device.deviceNetworkId)
@@ -546,6 +543,191 @@ private String duration(long ms) {
 }
 
 // ---- Commands ----
+
+def setHeatingSetpoint(temperature) {
+    List<BigDecimal> limits = setpointLimits()
+    if (limits == null) {
+        log.warn "${device.displayName} doesn't report a setpoint; setHeatingSetpoint isn't supported"
+        return
+    }
+    BigDecimal asked = new BigDecimal(temperature.toString())
+    BigDecimal target = asked.max(limits[0]).min(limits[1])
+    if (target != asked) log.info "${device.displayName} setpoint ${asked}°F is outside ${limits[0]}–${limits[1]}°F; sending ${target}°F"
+    publishWithRetry(["@SETPOINT": Math.round(target.doubleValue()) as Integer])
+}
+
+// The heater's limits from its @SETPOINT field, or before the first reading from the data values.
+private List<BigDecimal> setpointLimits() {
+    def setpoint = fields()["@SETPOINT"]
+    def c = setpoint instanceof Map ? setpoint.constraints : null
+    def lo = c instanceof Map ? c.lowerLimit : device.getDataValue("minTemp")
+    def hi = c instanceof Map ? c.upperLimit : device.getDataValue("maxTemp")
+    if (!isNumeric(lo) || !isNumeric(hi)) return null
+    return [new BigDecimal(lo.toString()), new BigDecimal(hi.toString())]
+}
+
+def setThermostatMode(String mode) {
+    switch (mode) {
+        case "heat":
+            heat()
+            break
+        case "off":
+            off()
+            break
+        case "auto":
+            auto()
+            break
+        case "emergency heat":
+            emergencyHeat()
+            break
+        default:
+            log.warn "${device.displayName}: thermostat mode ${mode} is not supported by a water heater"
+    }
+}
+
+def heat() {
+    Map msg = onOffMessage(true)
+    if (msg) publishWithRetry(msg)
+    else log.warn "${device.displayName} has no on/off or modes; heat isn't supported"
+}
+
+def off() {
+    Map msg = onOffMessage(false)
+    if (msg) publishWithRetry(msg)
+    else log.warn "${device.displayName} has no on/off or modes; off isn't supported"
+}
+
+def auto() {
+    selectMode("auto", ["Energy Saving"])
+}
+
+def emergencyHeat() {
+    selectMode("emergencyHeat", ["High Demand", "Performance"])
+}
+
+def setWaterHeaterMode(String requested) {
+    Map f = fields()
+    List<String> names = modeList(f)
+    boolean turnOff = canonicalMode(requested) == "OFF"
+    if (names) {
+        Integer i = modeIndex(names, requested)
+        if (i == null && !(turnOff && hasOnOff(f))) {
+            log.warn "${device.displayName} doesn't offer mode ${requested}; it offers ${names.join(', ')}"
+            return
+        }
+        Map msg = [:]
+        if (hasOnOff(f)) msg["@ENABLED"] = turnOff ? 0 : 1
+        if (i != null) msg["@MODE"] = i
+        publishWithRetry(msg)
+    } else if (hasOnOff(f)) {
+        publishWithRetry(["@ENABLED": turnOff ? 0 : 1])
+    } else {
+        log.warn "${device.displayName} has no modes or on/off; setWaterHeaterMode isn't supported"
+    }
+}
+
+def setAway(String value) {
+    Map f = fields()
+    if (!(f.containsKey("@AWAY") || f.containsKey("@AWAYCONFIG"))) {
+        log.warn "${device.displayName} doesn't report away mode; setAway isn't supported"
+        return
+    }
+    publishWithRetry(["@AWAY": value == "on"])
+}
+
+def resumeSchedule() {
+    if (!fields().containsKey("@SCHEDULESTATUS")) {
+        log.warn "${device.displayName} doesn't report a schedule; resumeSchedule isn't supported"
+        return
+    }
+    state.resumeRequestedAt = now()
+    publishWithRetry(["@SCHEDULERESUME": "resume"])
+}
+
+// Rheem asks for a confirmation before a schedule resume ends an away event, and waits for
+// the same payload to be sent again (pyeconet). Confirm only a dialog that arrives within
+// 60 s of our own resumeSchedule, and only once. pyeconet sends back the dialog's message;
+// when that is text rather than fields, send our resume again.
+private void confirmDialog(Map dialog) {
+    Long asked = state.resumeRequestedAt as Long
+    state.remove("resumeRequestedAt")
+    if (asked == null || now() - asked > DIALOG_WINDOW_MS) {
+        logDebug "Ignored a dialog from Rheem: ${dialog}"
+        return
+    }
+    Map confirm = dialog.message instanceof Map ? dialog.message as Map : ["@SCHEDULERESUME": "resume"]
+    log.info "${device.displayName} confirming Rheem's prompt${dialog.title ? " (${dialog.title})" : ''} to resume the schedule"
+    publishWithRetry(confirm)
+}
+
+def cool() { notSupported("cool") }
+
+def fanAuto() { notSupported("fanAuto") }
+
+def fanCirculate() { notSupported("fanCirculate") }
+
+def fanOn() { notSupported("fanOn") }
+
+def setCoolingSetpoint(temperature) { notSupported("setCoolingSetpoint") }
+
+def setThermostatFanMode(fanmode) { notSupported("setThermostatFanMode") }
+
+def setSchedule(obj) { notSupported("setSchedule") }
+
+private void notSupported(String command) {
+    log.warn "${device.displayName}: ${command} is not supported by a water heater"
+}
+
+private boolean hasOnOff(Map f) {
+    return f ? f.containsKey("@ENABLED") : device.getDataValue("enabledDisabled") == "true"
+}
+
+// @ENABLED where the heater has it, plus a mode where it has modes: Off, or for heat its
+// current heating mode, else its first of Heat Pump Only, Electric and Gas.
+private Map onOffMessage(boolean on) {
+    Map f = fields()
+    List<String> names = modeList(f)
+    Map msg = [:]
+    if (hasOnOff(f)) msg["@ENABLED"] = on ? 1 : 0
+    if (names) {
+        Integer i = on ? heatingModeIndex(f, names) : modeIndex(names, "Off")
+        if (i != null) msg["@MODE"] = i
+    }
+    return msg
+}
+
+private Integer heatingModeIndex(Map f, List<String> names) {
+    String current = currentModeName(f)
+    if (current != null && thermostatModeFor(current) == "heat" && canonicalMode(current) != "VACATION") {
+        Integer i = modeIndex(names, current)
+        if (i != null) return i
+    }
+    return ["Heat Pump Only", "Electric", "Gas"].findResult { modeIndex(names, it) }
+}
+
+private void selectMode(String command, List<String> wanted) {
+    Map f = fields()
+    List<String> names = modeList(f)
+    Integer i = wanted.findResult { modeIndex(names, it) }
+    if (i == null) {
+        log.warn "${device.displayName} has no ${wanted.join(' or ')} mode, so ${command} isn't supported${names ? "; it offers ${names.join(', ')}" : ''}"
+        return
+    }
+    Map msg = ["@MODE": i]
+    if (hasOnOff(f)) msg["@ENABLED"] = 1
+    publishWithRetry(msg)
+}
+
+// The position of `requested` in the heater's own list, or null. "Electric/Gas" stands in
+// for Electric or Gas, either way round.
+private Integer modeIndex(List<String> names, Object requested) {
+    String want = canonicalMode(requested)
+    int i = names.findIndexOf { canonicalMode(it) == want }
+    if (i < 0 && want in ["ELECTRIC", "GAS"]) i = names.findIndexOf { canonicalMode(it) == "ELECTRICGAS" }
+    if (i < 0 && want == "ELECTRICGAS") i = names.findIndexOf { canonicalMode(it) in ["ELECTRIC", "GAS"] }
+    return i < 0 ? null : i
+}
+
 
 // ---- BEGIN standard logging (driver) v1: keep identical in every driver, see STYLE.md ----
 
