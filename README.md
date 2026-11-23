@@ -157,6 +157,16 @@ Kept here in case upstream disappears (upstream is unmaintained since 2022):
 
 MIT license (fison67) — see the file headers.
 
+### Rheem EcoNet
+
+Fork of Dominick Meglio's [Rheem EcoNet Integration](https://github.com/dcmeglio/hubitat-rheem)
+(app and water heater driver). It keeps the login token instead of letting it
+expire, and reconnects with backoff and one warning per outage. It adds hot
+water, health, alerts, away, schedule, Wi-Fi, energy and water use, and fixes
+upstream's mode bugs. It keeps upstream's names, so it updates an existing
+install in place. Personal use: upstream has no license. See
+[RheemEcoNet/README.md](RheemEcoNet/README.md).
+
 ## Contributing
 
 Conventions for headers, logging, lifecycle, versioning and manifests are in
