@@ -116,8 +116,11 @@ Verified on my heater, a gas heater with on/off (no modes), on 2026-11-23:
   heater, with no away mode, and the heater reports no `@AWAYCONFIG`. `setAway on`
   isn't taken: `away` stays `off`, and the driver logs "didn't take away on (it
   reports off)".
-- Not tried on hardware: `heat`/`off` commands, the away-event confirmation
-  prompt, and recovery from a real outage.
+- Power: `off` isn't taken by this heater, whether sent as `0` or `false`. Rheem
+  keeps reporting it on, its app offers no on/off for it, and the driver logs
+  "didn't take power off (it reports on)". Heaters whose app has on/off should take it.
+- Not tried on hardware: the away-event confirmation prompt, and recovery from a
+  real outage.
 
 Heat pump modes, hot water, tank and compressor health, and the shut-off valve
 are tested only against sample data shaped like pyeconet's.

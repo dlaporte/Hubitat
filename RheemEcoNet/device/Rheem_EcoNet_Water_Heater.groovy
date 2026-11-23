@@ -10,6 +10,7 @@
  *  Documentation: https://github.com/dlaporte/Hubitat/blob/main/RheemEcoNet/README.md
  *
  *  Changelog:
+ *  v2.4.2 (2026-11-23) - The warning for an on/off command the heater didn't take says "power".
  *  v2.4.1 (2026-11-23) - Status text Rheem sends on several lines (such as "Schedule overridden"
  *                        with its end time) is kept on one line. Every command, resumeSchedule
  *                        included, is followed by a fresh reading 15 s later.
@@ -76,7 +77,7 @@ import groovy.json.JsonSlurper
 import groovy.json.JsonOutput
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "2.4.1"
+@Field static final String VERSION = "2.4.2"
 @Field static String apiUrl = "ssl://rheem.clearblade.com:1884"
 @Field static String systemKey = "e2e699cb0bb0bbb88fc8858cb5a401"
 @Field static final List<Integer> RETRY_DELAYS = [15, 60, 300, 900, 1800]   // seconds
@@ -94,7 +95,7 @@ import java.text.SimpleDateFormat
         ELECTRICMODE: "ELECTRIC", NORMAL: "ELECTRIC"]
 @Field static final long DIALOG_WINDOW_MS = 60_000L
 // Fields a command sets that are checked against the heater afterwards, with their names in the warning.
-@Field static final Map<String, String> CHECKED_FIELDS = ["@SETPOINT": "setpoint", "@ENABLED": "on/off", "@MODE": "mode", "@AWAY": "away"]
+@Field static final Map<String, String> CHECKED_FIELDS = ["@SETPOINT": "setpoint", "@ENABLED": "power", "@MODE": "mode", "@AWAY": "away"]
 @Field static final int CONFIRM_AFTER_SEC = 15
 
 // ---- Lifecycle ----
