@@ -10,6 +10,7 @@
  *         custom picture, sound and power commands), so rules, dashboards, HomeKit and voice
  *         can use them; the controls left Preferences. New picture, sound, light sensor, remote
  *         battery and temperature attributes. switch goes off when the TV can't be reached.
+ *         A value a command sets is held briefly against a read-back that lags.
  *  v0.11.0 (2026-11-20) - Send key offers only keys Glasshouse accepts; optional API token;
  *         healthStatus; runs single-threaded; ARC volume steps log at debug; standard
  *         logging and lifecycle; unused toggle and volume step methods removed.
@@ -79,6 +80,10 @@ import groovy.transform.Field
     "WiSA Speakers": "wisa_speaker",
     "Mobile Phone": "mobile_phone"
 ]
+
+// How long a value a command just set is held against a read that disagrees
+// (see holdValue).
+@Field static final long COMMAND_HOLD_MS = 15_000L
 
 // Settings earlier versions used. The TV controls moved from Preferences to
 // commands in 0.12.0.
@@ -269,7 +274,7 @@ void updated() {
 
 void initialize() {
     unschedule()
-    ["powerTarget", "powerWatchUntil", "powerWatchFrom"].each { state.remove(it) }
+    ["powerTarget", "powerWatchUntil", "powerWatchFrom", "holds"].each { state.remove(it) }
     upgradeSettings()
     if (settings.logEnable) runIn(1800, "logsOff")
     if (!tvIp?.toString()?.trim()) {
@@ -422,6 +427,7 @@ def reboot() {
 // watch), and meanwhile don't let a reply that disagrees flip switch back,
 // which rules and HomeKit would see as two changes.
 private void startPowerWatch(String target, long ignoreForMs) {
+    clearHold("screen")
     state.powerTarget = target
     state.powerWatchUntil = now() + 120_000L
     state.powerWatchFrom = now() + ignoreForMs
@@ -640,9 +646,17 @@ def refresh() {
     fetchJson("/api/hdmi", "hdmiCallback")
 }
 
-// The refresh 2 s after a command, under its own name: a runIn for "refresh"
-// would replace the periodic poll's schedule.
+// The refreshes 2 s and 45 s after a command, each under its own name: a runIn
+// for "refresh" would replace the periodic poll's schedule. The 2 s one shows
+// the result quickly. The TV doesn't always report a change that soon (the
+// first sleep timer set after a quiet spell still read off at 2 s), so the
+// 45 s one, past Glasshouse's longest read cache (30 s), shows what the TV
+// ended up with, even with polling off.
 void refreshAfterCommand() {
+    refresh()
+}
+
+void confirmAfterCommand() {
     refresh()
 }
 
@@ -776,6 +790,7 @@ void controlCallback(resp, data) {
         applyOptimistic(data)
     }
     runIn(2, "refreshAfterCommand")
+    runIn(45, "confirmAfterCommand")
 }
 
 // Toast results are only logged: nothing on the TV changed, so no
@@ -811,6 +826,7 @@ private void applyOptimistic(Map data) {
     def value = data.value
     if (action == "mute") {
         boolean muted = (value == true || value == "true")
+        holdValue("mute", muted ? "muted" : "unmuted")
         emitEvent(name: "mute", value: muted ? "muted" : "unmuted",
             descriptionText: "${device.displayName} is ${muted ? 'muted' : 'unmuted'}")
     } else if (action == "powerOn") {
@@ -822,21 +838,60 @@ private void applyOptimistic(Map data) {
         emitEvent(name: "screen", value: "off",
             descriptionText: "${device.displayName} screen is off")
     } else if (action == "screenOn") {
+        holdValue("screen", "on")
         emitEvent(name: "screen", value: "on",
             descriptionText: "${device.displayName} screen is on")
     } else if (action == "screenOff") {
+        holdValue("screen", "off")
         emitEvent(name: "screen", value: "off",
             descriptionText: "${device.displayName} screen is off")
     } else if (action == "input" && value) {
+        holdValue("input", value.toString())
         emitInput(value.toString(), "${device.displayName} input is ${value}")
     } else if (action == "pictureMode" && value) {
         String label = pictureModeLabel(value.toString()) ?: value.toString()
+        holdValue("pictureMode", label)
         emitEvent(name: "pictureMode", value: label,
             descriptionText: "${device.displayName} picture mode is ${label}")
     } else if (action == "launchApp" && value) {
         emitEvent(name: "currentApp", value: value.toString(),
             descriptionText: "${device.displayName} app is ${value}")
     }
+}
+
+// The command hold. After an accepted command whose result is shown at once
+// (mute, screen, input, picture mode), the TV can still report the old value
+// for a few seconds: the first mute after a quiet spell read back unmuted 4 s
+// later although the TV was muted. Glasshouse's own dashboard holds a value it
+// has just set in the same way. So for COMMAND_HOLD_MS a read that disagrees
+// doesn't change the attribute; one that agrees ends the hold. A newer command
+// replaces it. switch is the power watch's (startPowerWatch), and currentApp
+// isn't held: launchApp shows the app id, the TV reports its title.
+private void holdValue(String attr, String value) {
+    Map holds = (state.holds instanceof Map) ? (state.holds as Map) : [:]
+    holds[attr] = [value: value, until: now() + COMMAND_HOLD_MS]
+    state.holds = holds
+}
+
+private void clearHold(String attr) {
+    Map holds = (state.holds instanceof Map) ? (state.holds as Map) : null
+    if (holds?.containsKey(attr)) {
+        holds.remove(attr)
+        state.holds = holds
+    }
+}
+
+// True when a read reporting `reported` for attr is to be ignored.
+private boolean heldBack(String attr, String reported) {
+    Map holds = (state.holds instanceof Map) ? (state.holds as Map) : null
+    Map h = holds?.get(attr) as Map
+    if (!h) return false
+    if (now() >= ((h.until ?: 0L) as Long) || h.value?.toString() == reported) {
+        clearHold(attr)
+        return false
+    }
+    logDebug "The TV still reports ${attr} ${reported}; holding ${h.value} from the last command"
+    return true
 }
 
 void statsCallback(resp, data) {
@@ -921,8 +976,10 @@ private void applyStats(Map d) {
     }
     if (d.containsKey("muted")) {
         String muteVal = (d.muted == true) ? "muted" : "unmuted"
-        emitEvent(name: "mute", value: muteVal,
-            descriptionText: "${device.displayName} is ${muteVal}")
+        if (!heldBack("mute", muteVal)) {
+            emitEvent(name: "mute", value: muteVal,
+                descriptionText: "${device.displayName} is ${muteVal}")
+        }
     }
 
     // Screen can be off while the TV is still powered (switch stays on).
@@ -935,7 +992,7 @@ private void applyStats(Map d) {
         screenOn = true
     }
     String screenVal = screenOn ? "on" : "off"
-    if (!holdPower) {
+    if (!holdPower && !heldBack("screen", screenVal)) {
         emitEvent(name: "screen", value: screenVal,
             descriptionText: "${device.displayName} screen is ${screenVal}")
     }
@@ -961,7 +1018,10 @@ private void applyStats(Map d) {
         def m = (appId =~ /hdmi(\d)/)
         if (m) inputVal = "hdmi${m[0][1]}"
     }
-    if (inputVal) {
+    String reportedInput = inputVal ?: appKey
+    if (reportedInput && heldBack("input", reportedInput)) {
+        // input and mediaInputSource stay at the command's value
+    } else if (inputVal) {
         String label = inputs[inputVal] ?: inputVal
         emitInput(inputVal, "${device.displayName} input is ${label} (${inputVal})")
     } else if (appKey) {
@@ -1091,10 +1151,12 @@ private void applyPicture(Map d) {
     }
     String raw = row.value?.toString()
     if (raw) {
-        state.pictureModeRaw = raw
         String label = pictureModeLabel(raw) ?: raw
-        emitEvent(name: "pictureMode", value: label,
-            descriptionText: "${device.displayName} picture mode is ${label}")
+        if (!heldBack("pictureMode", label)) {
+            state.pictureModeRaw = raw
+            emitEvent(name: "pictureMode", value: label,
+                descriptionText: "${device.displayName} picture mode is ${label}")
+        }
     }
     logDebug "Picture modes: ${modes.collect { it.label ?: it.value }.join(', ')} (current ${raw})"
 }
@@ -1112,6 +1174,7 @@ private void applyPictureFromStats(Map picture) {
     }
     String modeRaw = picture.mode_raw?.toString()
     String modeLabel = picture.mode?.toString()
+    if (modeLabel && heldBack("pictureMode", modeLabel)) return
     if (modeRaw) state.pictureModeRaw = modeRaw
     if (modeLabel) {
         emitEvent(name: "pictureMode", value: modeLabel,
@@ -1222,6 +1285,7 @@ private void noteUnreachable(String label, String reason) {
     // A TV that can't be reached is off as far as rules and dashboards go,
     // which is also what an off command was waiting for.
     if (state.powerTarget == "off") stopPowerWatch()
+    state.remove("holds")
     emitEvent(name: "switch", value: "off", descriptionText: "${device.displayName} is off")
     emitEvent(name: "screen", value: "off", descriptionText: "${device.displayName} screen is off")
     if (warnOnUnreachable()) {

@@ -422,10 +422,161 @@ test("a command reply refreshes through its own one-shot handler and leaves the 
     d.call("mute")
     d.reply(d.http.find { it.method == "POST" }, json: [ok: true])
     assert d.schedules.refreshAfterCommand == 2
+    assert d.schedules.confirmAfterCommand == 45
     assert d.schedules.refresh == "runEvery1Minute"
     d.http.clear()
     d.call("refreshAfterCommand")
     assert d.httpMatching("/api/stats").size() == 1
+    d.http.clear()
+    d.call("confirmAfterCommand")
+    assert d.httpMatching("/api/stats").size() == 1
+}
+
+// ---- The command hold ----
+
+def pictureReply = { String raw ->
+    [ok: true, rows: [[id: "pictureMode", value: raw,
+                       choices: [[value: "cinema", label: "Cinema"], [value: "vivid", label: "Vivid"]]]]]
+}
+
+test("after an accepted mute, a read that still says unmuted doesn't flip mute back") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    d.call("mute")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
+    d.advance(4_000L)
+    d.call("statsCallback", resp(statsOn(muted: false)), [path: "/api/stats"])
+    assert d.device.current.mute == "muted"
+    assert changes(d.eventsNamed("mute")*.value) == ["unmuted", "muted"]
+}
+
+test("the hold ends after 15 s: a read that disagrees then is the TV's answer") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    d.call("mute")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
+    d.advance(15_000L)
+    d.call("statsCallback", resp(statsOn(muted: false)), [path: "/api/stats"])
+    assert d.device.current.mute == "unmuted"
+}
+
+test("a read that agrees ends the hold, so a later change from the remote shows at once") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    d.call("mute")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
+    d.advance(2_000L)
+    d.call("statsCallback", resp(statsOn(muted: true)), [path: "/api/stats"])
+    d.advance(2_000L)
+    d.call("statsCallback", resp(statsOn(muted: false)), [path: "/api/stats"])
+    assert d.device.current.mute == "unmuted"
+}
+
+test("input and mediaInputSource are held together") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsOn(inputs: [hdmi1: "Apple TV", hdmi2: "PS5"])), [path: "/api/stats"])
+    d.call("setInputSource", "hdmi2")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
+    d.advance(2_000L)
+    d.call("statsCallback", resp(statsOn(inputs: [hdmi1: "Apple TV", hdmi2: "PS5"])), [path: "/api/stats"])
+    assert d.device.current.input == "hdmi2" && d.device.current.mediaInputSource == "hdmi2"
+}
+
+test("picture mode is held against both the picture and the stats read") {
+    def d = fresh()
+    d.call("pictureCallback", resp(pictureReply("cinema")), [path: "/api/picture"])
+    assert d.device.current.pictureMode == "Cinema"
+    d.call("setPictureMode", "Vivid")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
+    assert d.device.current.pictureMode == "Vivid"
+    d.advance(2_000L)
+    d.call("pictureCallback", resp(pictureReply("cinema")), [path: "/api/picture"])
+    assert d.device.current.pictureMode == "Vivid"
+
+    def s = fresh()
+    s.call("statsCallback", resp(statsOn(picture: [mode: "Cinema", mode_raw: "cinema",
+            modes: [[value: "cinema", label: "Cinema"], [value: "vivid", label: "Vivid"]]])), [path: "/api/stats"])
+    s.call("setPictureMode", "Vivid")
+    s.reply(s.httpMatching("/api/control")[0], json: [ok: true])
+    s.advance(2_000L)
+    s.call("statsCallback", resp(statsOn(picture: [mode: "Cinema", mode_raw: "cinema"])), [path: "/api/stats"])
+    assert s.device.current.pictureMode == "Vivid"
+}
+
+test("screen is held after screenOff") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    d.call("screenOff")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
+    d.advance(2_000L)
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    assert d.device.current.screen == "off"
+    assert changes(d.eventsNamed("screen")*.value) == ["on", "off"]
+}
+
+test("a power command drops a screen hold; the power watch decides screen") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    d.call("screenOff")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
+    d.http.clear()
+    d.call("on")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
+    d.advance(2_000L)
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    assert d.device.current.screen == "on"
+}
+
+test("a refused or unreachable command holds nothing") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    d.call("mute")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: false, error: "nope"])
+    d.call("screenOff")
+    d.call("controlCallback", unreachable(), [action: "screenOff"])
+    assert !d.state.holds
+}
+
+test("launchApp's app id isn't held: the TV's title replaces it on the next read") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsOn()), [path: "/api/stats"])
+    d.call("launchApp", "netflix")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
+    d.advance(2_000L)
+    d.call("statsCallback", resp(statsOn(app: "netflix", app_id: "netflix", display_title: "Netflix")), [path: "/api/stats"])
+    assert d.device.current.currentApp == "Netflix"
+}
+
+test("initialize and an unreachable TV clear the holds") {
+    def d = fresh()
+    d.call("mute")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
+    assert d.state.holds?.mute
+    d.call("initialize")
+    assert !d.state.holds
+
+    def u = fresh()
+    u.call("mute")
+    u.reply(u.httpMatching("/api/control")[0], json: [ok: true])
+    u.call("statsCallback", unreachable(), [path: "/api/stats"])
+    assert !u.state.holds
+}
+
+test("a sleep timer the 2 s read misses shows after the later refresh") {
+    def d = fresh()
+    d.call("statsCallback", resp(statsFull()), [path: "/api/stats"])
+    d.call("setSleepTimer", "10")
+    d.reply(d.httpMatching("/api/control")[0], json: [ok: true])
+    assert d.schedules.refreshAfterCommand == 2 && d.schedules.confirmAfterCommand == 45
+    d.advance(2_000L)
+    d.call("statsCallback", resp(statsFull(sleepTimer: "off")), [path: "/api/stats"])
+    assert d.device.current.sleepTimer == "off"
+    d.advance(43_000L)
+    d.http.clear()
+    d.call("confirmAfterCommand")
+    assert d.httpMatching("/api/stats").size() == 1
+    d.call("statsCallback", resp(statsFull(sleepTimer: "10")), [path: "/api/stats"])
+    assert d.device.current.sleepTimer == "10"
 }
 
 test("initialize clears the power watch") {
