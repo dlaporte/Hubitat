@@ -10,6 +10,8 @@
  *  Documentation: https://github.com/dlaporte/Hubitat/blob/main/RheemEcoNet/README.md
  *
  *  Changelog:
+ *  v2.4.1 (2026-11-23) - Status text Rheem sends on several lines (such as "Schedule overridden"
+ *                        with its end time) is kept on one line.
  *  v2.4.0 (2026-11-23) - David LaPorte's fork. Reconnects with backoff (15 s up to every 30
  *                        minutes) and asks the app for a new login, with one warning per outage
  *                        instead of one every 15 seconds. Adds healthStatus, hot water, tank and
@@ -73,7 +75,7 @@ import groovy.json.JsonSlurper
 import groovy.json.JsonOutput
 import java.text.SimpleDateFormat
 
-@Field static final String VERSION = "2.4.0"
+@Field static final String VERSION = "2.4.1"
 @Field static String apiUrl = "ssl://rheem.clearblade.com:1884"
 @Field static String systemKey = "e2e699cb0bb0bbb88fc8858cb5a401"
 @Field static final List<Integer> RETRY_DELAYS = [15, 60, 300, 900, 1800]   // seconds
@@ -442,7 +444,7 @@ private void applyFields() {
     }
     applyMode(f)
     if (f.containsKey("@RUNNING")) {
-        String running = val(f["@RUNNING"])?.toString()?.trim() ?: ""
+        String running = oneLine(val(f["@RUNNING"]))
         String opState = running ? "heating" : "idle"
         emitEvent(name: "thermostatOperatingState", value: opState, descriptionText: "${device.displayName} is ${opState}")
         emitAttr("runningState", running ?: "idle")
@@ -456,7 +458,7 @@ private void applyFields() {
     emitNumber(f, "@ALERTCOUNT", "alertCount", null)
     if (f.containsKey("@AWAY")) emitAttr("away", truthy(val(f["@AWAY"])) ? "on" : "off")
     if (f.containsKey("@VACATION")) emitAttr("vacation", truthy(val(f["@VACATION"])) ? "on" : "off")
-    if (f.containsKey("@SCHEDULESTATUS")) emitAttr("scheduleStatus", val(f["@SCHEDULESTATUS"])?.toString()?.trim() ?: "none")
+    if (f.containsKey("@SCHEDULESTATUS")) emitAttr("scheduleStatus", oneLine(val(f["@SCHEDULESTATUS"])) ?: "none")
     def signal = val(f["@SIGNAL"])
     if (isNumeric(signal)) sendEvent(name: "wifiSignal", value: new BigDecimal(signal.toString()), unit: "dBm")  // changes often; not logged
     def version = val(f["@VERSION"])
@@ -536,6 +538,11 @@ private String valveState(Object raw) {
     if (title == "Shut-OFF Valve - Open") return "open"
     if (title == "Shut-OFF Valve - Closed") return "closed"
     return null
+}
+
+// Rheem's status text can span lines ("Schedule overridden\n Until 10:00 AM"); keep it on one.
+private String oneLine(Object text) {
+    return text == null ? "" : text.toString().replaceAll(/\s+/, " ").trim()
 }
 
 private boolean isNumeric(Object v) {

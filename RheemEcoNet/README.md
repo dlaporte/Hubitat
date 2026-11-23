@@ -64,7 +64,7 @@ rate-limits logins (HTTP 429).
 | `shutoffValve` | `open` / `closed` | heaters with the leak kit |
 | `alertCount` | number of active alerts (details are only in Rheem's app) | all |
 | `away`, `vacation` | `on` / `off` | most |
-| `scheduleStatus` | for example `Following Schedule`, or `none` | heaters with schedules |
+| `scheduleStatus` | for example `Following Schedule` or `Schedule overridden Until 10:00 AM`, or `none` | heaters with schedules |
 | `wifiSignal` | dBm (changes aren't logged) | all |
 | `firmwareVersion` | Wi-Fi module version | all |
 | `healthStatus` | `offline` after a minute without Rheem's MQTT service, or while the heater reports it is disconnected | all |
@@ -106,11 +106,16 @@ Verified on my heater, a gas heater with on/off (no modes), on 2026-11-23:
   once; pressing Done doesn't log in again.
 - Energy and water use: Rheem answers that this heater doesn't report them, so
   `energyToday` and `waterToday` stay empty (checked again daily).
-- `setAway on` isn't taken by this heater. It reports no `@AWAYCONFIG`, which
-  pyeconet reads as away mode not being enabled for it, so Rheem ignores `@AWAY`.
-  `away` stays `off`, and the driver logs "didn't take away on (it reports off)".
-- Not tried on hardware: `heat`/`off` commands, `resumeSchedule` (and its
-  confirmation prompt), and recovery from a real outage.
+- Schedules: with a schedule set up in Rheem's app, `scheduleStatus` reads
+  `Following Schedule`. A setpoint change from Hubitat makes it `Schedule
+  overridden Until <time>`. `resumeSchedule` went back to the schedule and its
+  setpoint within 2 seconds, with no confirmation prompt.
+- Away mode: Rheem's app offers only the setpoint and its schedule for this
+  heater, with no away mode, and the heater reports no `@AWAYCONFIG`. `setAway on`
+  isn't taken: `away` stays `off`, and the driver logs "didn't take away on (it
+  reports off)".
+- Not tried on hardware: `heat`/`off` commands, the away-event confirmation
+  prompt, and recovery from a real outage.
 
 Heat pump modes, hot water, tank and compressor health, and the shut-off valve
 are tested only against sample data shaped like pyeconet's.
