@@ -185,8 +185,9 @@ class CheckStyleTest(unittest.TestCase):
         failures, _ = self.run_check(strict=True)
         self.assertEqual([f.rule for f in failures], ["not-standardized"])
 
-    def test_xiaomi_and_tooling_dirs_are_ignored(self):
+    def test_forks_and_tooling_dirs_are_ignored(self):
         self.write("XiaomiVacuums/device/x.groovy", "\tanything\n")
+        self.write("RheemEcoNet/device/x.groovy", "\tanything\n")
         self.write("tests/harness/Harness.groovy", "\tclass Harness {}\n")
         failures, skips = self.run_check(strict=True)
         self.assertEqual(failures, [])
