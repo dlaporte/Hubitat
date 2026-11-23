@@ -271,4 +271,37 @@ test("a refill is still detected through the background check") {
     assert a.log.at("info").any { it.contains("refill detected on Tank 1 +110.0 gal") }
 }
 
+// ---- 0.2.0: run-out date ----
+
+test("runOutDate is today plus the days remaining, in the hub's time zone") {
+    def a = fresh()
+    assert a.call("runOutDate", 10) == "2027-01-25"
+    assert a.call("runOutDate", 0) == "2027-01-15"
+}
+
+test("each reading with a days-remaining estimate also sends runOutDate") {
+    def a = installed()
+    assert child(a).current.runOutDate == null              // no usage history yet
+    a.advance(3_600_000L)
+    pollWith(a, [tank(gallons: "149.0", lastRead: readAt(0))])
+    def days = child(a).current.daysRemaining
+    assert days != null
+    assert child(a).current.runOutDate == a.call("runOutDate", days as Integer)
+}
+
+test("the tile shows the run-out date, and leaves the line out without one") {
+    def a = installed()
+    def c = child(a)
+    assert !a.call("getEDeviceTile", c).contains("Runs out")
+    c.current.runOutDate = "2027-01-25"
+    assert a.call("getEDeviceTile", c).contains("<br><b>Runs out around:</b> Jan 25")
+}
+
+test("lowFuel is declared as a true/false enum; runOutDate is declared") {
+    def c = HubitatHarness.load(CHILD)
+    def lf = c.attributes.find { it.name == "lowFuel" }
+    assert lf.type == "enum" && lf.values == ["true", "false"]
+    assert c.attributes.find { it.name == "runOutDate" }?.type == "string"
+}
+
 finish()

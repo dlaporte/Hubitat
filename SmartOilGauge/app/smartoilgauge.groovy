@@ -460,7 +460,10 @@ private void applyTankData(Map deviceData) {
             ]
             // Skip null derived metrics — sendEvent(value:null) stores the
             // literal string "null" on the attribute.
-            if (derived.daysRemaining != null) events << [daysRemaining: derived.daysRemaining]
+            if (derived.daysRemaining != null) {
+                events << [daysRemaining: derived.daysRemaining]
+                events << [runOutDate: runOutDate(derived.daysRemaining as Integer)]
+            }
             events << [healthStatus: readingIsStale(sensorId, d.label as String, lastReadTime) ? "offline" : "online"]
             if (derived.refillDetected) {
                 events << [lastRefillAt: derived.refillAt]
@@ -471,6 +474,27 @@ private void applyTankData(Map deviceData) {
         } catch (Exception e) {
             log.error "applyTankData: error for sensor ${sensorId}: ${e.message}"
         }
+    }
+}
+
+// Today plus the days remaining, in the hub's time zone (Calendar, so a DST change can't
+// shift the date).
+private String runOutDate(Integer days) {
+    TimeZone tz = getTimeZone() ?: TimeZone.getDefault()
+    Calendar cal = Calendar.getInstance(tz)
+    cal.setTimeInMillis(now())
+    cal.add(Calendar.DAY_OF_MONTH, days)
+    def fmt = new SimpleDateFormat("yyyy-MM-dd")
+    fmt.setTimeZone(tz)
+    return fmt.format(cal.getTime())
+}
+
+// "2026-12-15" -> "Dec 15", for the tile.
+private String tileDate(Object isoDate) {
+    try {
+        return new SimpleDateFormat("MMM d").format(new SimpleDateFormat("yyyy-MM-dd").parse(isoDate.toString()))
+    } catch (Exception e) {
+        return isoDate.toString()
     }
 }
 
@@ -640,6 +664,7 @@ private String getEDeviceTile(dev) {
     def lastReadTime = dev.currentValue("lastreading")
     def usageRate = dev.currentValue("usageRate")
     def daysRemaining = dev.currentValue("daysRemaining")
+    def runOut = dev.currentValue("runOutDate")
     String lowFuel = dev.currentValue("lowFuel")
 
     // "Gallons used" — penultimate vs. current in the daily snapshot table.
@@ -682,13 +707,14 @@ private String getEDeviceTile(dev) {
     String daysLine = (daysRemaining != null && daysRemaining.toString() != "null")
         ? "<br><b>Days remaining:</b> ${daysRemaining}"
         : ""
+    String runOutLine = runOut ? "<br><b>Runs out around:</b> ${tileDate(runOut)}" : ""
 
     return """<div class="tank-body">
   <div class="tank-stats">
     <b>Capacity:</b> ${capacity ?: '—'} gal<br>
     <b>Tank level:</b> <span class="${lowFuelClass}">${level ?: '—'}%</span><br>
     <b>Gallons:</b> ${gallons ?: '—'}<br>
-    <b>Gallons used:</b> ${used}${usageLine}${daysLine}<br>
+    <b>Gallons used:</b> ${used}${usageLine}${daysLine}${runOutLine}<br>
     <b>Last updated:</b> ${formattedRead}
   </div>
   <div class="tank-image">
