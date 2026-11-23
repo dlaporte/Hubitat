@@ -395,4 +395,17 @@ test("a camera still down 5 minutes after Reboot gets the normal outage error") 
     assert d.state.rebootStartedAt == null
 }
 
+test("healthStatus changes are logged once even when the attribute lags behind") {
+    def d = withToken(fresh())
+    d.call("pollStatus")
+    d.reply(d.http[0], error: "connect timed out")
+    d.device.staleValues.healthStatus = "offline"      // Hubitat hasn't caught up with the next change yet
+    2.times {
+        d.call("pollStatus")
+        d.reply(d.httpMatching("cmd=GetMdState")[0], json: [[cmd: "GetMdState", code: 0, value: [state: 0]]])
+    }
+    assert d.log.at("info").count { it == "Driveway Camera is online" } == 1
+    assert d.eventsNamed("healthStatus")*.value == ["offline", "online"]
+}
+
 finish()

@@ -9,6 +9,7 @@
  *  v0.11.0 (2026-11-23) - Use HTTPS setting (off by default): the login, commands and snapshot
  *         URL go over HTTPS, accepting the camera's self-signed certificate. Reboot command;
  *         for 5 minutes after it, the camera being unreachable isn't logged as an error.
+ *         healthStatus changes are logged once (a quick login and poll logged "online" twice).
  *  v0.10.1 (2026-11-23) - The keep-on setting's title says it acts only after On, until Off.
  *  v0.10.0 (2026-11-20) - Re-login after a camera reboot (expired-token replies were missed);
  *         one login at a time; device info refreshes every 30 minutes; logs out on Initialize;
@@ -841,9 +842,7 @@ private void noteCommFailure(String kind, String detail) {
     String key = "${kind}|${ip}"
     Long nowMs = now()
     if (state.commFailSince == null) state.commFailSince = nowMs
-    if (device.currentValue("healthStatus") != "offline") {
-        emitEvent(name: "healthStatus", value: "offline", descriptionText: "${device.displayName} is offline")
-    }
+    setHealth("offline")
     if (inRebootWindow()) {
         logDebug "camera at ${ip} not answering yet after Reboot (${detail})"
         return
@@ -868,10 +867,16 @@ private void noteCommFailure(String kind, String detail) {
     }
 }
 
+// Keyed on state, not the attribute: a login and the poll it releases succeed within
+// milliseconds, before Hubitat has caught up with the first change (STYLE.md, Lifecycle).
+private void setHealth(String value) {
+    if (state.health == value) return
+    state.health = value
+    emitEvent(name: "healthStatus", value: value, descriptionText: "${device.displayName} is ${value}")
+}
+
 private void noteCommSuccess() {
-    if (device.currentValue("healthStatus") != "online") {
-        emitEvent(name: "healthStatus", value: "online", descriptionText: "${device.displayName} is online")
-    }
+    setHealth("online")
     if (state.commFailSince == null) return
     Long rebootAt = state.rebootStartedAt as Long
     if (rebootAt != null) {
