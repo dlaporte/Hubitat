@@ -48,6 +48,7 @@ import groovy.transform.Field
     "Lighting_V2[0][0][0].Mode", "Lighting_V2[0][1][0].Mode", "Lighting[0][1].Mode", "Lighting[0][2].Mode"]
 @Field static final List<String> MOTION_DETECT_KEYS = [
     "MotionDetect[0].Enable", "MotionDetect[0].EventHandler.SnapshotEnable"]
+@Field static final long REBOOT_WINDOW_MS = 300_000L   // failures this soon after Reboot are expected
 
 metadata {
     definition(
@@ -79,6 +80,7 @@ metadata {
         command "setMotionLightDuration", [[name: "seconds*", type: "NUMBER", description: "How long the light stays on after motion (1–3600)"]]
         command "setNightVision", [[name: "mode*", type: "ENUM", constraints: ["Auto", "On", "Off"]]]
         command "setMotionDetection", [[name: "setting*", type: "ENUM", constraints: ["on", "off"]]]
+        command "reboot"
     }
 
     preferences {
@@ -222,6 +224,38 @@ private void emitSetting(String name, value) {
     emitEvent(name: name, value: value, descriptionText: "${device.displayName} ${text}")
 }
 
+// ---- Reboot ----
+// The camera is unreachable for a minute or two. For 5 minutes after the request,
+// poll and stream failures are expected and logged at debug only.
+
+def reboot() {
+    logDebug "reboot()"
+    String uri = "/cgi-bin/magicBox.cgi?action=reboot"
+    asynchttpGet("unauthRequestHandler", [uri: "http://${ip}${uri}", contentType: "text/plain", timeout: 10],
+            [uri: uri, finalCallback: "rebootResponse", reboot: true])
+}
+
+def rebootResponse(response, data) {
+    String text = (response.data ?: "").toString().trim()
+    if (text == "OK") {
+        log.info "${device.displayName} rebooting; back in about 1–2 minutes"
+        startRebootWindow()
+    } else {
+        log.warn "camera refused Reboot (${text})"
+    }
+}
+
+private void startRebootWindow() {
+    state.rebootStartedAt = now()
+    closeStream()
+    runIn(60, "connectStream")
+}
+
+private boolean inRebootWindow() {
+    Long started = state.rebootStartedAt as Long
+    return started != null && now() - started < REBOOT_WINDOW_MS
+}
+
 // ---------------------------------------------------------------------------
 // Camera operations (async)
 //
@@ -302,7 +336,7 @@ def authedRequestHandler(response, data) {
     if (response.hasError() || response.status != 200) {
         // A 401 to the digest-signed request means the credentials are wrong.
         String kind = (response.status == 401) ? "auth" : failureKind(response)
-        requestFailed(data, kind, httpErrorDetail(response))
+        requestFailed(data, kind, httpErrorDetail(response), true)
         return
     }
     noteCommSuccess()
@@ -540,6 +574,10 @@ private void streamFailed(String detail) {
     Integer delay = STREAM_BACKOFF[Math.min(step, STREAM_BACKOFF.size() - 1)]
     state.streamBackoff = Math.min(step + 1, STREAM_BACKOFF.size())
     runIn(delay, "connectStream")
+    if (inRebootWindow()) {
+        logDebug "motion events not back yet after Reboot (${detail})"
+        return
+    }
     Long nowMs = now()
     if (state.streamFailSince == null) state.streamFailSince = nowMs
     if (state.streamFailLastLog == null) {
@@ -574,7 +612,18 @@ private void checkStreamWatchdog() {
 // on recovery. The dedup key leaves out the error text, which can change
 // during one outage. A failed command is always logged.
 
-private void requestFailed(Map data, String kind, String detail) {
+// authed: the failure was on the digest-signed request (the second step), not the probe.
+private void requestFailed(Map data, String kind, String detail, boolean authed = false) {
+    if (data?.reboot) {
+        if (authed && kind == "unreachable") {
+            // The camera can restart before it answers.
+            log.info "${device.displayName} didn't answer the Reboot request; it's probably restarting"
+            startRebootWindow()
+            noteCommFailure(kind, detail)      // inside the window: offline, logged at debug
+            return
+        }
+        log.warn authed ? "camera refused Reboot (${detail})" : "camera didn't answer; Reboot not sent (${detail})"
+    }
     noteCommFailure(kind, detail)
     if (data?.settingName) {
         log.error "set ${data.settingName} failed: ${detail}"
@@ -599,6 +648,11 @@ private void noteCommFailure(String kind, String detail) {
     if (device.currentValue("healthStatus") != "offline") {
         emitEvent(name: "healthStatus", value: "offline", descriptionText: "${device.displayName} is offline")
     }
+    if (inRebootWindow()) {
+        logDebug "camera at ${ip} not answering yet after Reboot (${detail})"
+        return
+    }
+    state.remove("rebootStartedAt")   // the window is over: from here it's a normal outage
     if (state.commFailKey != key) {
         state.commFailKey = key
         state.commFailLastLog = nowMs
@@ -621,7 +675,13 @@ private void noteCommSuccess() {
         emitEvent(name: "healthStatus", value: "online", descriptionText: "${device.displayName} is online")
     }
     if (state.commFailSince == null) return
-    log.info "camera at ${ip} is responding again after ${formatDuration(now() - (state.commFailSince as Long))}"
+    Long rebootAt = state.rebootStartedAt as Long
+    if (rebootAt != null) {
+        log.info "${device.displayName} is back after ${formatDuration(now() - rebootAt)} (reboot)"
+        state.remove("rebootStartedAt")
+    } else {
+        log.info "camera at ${ip} is responding again after ${formatDuration(now() - (state.commFailSince as Long))}"
+    }
     state.remove("commFailSince")
     state.remove("commFailKey")
     state.remove("commFailLastLog")

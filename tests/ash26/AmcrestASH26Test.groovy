@@ -675,4 +675,85 @@ table.All.MotionDetect[0].Enable=false
     assert d.device.current.motionDetection == "off"
 }
 
+// ---- 0.9.0: Reboot ----
+
+test("Reboot sends magicBox reboot; on OK an info line, the window opens and the stream reconnects in 60 s") {
+    def d = fresh()
+    assert d.commands.contains("reboot")
+    streamUp(d)
+    d.call("reboot")
+    assert uriOf(d.http[0]) == "http://10.0.0.30/cgi-bin/magicBox.cgi?action=reboot"
+    answer(d, "OK")
+    assert d.log.at("info").contains("Backyard Floodlight rebooting; back in about 1–2 minutes")
+    assert d.state.rebootStartedAt == d.clock
+    assert d.eventStream.closes == 1
+    assert d.schedules.connectStream == 60
+}
+
+test("no reply to the signed Reboot request means it's probably restarting: info, window, no error") {
+    def d = fresh()
+    d.call("reboot")
+    d.reply(d.http[0], status: 401, headers: CHALLENGE)
+    d.reply(d.http[0], status: 408, error: "Read timed out")
+    assert d.log.at("info").contains("Backyard Floodlight didn't answer the Reboot request; it's probably restarting")
+    assert d.log.at("error").isEmpty() && d.log.at("warn").isEmpty()
+    assert d.state.rebootStartedAt == d.clock
+    assert d.device.current.healthStatus == "offline"
+    assert d.schedules.connectStream == 60
+}
+
+test("a camera that doesn't answer the Reboot probe never got it: warn, normal outage error, no window") {
+    def d = fresh()
+    d.call("reboot")
+    d.reply(d.http[0], status: 408, error: "connect timed out")
+    assert d.log.at("warn") == ["camera didn't answer; Reboot not sent (connect timed out, HTTP 408)"]
+    assert d.log.at("error").size() == 1 && d.log.at("error")[0].contains("isn't answering")
+    assert d.state.rebootStartedAt == null
+}
+
+test("a refused Reboot warns with the camera's reply and opens no window") {
+    def d = fresh()
+    streamUp(d)
+    d.call("reboot")
+    answer(d, "Error")
+    assert d.log.at("warn") == ["camera refused Reboot (Error)"]
+    assert d.state.rebootStartedAt == null
+    assert d.eventStream.closes == 0
+}
+
+test("inside the reboot window, poll and stream failures log nothing above debug; the return logs one line") {
+    def d = fresh()
+    streamUp(d)
+    d.call("reboot")
+    answer(d, "OK")
+    d.call("eventStreamStatus", STATUS_STOP)        // the deliberate close
+    d.advance(20_000L)
+    d.call("refresh")
+    d.reply(d.http.find { it.callback == "unauthRequestHandler" }, status: 408, error: "connect timed out")
+    d.advance(40_000L)
+    d.call("connectStream")
+    d.reply(d.http.find { it.callback == "streamProbeHandler" }, status: 408, error: "connect timed out")
+    assert d.log.at("error").isEmpty() && d.log.at("warn").isEmpty()
+    assert d.device.current.healthStatus == "offline"
+    d.advance(30_000L)
+    d.call("refresh")
+    answer(d, settingsText("Off"))
+    assert d.log.at("info").contains("Backyard Floodlight is back after 1m (reboot)")
+    assert !d.log.at("info").any { it.contains("responding again") }
+    assert d.state.rebootStartedAt == null
+    streamUp(d)
+    assert !d.log.at("info").any { it.contains("motion events are back") }
+}
+
+test("a camera still down 5 minutes after Reboot gets the normal outage error") {
+    def d = fresh()
+    d.call("reboot")
+    answer(d, "OK")
+    d.advance(301_000L)
+    d.call("refresh")
+    d.reply(d.http[0], status: 408, error: "connect timed out")
+    assert d.log.at("error").size() == 1 && d.log.at("error")[0].contains("isn't answering")
+    assert d.state.rebootStartedAt == null
+}
+
 finish()
