@@ -772,28 +772,19 @@ def handleLightOff(device) {
 
 def handleDim(device, duration)
 {
-	def bondId = getBondIdFromDevice(device)
 	if (device.deviceNetworkId.contains("uplight"))
-	{
-		dimUsingTimer(device, bondId, duration, "StartUpLightDimmer")
-	}
+		dimUsingTimer(device, duration, "StartUpLightDimmer")
 	else if (device.deviceNetworkId.contains("downlight"))
-	{
-		dimUsingTimer(device, bondId, duration, "StartDownLightDimmer")
-	}
+		dimUsingTimer(device, duration, "StartDownLightDimmer")
 	else
-	{
-		dimUsingTimer(device, bondId, duration, "StartDimmer")
-	}
+		dimUsingTimer(device, duration, "StartDimmer")
 }
 
 def dimUsingTimer(device, duration, command)
 {
 	def bondId = getBondIdFromDevice(device)
 	if (executeAction(bondId, command))
-	{
-		runInMillis((duration*1000).toInteger(), stopDimmer, [data: [device: device, bondId: bondId]])
-	}
+		runInMillis(((duration as BigDecimal) * 1000).toLong(), "stopDimmer", [data: [bondId: bondId]])
 }
 
 def stopDimmer(data)

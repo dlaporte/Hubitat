@@ -567,4 +567,26 @@ check("Cycle Speed asks the app for the next speed and sets it, on all three fan
     }
 }
 
+// ---- Timer light ----
+
+check("Dim starts the dimmer and schedules Stop with only the BOND ID") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    ok(a)
+    a.call("handleDim", light, 5)
+    assert paths(a) == ["/v2/devices/${FAN}/actions/StartDimmer".toString()]
+    assert a.runInMillisCalls == [[5000L, "stopDimmer", [data: [bondId: FAN]]]]
+    ok(a)
+    a.call("stopDimmer", [bondId: FAN])
+    assert paths(a)[1] == "/v2/devices/${FAN}/actions/Stop".toString()
+}
+
+check("a failed StartDimmer schedules no Stop") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    down(a)
+    a.call("handleDim", light, 2.5)
+    assert a.runInMillisCalls.isEmpty()
+}
+
 finish()
