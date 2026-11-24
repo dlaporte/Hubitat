@@ -33,6 +33,10 @@ import groovy.transform.Field
 
 @Field static final String VERSION = "0.8.0"
 
+// Last time each device's event stream delivered anything (ms). In memory, so the
+// camera's 5-second heartbeat writes nothing to state; empty after a code save.
+@Field static java.util.concurrent.ConcurrentHashMap<String, Long> streamActivity = new java.util.concurrent.ConcurrentHashMap<String, Long>()
+
 metadata {
     definition(
         name: "Amcrest ASH26",
@@ -46,6 +50,7 @@ metadata {
         capability "Initialize"
         capability "Refresh"
         capability "Switch"
+        capability "MotionSensor"
 
         attribute "light_status", "string"
         attribute "device_name", "string"
@@ -61,6 +66,9 @@ metadata {
         input name: "ip", type: "text", title: "IP address", required: true
         input name: "username", type: "text", title: "ASH26 username", required: true
         input name: "password", type: "password", title: "ASH26 password", required: true
+        input name: "motionHoldSec", type: "number", title: "Motion inactive after (seconds)",
+              description: "How long after the camera's PIR sensors all stop before motion goes inactive (0–600)",
+              defaultValue: 30, range: "0..600"
         input name: "logEnable", type: "bool", title: "Enable debug logging", description: "Turns itself off after 30 minutes", defaultValue: false
         input name: "txtEnable", type: "bool", title: "Enable descriptionText logging", defaultValue: true
     }
@@ -89,6 +97,10 @@ void initialize() {
     // the counter's monotonic-increase isn't actually buying us replay
     // protection beyond what the server already guarantees.
     state.nc = 0
+    // A Save or hub reboot during motion must not leave motion stuck active.
+    state.remove("pirActive")
+    state.motion = "inactive"
+    emitEvent(name: "motion", value: "inactive", descriptionText: "${device.displayName} motion is inactive")
     if (!ip || !username || !password) {
         log.error "required fields not completed, please complete for proper operation."
         return
@@ -269,6 +281,78 @@ def verifySetResponse(response, data) {
             log.error "chain abandoned with ${(data.chainRest as List).size()} step(s) remaining; camera state may be inconsistent"
         }
     }
+}
+
+// ---- Event stream: motion ----
+// The camera's three PIR sensors report AlarmLocal Start/Stop per sensor index. Motion
+// is active while any sensor is, and goes inactive motionHoldSec after the last stops.
+
+// Called by the hub with the event stream's data, one line per call.
+def parse(String text) {
+    streamActivity[streamKey()] = now()
+    if (!text?.contains("Code=")) return
+    text.readLines().each { String line ->
+        if (line.contains("Code=")) handleStreamEvent(line)
+    }
+}
+
+private void handleStreamEvent(String line) {
+    def m = (line =~ /Code=([^;]+);action=([^;]+);index=(\d+)/)
+    if (!m.find()) {
+        logDebug "stream: unrecognised event ${line.take(120)}"
+        return
+    }
+    String code = m.group(1)
+    String action = m.group(2)
+    Integer index = m.group(3) as Integer
+    if (code != "AlarmLocal") {
+        logDebug "stream event ${code} ${action} ${index} ignored"
+        return
+    }
+    if (action == "Start") pirStarted(index)
+    else if (action == "Stop") pirStopped(index)
+}
+
+// Indexes come back from state as Integer or Long, so compare as Integer.
+private void pirStarted(Integer index) {
+    List active = (state.pirActive ?: []) as List
+    if (!active.any { (it as Integer) == index }) active << index
+    state.pirActive = active
+    unschedule("motionHoldExpired")
+    if (state.motion != "active") {
+        state.motion = "active"
+        emitEvent(name: "motion", value: "active", descriptionText: "${device.displayName} motion is active")
+    }
+}
+
+private void pirStopped(Integer index) {
+    List active = ((state.pirActive ?: []) as List).findAll { (it as Integer) != index }
+    state.pirActive = active
+    if (!active) startMotionHold()
+}
+
+// Starts the countdown to inactive; a hold of 0 goes inactive now.
+private void startMotionHold() {
+    if (state.motion != "active") return
+    Integer hold = motionHoldSeconds()
+    if (hold == 0) motionHoldExpired()
+    else runIn(hold, "motionHoldExpired")
+}
+
+private Integer motionHoldSeconds() {
+    def v = settings.motionHoldSec
+    Integer s = (v == null || v.toString().trim() == "") ? 30 : (v as Integer)
+    return Math.max(0, Math.min(600, s))
+}
+
+void motionHoldExpired() {
+    if (((state.pirActive ?: []) as List) || state.motion != "active") return
+    state.motion = "inactive"
+    emitEvent(name: "motion", value: "inactive", descriptionText: "${device.displayName} motion is inactive")
+}
+
+private String streamKey() {
+    return device.id.toString()
 }
 
 // ---- Connection health ----
