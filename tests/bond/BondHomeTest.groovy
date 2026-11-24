@@ -622,4 +622,13 @@ check("the power meter defaults to a threshold of 10, and skips empty sensor slo
     assert fp.current.switch == "on"
 }
 
+// ---- Release ----
+
+check("import URLs point at this repo") {
+    assert app().definition.importUrl == "https://raw.githubusercontent.com/dlaporte/Hubitat/main/BondHome/app/BOND_Home_Integration.groovy"
+    DRIVERS.keySet().each { file ->
+        assert driver(file).definition.importUrl == "https://raw.githubusercontent.com/dlaporte/Hubitat/main/BondHome/device/${file}".toString()
+    }
+}
+
 finish()

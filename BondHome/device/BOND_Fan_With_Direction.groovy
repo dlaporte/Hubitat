@@ -2,6 +2,13 @@
  *  BOND Fan With Direction
  *
  *  Copyright 2019-2020 Dominick Meglio
+ *  Modified 2026 by David LaPorte
+ *
+ *  Upstream: https://github.com/dcmeglio/hubitat-bond
+ *  Documentation: https://github.com/dlaporte/Hubitat/blob/main/BondHome/README.md
+ *
+ *  Changelog:
+ *  v1.5.0 (2026-11-24) - David LaPorte's fork: healthStatus. Cycle Speed; On and Set Speed remember the speed actually set.
  *
  */
 
@@ -10,7 +17,7 @@ metadata {
 		name: "BOND Fan With Direction", 
 		namespace: "bond", 
 		author: "dmeglio@gmail.com",
-		importUrl: "https://raw.githubusercontent.com/dcmeglio/hubitat-bond/master/drivers/BOND_Fan_With_Direction.groovy"
+		importUrl: "https://raw.githubusercontent.com/dlaporte/Hubitat/main/BondHome/device/BOND_Fan_With_Direction.groovy"
 	) {
 		capability "Switch"
         capability "FanControl"

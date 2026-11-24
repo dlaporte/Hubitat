@@ -1,22 +1,26 @@
 /**
- *  https://raw.githubusercontent.com/dcmeglio/hubitat-bond/master/apps/BOND_Home_Integration.groovy
- *
  *  BOND Home Integration
  *
  *  Copyright 2019-2020 Dominick Meglio
+ *  Modified 2026 by David LaPorte
  *
- * Revision History
- * 2020.01.18 - Added setPosition support for motorized shades, mapping a special value of 50 to the Preset command
- * 2019.12.01 - Fixed an issue where dimmers wouldn't work with fans that support direction controls, fixed an issue setting flame height
- * 2019.11.24 - Added support for timer based fan light dimmers and flame height adjustment for fireplaces
- * 2019.12.14 - Added support for Switch capability to the motorized shades for compatibility
- * 2020.01.02 - Fixed an issue where fan speed wouldn't be set properly (thanks jchurch for the troubleshooting!)
- * 2020.02.01 - Fixed an issue where looking for devices was incorrect which broke Smart By BOND devices (thanks mcneillk for the fix!)
- * 2020.03.23 - Added the ability to fix device state when it's out of sync (thanks stephen_nutt for the suggestion)
- * 2020.04.13 - Added a stop command to motorized shades to stop an open/close at the current position (suggested by jchurch)
- * 2020.04.21 - Added better logging for connection issues to the hub
- * 2020.05.04 - Error logging improvements
- * 2020.06.28 - Added toggle command to all devices (suggested by jchurch) and support for having multiple Smart by BOND devices (discovered by jhciotti)
+ *  Connects Hubitat to a BOND bridge (fans, fireplaces, shades and generic devices) over its local API.
+ *  Upstream: https://github.com/dcmeglio/hubitat-bond
+ *  Documentation: https://github.com/dlaporte/Hubitat/blob/main/BondHome/README.md
+ *
+ *  Changelog:
+ *  v1.5.0 (2026-11-24) - David LaPorte's fork. Done no longer re-adds existing lights or stops polling.
+ *                        Bridge timeouts and errors no longer crash the poll or commands, and an outage
+ *                        logs one warning (with an hourly reminder and a recovery line) instead of an
+ *                        error every poll; every device gets healthStatus. Speeds follow the fan's own
+ *                        speed count (medium-low and medium-high round), with supportedFanSpeeds and
+ *                        Cycle Speed. Fix Speed records power. Light state is polled; timer Dim works.
+ *                        Visiting the settings page while the bridge is down no longer wipes the device
+ *                        lists. Debug logging defaults off and turns itself off; settings aren't logged.
+ *  2020.06.28 and earlier - Dominick Meglio (1.4.0): see https://github.com/dcmeglio/hubitat-bond
+ *
+ *	If you find this useful, donations are always appreciated (to Dominick Meglio)
+ *	https://www.paypal.com/cgi-bin/webscr?cmd=_s-xclick&hosted_button_id=7LBRPJRLJSDDN&source=url
  *
  */
 
@@ -61,7 +65,8 @@ definition(
     iconUrl: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience.png",
     iconX2Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
     iconX3Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
-	documentationLink: "https://github.com/dcmeglio/hubitat-bond/blob/master/README.md")
+	documentationLink: "https://github.com/dlaporte/Hubitat/blob/main/BondHome/README.md",
+	importUrl: "https://raw.githubusercontent.com/dlaporte/Hubitat/main/BondHome/app/BOND_Home_Integration.groovy")
 
 
 preferences {
