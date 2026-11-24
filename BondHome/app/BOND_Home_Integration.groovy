@@ -20,6 +20,10 @@
  *
  */
 
+import groovy.transform.Field
+
+@Field static final String VERSION = "1.5.0"
+
 definition(
     name: "BOND Home Integration",
     namespace: "dcm.bond",
@@ -44,7 +48,7 @@ def prefHub() {
 			input("hubIp", "text", title: "BOND Hub IP", description: "BOND Hub IP Address", required: true)
 			input("hubToken", "text", title: "BOND Hub Token", description: "BOND Hub Token", required: true)
 			input("refreshInterval", "number", title: "Poll BOND Home every N seconds", required: true, defaultValue: 30)
-            input("debugOutput", "bool", title: "Enable debug logging?", defaultValue: true, displayDuringSetup: false, required: false)
+            input("debugOutput", "bool", title: "Enable debug logging", description: "Turns itself off after 30 minutes", defaultValue: false, displayDuringSetup: false, required: false)
 		}
 		displayFooter()
 	}
@@ -97,14 +101,11 @@ def prefPowerSensors() {
 }
 
 def installed() {
-	logDebug "Installed with settings: ${settings}"
-
 	initialize()
 }
 
 def updated() {
-	logDebug "Updated with settings: ${settings}"
-    unschedule()
+	unschedule()
 	unsubscribe()
 	initialize()
 }
@@ -132,137 +133,56 @@ def initialize() {
 def getHubId() {
 	if (state.hubId)
 		return state.hubId
-	def params = [
-		uri: "http://${hubIp}",
-		path: "/v2/sys/version",
-		contentType: "application/json",
-		headers: [ 'BOND-Token': hubToken ]
-	]
-	try
-	{
-		httpGet(params) { resp ->
-			if (checkHttpResponse("getHubId", resp))
-			{
-				state.hubId = resp.data.bondid
-			}
-		}
-		return state.hubId
-	}
-	catch (e)
-	{
-		checkHttpResponse("getHubId", e.getResponse())
-		return null
-	}
+	Map r = bondRequest("GET", "/v2/sys/version", [timeout: 10])
+	if (r.ok && r.data?.bondid)
+		state.hubId = r.data.bondid
+	else if (!r.ok)
+		log.warn "BOND: couldn't read the bridge's ID: ${describeFailure(r)}"
+	return state.hubId
 }
 
+// Reads every BOND device into new lists, and stores them only when the whole fetch
+// succeeds, so a failed visit to the settings page can't wipe what polling and Done use.
 def getDevices() {
-	state.fireplaceList = [:]
-    state.fireplaceDetails = [:]
-	state.fireplaceProperties = [:]
-	state.fanList = [:]
-    state.fanDetails = [:]
-	state.fanProperties = [:]
-	state.shadeList = [:]
-	state.shadeDetails = [:]
-	state.shadeProperties = [:]
-	state.genericList = [:]
-	state.genericDetails = [:]
-	state.deviceList = [:]
-	def params = [
-		uri: "http://${hubIp}",
-		path: "/v2/devices",
-		contentType: "application/json",
-		headers: [ 'BOND-Token': hubToken ]
-	]
-	try
-	{
-		def result = false
-		httpGet(params) { resp ->
-			if (checkHttpResponse("getDevices", resp))
-			{
-				for (deviceid in resp.data) {
-					if (deviceid.key == "_")
-						continue
-					getDeviceById(deviceid);
-				}
-				result = true
-			}
-		}
-		return result
-	}
-	catch (e)
-	{
-		checkHttpResponse("getDevices", e.getResponse())
+	Map lists = [fireplaceList: [:], fireplaceDetails: [:], fireplaceProperties: [:],
+		fanList: [:], fanDetails: [:], fanProperties: [:],
+		shadeList: [:], shadeDetails: [:], shadeProperties: [:],
+		genericList: [:], genericDetails: [:]]
+	Map r = bondRequest("GET", "/v2/devices", [timeout: 10])
+	if (!r.ok) {
+		log.warn "BOND: couldn't list the bridge's devices: ${describeFailure(r)}"
 		return false
 	}
+	for (entry in r.data) {
+		if (entry.key == "_")
+			continue
+		if (!getDeviceById(entry.key as String, lists))
+			return false
+	}
+	lists.each { k, v -> state[k] = v }
+	return true
 }
 
-def getDeviceById(id) {
-	def params = [
-		uri: "http://${hubIp}",
-		path: "/v2/devices/${id.key}",
-		contentType: "application/json",
-		headers: [ 'BOND-Token': hubToken ]
-	]
-	try
-	{
-		httpGet(params) { resp ->
-			if (checkHttpResponse("getDeviceById", resp))
-			{
-				if (resp.data.type == "FP")
-				{
-					state.fireplaceList[id.key] = resp.data.name
-					state.fireplaceDetails[id.key] = resp.data.actions
-					state.fireplaceProperties[id.key] = getDeviceProperties(id)
-				}
-				else if (resp.data.type == "CF")
-				{
-					state.fanList[id.key] = resp.data.name
-					state.fanDetails[id.key] = resp.data.actions
-					state.fanProperties[id.key] = getDeviceProperties(id)
-				}
-				else if (resp.data.type == "MS")
-				{
-					state.shadeList[id.key] = resp.data.name
-					state.shadeDetails[id.key] = resp.data.actions
-					state.shadeProperties[id.key] = getDeviceProperties(id)
-				}
-				else if (resp.data.type == "GX")
-				{
-					state.genericList[id.key] = resp.data.name
-					state.genericDetails[id.key] = resp.data.actions
-				}
-			}
+def getDeviceById(String id, Map lists) {
+	Map r = bondRequest("GET", "/v2/devices/${id}", [timeout: 10])
+	if (!r.ok) {
+		log.warn "BOND: couldn't read device ${id}: ${describeFailure(r)}"
+		return false
+	}
+	String kind = [FP: "fireplace", CF: "fan", MS: "shade", GX: "generic"][r.data.type]
+	if (kind == null)
+		return true     // a device type this app doesn't support
+	lists[kind + "List"][id] = r.data.name
+	lists[kind + "Details"][id] = r.data.actions
+	if (kind != "generic") {
+		Map p = bondRequest("GET", "/v2/devices/${id}/properties", [timeout: 10])
+		if (!p.ok) {
+			log.warn "BOND: couldn't read the properties of device ${id}: ${describeFailure(p)}"
+			return false
 		}
+		lists[kind + "Properties"][id] = p.data
 	}
-	catch (e)
-	{
-		checkHttpResponse("getDeviceById", e.getResponse())
-	}
-}
-
-def getDeviceProperties(id) {
-	def params = [
-		uri: "http://${hubIp}",
-		path: "/v2/devices/${id.key}/properties",
-		contentType: "application/json",
-		headers: [ 'BOND-Token': hubToken ]
-	]
-	def result = null
-	try
-	{
-		httpGet(params) { resp ->
-			if (checkHttpResponse("getDeviceProperties", resp))
-			{
-				result = resp.data
-			}
-		}
-	}
-	catch (e)
-	{
-		checkHttpResponse("getDeviceProperties", e.getResponse())
-	}
-	return result
+	return true
 }
 
 def findChildDevice(deviceId) {
@@ -1358,133 +1278,93 @@ def getState(bondId) {
 }
 
 def hasAction(bondId, commandType) {
-	logDebug "searching for ${commandType} for ${bondId}"
-	def params = [
-		uri: "http://${hubIp}",
-		path: "/v2/devices/${bondId}/actions",
-		contentType: "application/json",
-		headers: [ 'BOND-Token': hubToken ]
-	]
-	def commandToReturn = false
-	try
-	{
-		httpGet(params) { resp ->
-			if (checkHttpResponse("hasAction", resp))
-			{
-				for (commandId in resp.data) {
-					if (commandId.key == "_")
-						continue
-					if (commandId.key == commandType) {
-						logDebug "found command ${commandId.key} for ${bondId}"
-						commandToReturn = true
-						break
-					}
-				}
-			}
-		}
+	Map r = bondRequest("GET", "/v2/devices/${bondId}/actions", [timeout: 10])
+	if (!r.ok) {
+		log.warn "BOND hasAction: couldn't read the actions of ${bondId}: ${describeFailure(r)}"
+		return false
 	}
-	catch (java.net.NoRouteToHostException e) {
-		log.error "executeFixState: connection to BOND hub appears to be down. Check if the IP is correct."
-	}
-	catch (org.apache.http.conn.ConnectTimeoutException e)
-	{
-		log.error "hasAction: connection to BOND hub appears to be down. Check if the IP is correct."
-	}
-	catch (Exception e)
-	{
-		checkHttpResponse("hasAction", e.getResponse())
-	}
-	return commandToReturn
+	return r.data?.containsKey(commandType) ?: false
 }
 
 def executeAction(bondId, action) {
-	def params = [
-		uri: "http://${hubIp}",
-		path: "/v2/devices/${bondId}/actions/${action}",
-		contentType: "application/json",
-		headers: [ 'BOND-Token': hubToken ],
-		body: "{}"
-	]
-	def isSuccessful = false
 	logDebug "${bondId} -> calling action ${action}"
-	try
-	{
-		httpPut(params) { resp ->
-			isSuccessful = checkHttpResponse("executeAction", resp)
-		}
-	}
-	catch (java.net.NoRouteToHostException e) {
-		log.error "executeAction: connection to BOND hub appears to be down. Check if the IP is correct."
-	}
-	catch (org.apache.http.conn.ConnectTimeoutException e)
-	{
-		log.error "executeAction: connection to BOND hub appears to be down. Check if the IP is correct."
-	}
-	catch (Exception e)
-	{
-		checkHttpResponse("executeAction", e.getResponse())
-	}
-	return isSuccessful
+	return bondCommand(bondId, "PUT", "/v2/devices/${bondId}/actions/${action}", "{}", action as String)
 }
 
 def executeAction(bondId, action, argument) {
-	def params = [
-		uri: "http://${hubIp}",
-		path: "/v2/devices/${bondId}/actions/${action}",
-		contentType: "application/json",
-		headers: [ 'BOND-Token': hubToken ],
-		body: '{"argument": ' + argument +'}'
-	]
-	def isSuccessful = false
-	logDebug "calling action ${action} ${params.body}"
-	try
-	{
-		httpPut(params) { resp ->
-			isSuccessful = checkHttpResponse("executeAction", resp)
-		}
-	}
-	catch (java.net.NoRouteToHostException e) {
-		log.error "executeAction: connection to BOND hub appears to be down. Check if the IP is correct."
-	}
-	catch (org.apache.http.conn.ConnectTimeoutException e)
-	{
-		log.error "executeAction: connection to BOND hub appears to be down. Check if the IP is correct."
-	}
-	catch (Exception e) 
-	{
-		checkHttpResponse("executeAction", e.getResponse())
-	}
-	return isSuccessful
+	logDebug "${bondId} -> calling action ${action} with ${argument}"
+	return bondCommand(bondId, "PUT", "/v2/devices/${bondId}/actions/${action}", '{"argument": ' + argument + '}', action as String)
 }
 
 def executeFixState(bondId, body) {
+	logDebug "${bondId} -> fixing state ${body}"
+	return bondCommand(bondId, "PATCH", "/v2/devices/${bondId}/state", body as String, "fix state ${body}".toString())
+}
+
+// A command or fix-state: true when BOND accepted it; otherwise one warning, every time.
+private boolean bondCommand(bondId, String method, String path, String body, String what) {
+	Map r = bondRequest(method, path, [body: body, timeout: 10])
+	if (r.ok)
+		return true
+	log.warn "BOND didn't accept ${what} for ${deviceLabel(bondId)}: ${describeFailure(r)}"
+	return false
+}
+
+// Every BOND request goes through here. Returns [ok: true, data:], [ok: false, status:, body:]
+// for an HTTP error, or [ok: false, status: null, error:] when the bridge isn't answering.
+// The token goes only in the header and is never logged.
+private Map bondRequest(String method, String path, Map opts = [:]) {
+	Map result = [ok: false, status: null]
+	if (!hubIp || !hubToken) {
+		result.error = "no bridge IP or token set"
+		return result
+	}
 	def params = [
 		uri: "http://${hubIp}",
-		path: "/v2/devices/${bondId}/state",
+		path: path,
 		contentType: "application/json",
 		headers: [ 'BOND-Token': hubToken ],
-		body: body
+		timeout: opts.timeout ?: 10
 	]
-	def isSuccessful = false
-	logDebug "calling fix state ${params.body}"
-	try
-	{
-		httpPatch(params) { resp ->
-			isSuccessful = checkHttpResponse("executeFixState", resp)
+	if (opts.body != null)
+		params.body = opts.body
+	Closure handler = { resp ->
+		if (resp.status in [200, 201, 204]) {
+			result.ok = true
+			result.data = resp.data
+		}
+		else {
+			result.status = resp.status
+			result.body = resp.data
 		}
 	}
-	catch (java.net.NoRouteToHostException e) {
-		log.error "executeFixState: connection to BOND hub appears to be down. Check if the IP is correct."
+	try {
+		if (method == "GET")
+			httpGet(params, handler)
+		else if (method == "PUT")
+			httpPut(params, handler)
+		else
+			httpPatch(params, handler)
 	}
-	catch (org.apache.http.conn.ConnectTimeoutException e)
-	{
-		log.error "executeFixState: connection to BOND hub appears to be down. Check if the IP is correct."
+	catch (groovyx.net.http.HttpResponseException e) {
+		result.status = e.statusCode
+		result.body = e.response?.data
 	}
-	catch (Exception e) 
-	{
-		checkHttpResponse("executeFixState", e.getResponse())
+	catch (Exception e) {
+		result.error = e.toString()
 	}
-	return isSuccessful
+	return result
+}
+
+private String describeFailure(Map r) {
+	if (r.status != null)
+		return "HTTP ${r.status}" + (r.body != null ? " ${r.body}" : "")
+	return "bridge not answering (${r.error})"
+}
+
+private String deviceLabel(bondId) {
+	def d = findChildDevice(bondId)
+	return d ? "${d.displayName} (${bondId})" : "${bondId}"
 }
 
 def shouldSendEvent(bondId) {
@@ -1513,6 +1393,11 @@ def logDebug(msg) {
     if (settings?.debugOutput) {
 		log.debug msg
 	}
+}
+
+def logsOff() {
+	log.info "BOND: debug logging turned off"
+	app.updateSetting("debugOutput", [value: "false", type: "bool"])
 }
 
 def checkHttpResponse(action, resp) {

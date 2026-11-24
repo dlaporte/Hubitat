@@ -94,4 +94,96 @@ check("every driver keeps its name and namespace") {
     }
 }
 
+// ---- Requests ----
+
+check("a timeout on a command warns that the bridge isn't answering, without a crash") {
+    def a = app(); cabinDevices(a)
+    down(a)
+    assert a.call("executeAction", FAN, "TurnOn") == false
+    assert a.log.at("warn") == ["BOND didn't accept TurnOn for Loft Fan (BOND) (${FAN}): bridge not answering (java.net.SocketTimeoutException: Read timed out)".toString()]
+}
+
+check("an HTTP error on a command logs its status and body") {
+    def a = app(); cabinDevices(a)
+    httpError(a, 404, [_error_msg: "not found"])
+    assert a.call("executeAction", FAN, "TurnOn") == false
+    assert a.log.at("warn")[0].contains("HTTP 404") && a.log.at("warn")[0].contains("not found")
+}
+
+check("commands use a 10 s timeout and send the token only in the header") {
+    def a = app(); cabinDevices(a)
+    ok(a)
+    assert a.call("executeAction", FAN, "SetSpeed", 2) == true
+    def p = a.http[0].params
+    assert a.http[0].method == "SYNC_PUT" && p.path == "/v2/devices/${FAN}/actions/SetSpeed".toString()
+    assert p.body == '{"argument": 2}' && p.timeout == 10 && p.headers["BOND-Token"] == TOKEN
+}
+
+check("fix state is a PATCH of the state") {
+    def a = app(); cabinDevices(a)
+    ok(a)
+    assert a.call("executeFixState", FAN, '{"power": 0}') == true
+    assert a.http[0].method == "SYNC_PATCH" && a.http[0].params.path == "/v2/devices/${FAN}/state".toString()
+}
+
+check("a device fetch that fails partway leaves the stored lists as they were") {
+    def a = app()
+    ok(a, [(FAN): [_: "x"], _: "y"])     // the device list answers
+    down(a)                              // the fan's details don't
+    assert a.call("getDevices") == false
+    assert a.state.fanDetails == [(FAN): CABIN_ACTIONS] && a.state.fanList == [(FAN): "Ceiling fan"]
+    assert a.state.fanProperties[FAN].max_speed == 3
+}
+
+check("a failed properties read also leaves them as they were") {
+    def a = app()
+    ok(a, [(FAN): [_: "x"], _: "y"])
+    ok(a, [name: "Ceiling fan", type: "CF", actions: ["TurnOn"]])
+    httpError(a, 500)
+    assert a.call("getDevices") == false
+    assert a.state.fanDetails == [(FAN): CABIN_ACTIONS]
+}
+
+check("a complete fetch replaces the lists") {
+    def a = app()
+    a.state.fanList = [old: "Gone fan"]
+    ok(a, [(FAN): [_: "x"], _: "y"])
+    ok(a, [name: "Ceiling fan", type: "CF", actions: CABIN_ACTIONS])
+    ok(a, [max_speed: 3, trust_state: false])
+    assert a.call("getDevices") == true
+    assert a.state.fanList == [(FAN): "Ceiling fan"] && a.state.fanDetails == [(FAN): CABIN_ACTIONS]
+    assert a.state.fanProperties == [(FAN): [max_speed: 3, trust_state: false]]
+    assert a.state.fireplaceList == [:] && a.state.shadeList == [:] && a.state.genericList == [:]
+}
+
+check("the hub ID is read once and kept") {
+    def a = app(); a.state.hubId = null
+    ok(a, [bondid: HUB, fw_ver: "v3"])
+    assert a.call("getHubId") == HUB && a.call("getHubId") == HUB
+    assert a.http.size() == 1 && a.state.hubId == HUB
+}
+
+check("hasAction names itself when it fails") {
+    def a = app()
+    down(a)
+    assert a.call("hasAction", FAN, "TurnOn") == false
+    assert a.log.at("warn")[0].startsWith("BOND hasAction:")
+}
+
+// ---- Logging ----
+
+check("debug logging defaults to off and says it turns itself off") {
+    def a = app()
+    a.call("prefHub")
+    def input = a.inputs.find { it.name == "debugOutput" }
+    assert input.defaultValue == false && input.description == "Turns itself off after 30 minutes"
+}
+
+check("logsOff turns debug logging off") {
+    def a = app(debugOutput: true)
+    a.call("logsOff")
+    assert a.app.settingUpdates == [[name: "debugOutput", value: "false", type: "bool"]]
+    assert a.log.at("info") == ["BOND: debug logging turned off"]
+}
+
 finish()
