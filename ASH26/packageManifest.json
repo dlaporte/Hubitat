@@ -1,11 +1,11 @@
 {
   "packageName": "Amcrest ASH26",
   "author": "David LaPorte",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "minimumHEVersion": "2.2.9",
-  "dateReleased": "2026-11-21",
+  "dateReleased": "2026-11-23",
   "documentationLink": "https://github.com/dlaporte/Hubitat/blob/main/ASH26/README.md",
-  "releaseNotes": "The switch now updates as soon as the camera confirms On or Off. New lightMode and healthStatus attributes. An offline camera is logged once, with an hourly reminder and a recovery line. Debug logging now turns itself off after 30 minutes, and a new descriptionText logging option (on by default) logs value changes. After updating, click Initialize on the device. Requires Hubitat 2.2.9+.",
+  "releaseNotes": "Motion: the camera's PIR sensors now drive a motion attribute (MotionSensor), pushed over the camera's event stream, with a Motion inactive after setting (default 30 s). New commands and attributes for motion light duration, night vision and video motion detection, and a Reboot command with a quiet 5-minute window. A poll already under way no longer undoes a change the camera just confirmed. After updating, click Initialize on the device to start motion events. HomeKit: if the Home app shows the floodlight as a motion sensor, open HomeKit Bridge and click Switch next to Export as; if the device was in HomeKit before, remove it from HomeKit Bridge and add it back for the motion sensor to work. Requires Hubitat 2.2.9+.",
   "drivers": [
     {
       "id": "b607fa7f-ed1e-4b9b-adad-01bd88a5664b",
