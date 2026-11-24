@@ -166,6 +166,41 @@ class RecordingChild extends FakeChildDevice {
     List<List> callsTo(String name) { calls.findAll { it[0] == name } }
 }
 
+/**
+ * A child device for apps that call device.sendEvent() directly and manage the
+ * device's own component children (BOND). Adding a duplicate DNI throws, as on the hub.
+ */
+class FakeAppDevice {
+    Object id
+    String deviceNetworkId
+    String name
+    String label
+    String typeName
+    boolean disabled = false
+    List<String> capabilities = []
+    List<String> attributeNames = []
+    List<Map> events = []
+    Map current = [:]
+    Map<String, Object> children = [:]
+    List<String> deletedChildren = []
+    int nextChildId = 1000
+    String getDisplayName() { label ?: name }
+    void sendEvent(Map m) { events << new LinkedHashMap(m); current[m.name as String] = m.value }
+    def currentValue(String n) { current[n] }
+    boolean isDisabled() { disabled }
+    boolean hasCapability(String c) { capabilities.contains(c) }
+    boolean hasAttribute(String a) { attributeNames.contains(a) }
+    def getChildDevice(String dni) { children[dni] }
+    List getChildDevices() { children.values() as List }
+    def addChildDevice(String ns, String type, String dni, Map props = [:]) {
+        if (children.containsKey(dni)) throw new IllegalArgumentException("A device with the same device network ID exists: ${dni}")
+        children[dni] = new FakeAppDevice(id: nextChildId++, deviceNetworkId: dni, typeName: type,
+                name: props.name ?: type, label: props.label)
+    }
+    void deleteChildDevice(String dni) { deletedChildren << dni; children.remove(dni) }
+    List<Map> eventsNamed(String n) { events.findAll { it.name == n } }
+}
+
 /** interfaces.mqtt: records what the driver does, and can be made to fail. */
 class FakeMqtt {
     boolean connected = false
@@ -277,6 +312,8 @@ class Driver {
     final List<Map> syncHttp = []           // queued replies for httpPost/httpGet: [status:, data:] or [exception:]
     int nextChildId = 100
     final List<String> paragraphs = []      // every paragraph text an app page showed
+    final List<List> runInMillisCalls = []  // every runInMillis call: [ms, method, opts]
+    final List<List> subscriptions = []     // every subscribe call's arguments
     final FakeMqtt mqtt = new FakeMqtt()
     final FakeEventStream eventStream = new FakeEventStream()
     FakeParent parent
@@ -339,7 +376,11 @@ class Driver {
         binding.setVariable("getChildDevice", { String dni -> children[dni] })
         binding.setVariable("getChildDevices", { -> children.values() as List })
         binding.setVariable("getAllChildDevices", { -> children.values() as List })
-        binding.setVariable("addChildDevice", { String ns, String type, String dni, Map props = [:] ->
+        // addChildDevice(ns, type, dni[, hubId], props): the legacy form with a hub ID is BOND's.
+        binding.setVariable("addChildDevice", { Object[] a ->
+            String type = a[1] as String
+            String dni = a[2] as String
+            Map props = (Map) (a.find { it instanceof Map } ?: [:])
             children[dni] = childFactory.call([id: nextChildId++, deviceNetworkId: dni, typeName: type,
                     name: props.name ?: type, label: props.label])
         })
@@ -350,6 +391,11 @@ class Driver {
         app.children = children
         binding.setVariable("app", app)
         binding.setVariable("unsubscribe", { Object... a -> })
+        binding.setVariable("subscribe", { Object... a -> subscriptions << (a as List) })
+        binding.setVariable("runInMillis", { Number ms, String method, Map opts = null ->
+            runInMillisCalls << [ms, method, opts]
+            schedules[method] = "ms:${ms}".toString()
+        })
         binding.setVariable("parseJson", { String text -> new groovy.json.JsonSlurper().parseText(text) })
         binding.setVariable("createAccessToken", { -> "access-token" })
         binding.setVariable("getFullApiServerUrl", { -> "https://cloud.example/api/55" })
@@ -357,6 +403,7 @@ class Driver {
         Closure syncCall = { String method, Map params, Closure cb ->
             http << [method: method, params: params]
             Map r = syncHttp ? syncHttp.remove(0) : [exception: "no reply queued"]
+            if (r.exception instanceof Throwable) throw (Throwable) r.exception
             if (r.exception) throw new Exception(r.exception as String)
             Integer status = (r.status ?: 200) as Integer
             if (syncHttpThrows && status >= 400) {
@@ -367,6 +414,8 @@ class Driver {
         }
         binding.setVariable("httpPost", { Map params, Closure cb -> syncCall("SYNC_POST", params, cb) })
         binding.setVariable("httpGet", { Map params, Closure cb -> syncCall("SYNC_GET", params, cb) })
+        binding.setVariable("httpPut", { Map params, Closure cb -> syncCall("SYNC_PUT", params, cb) })
+        binding.setVariable("httpPatch", { Map params, Closure cb -> syncCall("SYNC_PATCH", params, cb) })
         binding.setVariable("updateDataValue", { String k, String v -> device.updateDataValue(k, v) })
         binding.setVariable("getDataValue", { String k -> device.getDataValue(k) })
         binding.setVariable("pauseExecution", { Number ms -> })
@@ -453,5 +502,6 @@ class Driver {
     /** Forget recorded calls (keeps settings, state, device attributes and schedules). */
     void reset() {
         events.clear(); runIns.clear(); unschedules.clear(); log.lines.clear(); http.clear(); hubCommands.clear()
+        runInMillisCalls.clear(); subscriptions.clear()
     }
 }

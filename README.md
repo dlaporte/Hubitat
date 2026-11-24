@@ -172,6 +172,15 @@ upstream's mode bugs. It keeps upstream's names, so it updates an existing
 install in place. Personal use: upstream has no license. See
 [RheemEcoNet/README.md](RheemEcoNet/README.md).
 
+### BOND Home
+
+Fork of Dominick Meglio's [BOND Home Integration](https://github.com/dcmeglio/hubitat-bond)
+(app and ten drivers). Done no longer re-adds lights or stops polling, timeouts no longer crash
+the poll, and an outage logs one warning with `healthStatus` on every device. Speeds follow the
+fan's own speed count, with `supportedFanSpeeds` and Cycle Speed. It keeps upstream's names, so
+it updates an existing install in place. Personal use: upstream has no license. See
+[BondHome/README.md](BondHome/README.md).
+
 ## Contributing
 
 Conventions for headers, logging, lifecycle, versioning and manifests are in
@@ -181,4 +190,5 @@ every pull request.
 ## License
 
 Apache 2.0 — see individual file headers, except the Xiaomi Vacuums fork
-(MIT).
+(MIT) and the Rheem EcoNet and BOND Home forks (Dominick Meglio's
+copyright; no license).
