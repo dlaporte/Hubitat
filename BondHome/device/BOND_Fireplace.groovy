@@ -13,6 +13,7 @@ metadata {
 		importUrl: "https://raw.githubusercontent.com/dcmeglio/hubitat-bond/master/drivers/BOND_Fireplace.groovy"
 	) {
 		capability "Switch"
+		attribute "healthStatus", "enum", ["online", "offline"]
 		
 		command "setFlame", [[name:"Height*", type: "ENUM", description: "Flame height", constraints: ["off","low","medium", "high"] ] ]
 		attribute "flame", "string"

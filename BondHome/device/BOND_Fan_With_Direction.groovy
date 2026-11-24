@@ -14,6 +14,7 @@ metadata {
 	) {
 		capability "Switch"
         capability "FanControl"
+		attribute "healthStatus", "enum", ["online", "offline"]
 		command "setDirection", [[name:"Direction", type: "ENUM", description: "Direction", constraints: ["forward","reverse"] ] ]
 		attribute "direction", "enum", ["forward", "reverse"]
 		

@@ -14,6 +14,7 @@ metadata {
 	) {
 		capability "FanControl"
 		capability "Switch"
+		attribute "healthStatus", "enum", ["online", "offline"]
 		
 		command "fixPower", [[name:"Power*", type: "ENUM", description: "Power", constraints: ["off","on"] ] ]
 		command "fixSpeed", [[name:"Speed*", type: "ENUM", description: "Speed", constraints: ["off","low", "medium-low", "medium", "medium-high", "high", "on"] ] ]

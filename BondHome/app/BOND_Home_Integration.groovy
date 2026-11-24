@@ -445,191 +445,235 @@ def powerMeterEventHandler(evt) {
 	}
 }
 
+// ---- Polling ----
+
 def updateDevices() {
-    for (fan in fans) {
-        def deviceState = getState(fan)
-		if (deviceState == null)
-			continue
-		def device = findChildDevice(fan)
-        
-        def deviceLight = findComponentDevice(device, fan + ":light")
-		def deviceUpLight = findComponentDevice(device, fan + ":uplight")
-		def deviceDownLight = findComponentDevice(device, fan + ":downlight")
-        if (deviceState.power > 0)
-        {
-            device.sendEvent(name: "switch", value: "on")
-			device.sendEvent(name: "speed", value: translateBondFanSpeedToHE(fan, state.fanProperties[fan].max_speed ?: 3, deviceState.speed))
-        }
-        else
-        {
-            device.sendEvent(name: "switch", value: "off")
-			device.sendEvent(name: "speed", value: "off")
-        }
-        if (deviceLight)
-        {
-			if (deviceState.brightness != null)
-			{
-				if (deviceState.light == 0)
-					deviceLight.sendEvent(name: "level", value: 0)
-				else
-					deviceLight.sendEvent(name: "level", value: deviceState.brightness)
-			}
+	noteOutcome(pollAll())
+}
+
+// Polls every selected device. Returns false when the bridge stopped answering; the rest
+// of the poll is then skipped, so an outage costs one 5 s timeout per poll.
+private boolean pollAll() {
+	for (fan in (fans ?: [])) {
+		if (!pollDevice(fan) { device, data -> updateFan(device, fan, data) })
+			return false
+	}
+	List fps = fireplaces ?: []
+	for (int i = 0; i < fps.size(); i++) {
+		def fireplace = fps[i]
+		int index = i
+		if (!pollDevice(fireplace) { device, data -> updateFireplace(device, fireplace, index, data) })
+			return false
+	}
+	for (shade in (shades ?: [])) {
+		if (!pollDevice(shade) { device, data -> updateShade(device, data) })
+			return false
+	}
+	for (generic in (genericDevices ?: [])) {
+		if (!pollDevice(generic) { device, data -> updateGeneric(device, data) })
+			return false
+	}
+	return true
+}
+
+// Reads one device's state and applies it. Returns false only when the bridge didn't answer.
+private boolean pollDevice(bondId, Closure update) {
+	def device = findChildDevice(bondId)
+	if (device == null) {
+		logDebug "BOND device ${bondId} has no Hubitat device; skipped"
+		return true
+	}
+	Map r = bondRequest("GET", "/v2/devices/${bondId}/state", [timeout: 5])
+	if (!r.ok && r.status == null) {
+		state.lastPollError = r.error
+		return false
+	}
+	if (!r.ok) {
+		noteDeviceProblem(bondId, device, describeFailure(r))
+		return true
+	}
+	noteDeviceOk(bondId, device)
+	try {
+		update.call(device, r.data)
+	}
+	catch (Exception e) {
+		log.warn "BOND: couldn't update ${device.displayName} (${bondId}): ${e}"
+	}
+	return true
+}
+
+private void updateFan(device, fan, data) {
+	if (data.power > 0) {
+		device.sendEvent(name: "switch", value: "on")
+		device.sendEvent(name: "speed", value: translateBondFanSpeedToHE(fan, maxSpeed("fan", fan), data.speed))
+	}
+	else {
+		device.sendEvent(name: "switch", value: "off")
+		device.sendEvent(name: "speed", value: "off")
+	}
+	if (device.hasAttribute("direction")) {
+		if (data.direction == 1)
+			device.sendEvent(name: "direction", value: "forward")
+		else if (data.direction == -1)
+			device.sendEvent(name: "direction", value: "reverse")
+	}
+	guarded("updating the lights of ${device.displayName}") {
+		boolean lightOn = (data.light ?: 0) > 0
+		updateLight(findComponentDevice(device, fan + ":light"), lightOn, data.brightness)
+		updateLight(findComponentDevice(device, fan + ":uplight"), lightOn && (data.up_light ?: 0) > 0, data.up_light_brightness)
+		updateLight(findComponentDevice(device, fan + ":downlight"), lightOn && (data.down_light ?: 0) > 0, data.down_light_brightness)
+	}
+}
+
+// One light: on/off from BOND's light flags; level from brightness, kept while off
+// (upstream issue #24). Disabled lights are left alone.
+private void updateLight(light, boolean on, brightness) {
+	if (light == null || light.isDisabled())
+		return
+	light.sendEvent(name: "switch", value: on ? "on" : "off")
+	if (brightness != null)
+		light.sendEvent(name: "level", value: brightness)
+}
+
+private void updateFireplace(device, fireplace, int i, data) {
+	if (data.flame > 0 && data.power > 0)
+		device.sendEvent(name: "flame", value: data.flame <= 25 ? "low" : (data.flame <= 50 ? "medium" : "high"))
+	else
+		device.sendEvent(name: "flame", value: "off")
+	if (settings["fireplaceSensor${i}".toString()] == null)
+		device.sendEvent(name: "switch", value: data.power > 0 ? "on" : "off")
+	guarded("updating the parts of ${device.displayName}") {
+		def fpFan = findComponentDevice(device, fireplace + ":fan")
+		if (fpFan != null && !fpFan.isDisabled())
+			fpFan.sendEvent(name: "speed", value: data.power > 0 ? translateBondFanSpeedToHE(fireplace, maxSpeed("fireplace", fireplace), data.fpfan_speed) : "off")
+		updateLight(findComponentDevice(device, fireplace + ":light"), data.power > 0 && data.light == 1, null)
+	}
+}
+
+private void updateShade(device, data) {
+	boolean open = data.open == 1
+	device.sendEvent(name: "switch", value: open ? "on" : "off")
+	device.sendEvent(name: "windowShade", value: open ? "open" : "closed")
+}
+
+private void updateGeneric(device, data) {
+	device.sendEvent(name: "switch", value: data.power > 0 ? "on" : "off")
+}
+
+// The fan's speed count from the last complete fetch (fireplace fans: the fireplace's), 1-10, default 3.
+Integer maxSpeed(String kind, bondId) {
+	def props = (kind == "fireplace" ? state.fireplaceProperties : state.fanProperties)?.get(bondId)
+	def m = props?.max_speed
+	Integer n = (m != null && m.toString().isInteger()) ? (m.toString() as Integer) : 3
+	return Math.min(Math.max(n, 1), 10)
+}
+
+// ---- Outages (STYLE.md pattern) ----
+
+// Blips under 2 minutes log at debug. Then one warning, an hourly reminder, and one
+// recovery line with the outage length; healthStatus follows.
+private void noteOutcome(boolean answered) {
+	long t = now()
+	if (answered) {
+		if (state.outageStart) {      // a healthy poll writes nothing to state
+			if (state.outageDeclared)
+				log.info "BOND bridge at ${hubIp} is answering again after ${formatDuration(t - (state.outageStart as Long))}"
 			else
-			{
-				if (deviceState.light > 0)
-					deviceLight.sendEvent(name: "switch", value: "on")
-				else
-					deviceLight.sendEvent(name: "switch", value: "off")
-			}
-        }
-		if (deviceUpLight)
-		{
-			if (deviceState.up_light_brightness != null)
-			{
-				if (deviceState.up_light == 0)
-					deviceUpLight.sendEvent(name: "level", value: 0)
-				else
-					deviceUpLight.sendEvent(name: "level", value: deviceState.up_light_brightness)
-			}
-			else
-			{
-				if (deviceState.light > 0 && deviceState.up_light > 0)
-					deviceUpLight.sendEvent(name: "switch", value: "on")
-				else
-					deviceUpLight.sendEvent(name: "switch", value: "off")
-			}
+				logDebug "BOND bridge answering again after a blip"
+			state.remove("outageStart")
+			state.remove("outageDeclared")
+			state.remove("outageWarnedAt")
 		}
-		if (deviceDownLight)
-		{
-			if (deviceState.down_light_brightness != null)
-			{
-				if (deviceState.down_light == 0)
-					deviceDownLight.sendEvent(name: "level", value: 0)
-				else
-					deviceDownLight.sendEvent(name: "level", value: deviceState.down_light_brightness)
-			}
-			else
-			{
-				if (deviceState.light > 0 && deviceState.down_light > 0)
-					deviceDownLight.sendEvent(name: "switch", value: "on")
-				else
-					deviceDownLight.sendEvent(name: "switch", value: "off")	
-			}				
+		setHealth("online")
+		return
+	}
+	if (!state.outageStart) {
+		state.outageStart = t
+		logDebug "BOND bridge not answering (${state.lastPollError}); retrying"
+		return
+	}
+	long downFor = t - (state.outageStart as Long)
+	if (!state.outageDeclared) {
+		if (downFor < 120000L) {
+			logDebug "BOND bridge still not answering after ${formatDuration(downFor)}"
+			return
 		}
-		if (device.hasAttribute("direction"))
-		{
-			if (deviceState.direction == 1)
-				device.sendEvent(name: "direction", value: "forward")
-			else if (deviceState.direction == -1)
-				device.sendEvent(name: "direction", value: "reverse")
+		state.outageDeclared = true
+		state.outageWarnedAt = t
+		log.warn "BOND bridge at ${hubIp} isn't answering (${state.lastPollError}); still trying"
+		setHealth("offline")
+		return
+	}
+	if (t - (state.outageWarnedAt as Long) >= 3600000L) {
+		state.outageWarnedAt = t
+		log.warn "BOND bridge at ${hubIp} still isn't answering after ${formatDuration(downFor)}"
+	}
+}
+
+private void setHealth(String status) {
+	if (state.health == status)
+		return
+	state.health = status
+	for (d in bondDevices()) {
+		try {
+			d.sendEvent(name: "healthStatus", value: status)
 		}
-    }
-    
-	if (fireplaces != null)
-	{
-		for (def i = 0; i < fireplaces.size(); i++)
-		{
-			def deviceState = getState(fireplaces[i])
-			if (deviceState == null)
-				continue
-			def device = findChildDevice(fireplaces[i])
-			
-			def deviceFan = findComponentDevice(device, fireplaces[i] + ":fan")
-			def deviceLight = findComponentDevice(device, fireplaces[i] + ":light")
-			
-			if (deviceState.flame > 0 && deviceState.power > 0)
-			{
-				if (deviceState.flame <= 25)
-					device.sendEvent(name: "flame", value: "low")
-				else if (deviceState.flame <= 50)
-					device.sendEvent(name: "flame", value: "medium")
-				else
-					device.sendEvent(name: "flame", value: "high")
-			}
-			else
-			{
-				device.sendEvent(name: "flame", value: "off")
-			}
-			
-			if (deviceState.power > 0)
-			{
-				if (this.getProperty("fireplaceSensor${i}") == null)
-				{
-					device.sendEvent(name: "switch", value: "on")
-				}
-				if (deviceFan)
-				{
-					deviceFan.sendEvent(name: "speed", value: translateBondFanSpeedToHE(fireplaces[i], state.fireplaceProperties?.getAt(fireplaces[i])?.max_speed ?: 3, deviceState.fpfan_speed))
-				}
-				
-				if (deviceLight)
-				{
-					if (deviceState.light == 1)
-						deviceLight.sendEvent(name: "switch", value: "on")
-					else
-						deviceLight.sendEvent(name: "switch", value: "off")
-				}
-			}
-			else 
-			{
-				if (this.getProperty("fireplaceSensor${i}") == null)
-				{
-					device.sendEvent(name: "switch", value: "off")
-				}
-				if (deviceFan)
-				{
-					deviceFan.sendEvent(name: "speed", value: "off")
-				}
-				if (deviceLight)
-				{
-					deviceLight.sendEvent(name: "switch", value: "off")
-				}
-			}
-			
+		catch (Exception e) {
+			logDebug "BOND: couldn't set healthStatus on ${d.displayName}: ${e}"
 		}
 	}
-	
-	if (shades != null)
-	{
-		for (shade in shades)
-		{
-			def deviceState = getState(shade)
-			if (deviceState == null)
+}
+
+// Every BOND device in Hubitat that isn't disabled: top-level devices and their components.
+// What it found is kept in state.healthDevices, so the hub can show the component lookup works.
+private List bondDevices() {
+	List all = []
+	List skipped = []
+	for (d in getChildDevices()) {
+		if (d.isDisabled())
+			skipped << d.deviceNetworkId
+		else
+			all << d
+		def id = getBondIdFromDevice(d)
+		for (suffix in [":light", ":uplight", ":downlight", ":fan"]) {
+			def c = findComponentDevice(d, id + suffix)
+			if (c == null)
 				continue
-			def device = findChildDevice(shade)
-			
-			if (deviceState.open == 1)
-			{
-				device.sendEvent(name: "switch", value: "on")
-				device.sendEvent(name: "windowShade", value: "open")
-			}
+			if (c.isDisabled())
+				skipped << c.deviceNetworkId
 			else
-			{
-				device.sendEvent(name: "switch", value: "off")
-				device.sendEvent(name: "windowShade", value: "closed")
-			}
+				all << c
 		}
 	}
-	
-	if (genericDevices != null)
-	{
-		for (generic in genericDevices)
-		{
-			def deviceState = getState(generic)
-			if (deviceState == null)
-				continue
-			def device = findChildDevice(generic)
-			
-			if (deviceState.power > 0)
-			{
-				device.sendEvent(name: "switch", value: "on")
-			}
-			else
-			{
-				device.sendEvent(name: "switch", value: "off")
-			}
-		}
-	}
+	state.healthDevices = [sent: all*.deviceNetworkId, skippedDisabled: skipped]
+	return all
+}
+
+private void noteDeviceProblem(bondId, device, String why) {
+	Map problems = state.deviceProblems ?: [:]
+	if (problems.containsKey(bondId))
+		return
+	log.warn "BOND: couldn't read ${device.displayName} (${bondId}): ${why}"
+	problems[bondId] = now()
+	state.deviceProblems = problems
+}
+
+private void noteDeviceOk(bondId, device) {
+	Map problems = state.deviceProblems
+	if (!problems?.containsKey(bondId))
+		return
+	problems.remove(bondId)
+	state.deviceProblems = problems
+	log.info "BOND: ${device.displayName} (${bondId}) is answering again"
+}
+
+private String formatDuration(long ms) {
+	long mins = (ms + 30000L).intdiv(60000L)
+	if (mins < 60)
+		return "${mins} min"
+	long h = mins.intdiv(60L)
+	long m = mins % 60L
+	return m ? "${h} h ${m} min" : "${h} h"
 }
 
 def handleOn(device) {
@@ -1241,35 +1285,6 @@ def handleDirection(device, direction)
     
 }
 
-def getState(bondId) {
-	def params = [
-		uri: "http://${hubIp}",
-		path: "/v2/devices/${bondId}/state",
-		contentType: "application/json",
-		headers: [ 'BOND-Token': hubToken ]
-	]
-	def stateToReturn = null
-	try
-	{
-		httpGet(params) { resp ->
-			if (checkHttpResponse("getState", resp))
-				stateToReturn = resp.data
-		}
-	}
-	catch (java.net.NoRouteToHostException e) {
-		log.error "getState: connection to BOND hub appears to be down. Check if the IP is correct."
-	}
-	catch (org.apache.http.conn.ConnectTimeoutException e)
-	{
-		log.error "getState: connection to BOND hub appears to be down. Check if the IP is correct."
-	}
-	catch (Exception e)
-	{
-		checkHttpResponse("getState", e.getResponse())
-	}
-	return stateToReturn
-}
-
 def hasAction(bondId, commandType) {
 	Map r = bondRequest("GET", "/v2/devices/${bondId}/actions", [timeout: 10])
 	if (!r.ok) {
@@ -1391,21 +1406,6 @@ def logDebug(msg) {
 def logsOff() {
 	log.info "BOND: debug logging turned off"
 	app.updateSetting("debugOutput", [value: "false", type: "bool"])
-}
-
-def checkHttpResponse(action, resp) {
-	if (resp.status == 200 || resp.status == 201 || resp.status == 204)
-		return true
-	else if (resp.status == 400 || resp.status == 401 || resp.status == 404 || resp.status == 409 || resp.status == 500)
-	{
-		log.error "${action}: ${resp.status} - ${resp.getData()}"
-		return false
-	}
-	else
-	{
-		log.error "${action}: unexpected HTTP response: ${resp.status}"
-		return false
-	}
 }
 
 def displayFooter(){

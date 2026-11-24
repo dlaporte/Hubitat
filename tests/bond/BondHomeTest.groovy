@@ -266,4 +266,157 @@ check("poll intervals become valid schedules") {
     }
 }
 
+// ---- Polling ----
+
+check("a poll updates the fan, marks it online, and leaves the disabled light alone") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    ok(a, fanState(power: 1, speed: 2))
+    a.call("updateDevices")
+    assert fan.current.switch == "on" && fan.current.speed == "medium" && fan.current.healthStatus == "online"
+    assert paths(a) == ["/v2/devices/${FAN}/state".toString()] && a.http[0].params.timeout == 5
+    assert light.events.isEmpty()
+    assert a.state.healthDevices == [sent: [FAN_DNI], skippedDisabled: [LIGHT_DNI]]
+}
+
+check("a healthy poll writes nothing to state once it's online") {
+    def a = app()
+    cabinDevices(a)
+    ok(a, fanState()); a.call("updateDevices")
+    def before = new LinkedHashMap(a.state)
+    ok(a, fanState()); a.call("updateDevices")
+    assert a.state == before
+}
+
+check("power off reads switch off and speed off") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    ok(a, fanState(power: 0, speed: 3))
+    a.call("updateDevices")
+    assert fan.current.switch == "off" && fan.current.speed == "off"
+}
+
+check("a selected fan with no Hubitat device is skipped without a request") {
+    def a = app()
+    a.call("updateDevices")
+    assert a.http.isEmpty() && a.log.at("warn").isEmpty() && a.log.at("error").isEmpty()
+}
+
+check("one device that throws doesn't stop the next") {
+    def a = app(fans: [FAN, FAN2])
+    a.state.fanProperties[FAN2] = [max_speed: 3]
+    def bad = new FakeAppDevice(id: 1, deviceNetworkId: FAN_DNI, name: "Bad fan")
+    bad.metaClass.sendEvent = { Map m -> throw new RuntimeException("kaput") }
+    def good = new FakeAppDevice(id: 2, deviceNetworkId: "${HUB}:bond:${FAN2}".toString(), name: "Good fan")
+    a.children[bad.deviceNetworkId] = bad
+    a.children[good.deviceNetworkId] = good
+    ok(a, fanState()); ok(a, fanState(speed: 3))
+    a.call("updateDevices")
+    assert good.current.speed == "high"
+    assert a.log.at("warn").any { it.contains("Bad fan") && it.contains("kaput") }
+}
+
+check("the first 'not answering' skips the rest of the poll") {
+    def a = app(fans: [FAN, FAN2])
+    cabinDevices(a)
+    a.children["${HUB}:bond:${FAN2}".toString()] = new FakeAppDevice(id: 2, deviceNetworkId: "${HUB}:bond:${FAN2}".toString(), name: "Fan 2")
+    down(a)
+    a.call("updateDevices")
+    assert a.http.size() == 1
+}
+
+check("a poll with no stored properties assumes 3 speeds") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    a.state.fanProperties = [:]
+    ok(a, fanState(speed: 3))
+    a.call("updateDevices")
+    assert fan.current.speed == "high" && a.log.at("warn").isEmpty()
+}
+
+// ---- Outages ----
+
+// Runs `n` failed polls 30 s apart.
+def failPolls = { a, int n -> n.times { down(a); a.call("updateDevices"); a.advance(30_000) } }
+
+check("failures under 2 minutes log only at debug") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    ok(a, fanState()); a.call("updateDevices")      // online first
+    failPolls(a, 4)                                  // 0, 30, 60, 90 s
+    assert a.log.at("warn").isEmpty() && fan.current.healthStatus == "online"
+}
+
+check("at 2 minutes, one warning and healthStatus offline on every enabled device") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    ok(a, fanState()); a.call("updateDevices")
+    failPolls(a, 5)                                  // the 5th failure is at 120 s
+    assert a.log.at("warn") == ["BOND bridge at 192.168.21.26 isn't answering (java.net.SocketTimeoutException: Read timed out); still trying"]
+    assert fan.current.healthStatus == "offline" && light.events.isEmpty()
+    failPolls(a, 100)                                // 50 more minutes: no more warnings
+    assert a.log.at("warn").size() == 1
+}
+
+check("an hourly reminder while it lasts, then a recovery line with the outage length") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    ok(a, fanState()); a.call("updateDevices")
+    failPolls(a, 5)                                  // declared at 120 s
+    a.advance(3600_000)
+    down(a); a.call("updateDevices")
+    assert a.log.at("warn")[1] == "BOND bridge at 192.168.21.26 still isn't answering after 1 h 3 min"
+    a.advance(600_000)
+    ok(a, fanState()); a.call("updateDevices")
+    assert a.log.at("info") == ["BOND bridge at 192.168.21.26 is answering again after 1 h 13 min"]
+    assert fan.current.healthStatus == "online" && a.state.outageStart == null
+}
+
+check("a blip that recovers logs nothing above debug") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    failPolls(a, 2)
+    ok(a, fanState()); a.call("updateDevices")
+    assert a.log.at("warn").isEmpty() && a.log.at("info").isEmpty()
+}
+
+check("an HTTP error for one device warns once, isn't an outage, and logs its recovery") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    3.times { httpError(a, 404); a.call("updateDevices"); a.advance(60_000) }
+    assert a.log.at("warn").size() == 1 && a.log.at("warn")[0].contains("HTTP 404")
+    assert fan.current.healthStatus == "online"
+    ok(a, fanState()); a.call("updateDevices")
+    assert a.log.at("info") == ["BOND: Loft Fan (BOND) (${FAN}) is answering again".toString()]
+}
+
+// ---- Light state ----
+
+check("a light's on/off comes from BOND's light flag, and its level is kept while it's off") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    light.disabled = false
+    ok(a, fanState(light: 0, brightness: 60)); a.call("updateDevices")
+    assert light.current.switch == "off" && light.current.level == 60
+    ok(a, fanState(light: 1, brightness: 60)); a.call("updateDevices")
+    assert light.current.switch == "on" && light.current.level == 60
+}
+
+check("up and down lights need both the main light flag and their own") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    fan.children.clear()
+    def up = new FakeAppDevice(id: 3, deviceNetworkId: "${HUB}:bond:${FAN}:uplight".toString(), name: "Up")
+    def dn = new FakeAppDevice(id: 4, deviceNetworkId: "${HUB}:bond:${FAN}:downlight".toString(), name: "Down")
+    fan.children[up.deviceNetworkId] = up; fan.children[dn.deviceNetworkId] = dn
+    ok(a, fanState(light: 1, up_light: 1, down_light: 0, up_light_brightness: 40)); a.call("updateDevices")
+    assert up.current.switch == "on" && up.current.level == 40 && dn.current.switch == "off"
+}
+
+check("every driver declares healthStatus") {
+    DRIVERS.keySet().each { file ->
+        assert driver(file).attributes.find { it.name == "healthStatus" }?.values == ["online", "offline"] : file
+    }
+}
+
 finish()

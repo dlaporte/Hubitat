@@ -14,6 +14,7 @@ metadata {
 	) {
         capability "WindowShade"
 		capability "Switch"
+		attribute "healthStatus", "enum", ["online", "offline"]
 		
         command "stop"
         command "fixShade", [[name:"Shade*", type: "ENUM", description: "Shade", constraints: ["open","close"] ] ]

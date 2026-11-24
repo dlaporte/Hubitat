@@ -15,6 +15,7 @@ metadata {
 		capability "SwitchLevel"
 		capability "Switch"
         capability "Light"
+		attribute "healthStatus", "enum", ["online", "offline"]
 		
 		command "fixPower", [[name:"Power*", type: "ENUM", description: "Power", constraints: ["off","on"] ] ]
 		command "fixLevel", [[name:"Level*", type: "NUMBER", description: "Level"]]

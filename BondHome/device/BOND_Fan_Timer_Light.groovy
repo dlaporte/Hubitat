@@ -14,6 +14,7 @@ metadata {
 	) {
 		capability "Switch"
         capability "Light"
+		attribute "healthStatus", "enum", ["online", "offline"]
 
 		
 		command "dim", ["number"]

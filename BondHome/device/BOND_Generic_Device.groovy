@@ -13,6 +13,7 @@ metadata {
 		importUrl: "https://raw.githubusercontent.com/dcmeglio/hubitat-bond/master/drivers/BOND_Generic_Device.groovy"
 	) {
 		capability "Switch"
+		attribute "healthStatus", "enum", ["online", "offline"]
 		command "fixPower", [[name:"Power*", type: "ENUM", description: "Power", constraints: ["off","on"] ] ]
 		command "toggle"
     }
