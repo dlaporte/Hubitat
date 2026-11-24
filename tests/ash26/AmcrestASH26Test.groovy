@@ -575,14 +575,23 @@ test("a stream login the camera rejects logs once and waits the longest backoff"
     assert d.schedules.connectStream == 300
 }
 
-test("while the poll's login is rejected, the stream probes but doesn't connect") {
+test("while the poll's login is rejected, the stream probes but doesn't connect, even right after a Save") {
     def d = fresh()
-    d.state.commFailKey = "auth|10.0.0.30"
+    d.call("refresh")
+    d.reply(d.http.find { it.callback == "unauthRequestHandler" }, status: 401, headers: CHALLENGE)
+    d.reply(d.http.find { it.callback == "authedRequestHandler" }, status: 401)
+    d.call("initialize")                       // a Save clears commFailKey; its poll hasn't answered yet
+    d.http.clear()
     d.call("connectStream")
     d.reply(d.http[0], status: 401, headers: CHALLENGE)
     assert d.eventStream.connects.isEmpty()
     assert d.log.at("warn") == ["Backyard Floodlight motion events stopped (the camera is rejecting the login); reconnecting"]
     assert d.schedules.connectStream == 5
+    d.call("refresh")
+    answer(d, settingsText("Off"))             // the login works again
+    d.call("connectStream")
+    d.reply(d.http.find { it.callback == "streamProbeHandler" }, status: 401, headers: CHALLENGE)
+    assert d.eventStream.connects.size() == 1
 }
 
 // ---- 0.9.0: settings commands ----

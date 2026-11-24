@@ -512,7 +512,7 @@ def streamProbeHandler(response, data) {
     }
     // On a 401 the hub's HTTP client resends the signed request 20 times (Task 1), so
     // never connect while the poll's login is being rejected.
-    if (state.commFailKey?.toString()?.startsWith("auth|")) {
+    if (state.loginRejected) {
         streamFailed("the camera is rejecting the login")
         return
     }
@@ -654,6 +654,9 @@ private String failureKind(response) {
 }
 
 private void noteCommFailure(String kind, String detail) {
+    // Kept until a login succeeds; initialize doesn't clear it, so the stream's guard
+    // holds after a Save, before the new poll has answered.
+    if (kind == "auth") state.loginRejected = true
     String key = "${kind}|${ip}"
     Long nowMs = now()
     if (state.commFailSince == null) state.commFailSince = nowMs
@@ -687,6 +690,7 @@ private void noteCommSuccess(Map data = null) {
     if (device.currentValue("healthStatus") != "online") {
         emitEvent(name: "healthStatus", value: "online", descriptionText: "${device.displayName} is online")
     }
+    state.remove("loginRejected")
     boolean failing = state.commFailSince != null
     Long rebootAt = state.rebootStartedAt as Long
     if (rebootAt != null && !failing && !inRebootWindow()) {
