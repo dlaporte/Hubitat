@@ -188,6 +188,18 @@ class FakeMqtt {
     Map parseMessage(String message) { new groovy.json.JsonSlurper().parseText(message) as Map }
 }
 
+/** interfaces.eventStream: records connect() and close(); can be made to throw. */
+class FakeEventStream {
+    List<Map> connects = []
+    int closes = 0
+    String failWith
+    void connect(String url, Map opts = [:]) {
+        connects << [url: url, opts: opts]
+        if (failWith) throw new Exception(failWith)
+    }
+    void close() { closes++ }
+}
+
 /** A parent app that records calls; `answers` holds return values or closures. */
 class FakeParent {
     List<List> calls = []
@@ -266,6 +278,7 @@ class Driver {
     int nextChildId = 100
     final List<String> paragraphs = []      // every paragraph text an app page showed
     final FakeMqtt mqtt = new FakeMqtt()
+    final FakeEventStream eventStream = new FakeEventStream()
     FakeParent parent
     Closure childFactory = { Map props -> new FakeChildDevice(props) }
     boolean syncHttpThrows = false          // true: an error status throws HttpResponseException, as on the hub
@@ -291,7 +304,7 @@ class Driver {
             zwave         : zwave,
             zwaveHubNodeId: 1,
             location      : [timeZone: TimeZone.getTimeZone("America/New_York")],
-            interfaces    : [mqtt: mqtt],
+            interfaces    : [mqtt: mqtt, eventStream: eventStream],
         ]
         vars.each { k, v -> binding.setVariable(k, v) }
 
