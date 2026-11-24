@@ -675,6 +675,44 @@ table.All.MotionDetect[0].Enable=false
     assert d.device.current.motionDetection == "off"
 }
 
+// A poll whose read was already on its way when a change was confirmed (seen on the hub,
+// 2026-11-23: night vision went Off, then back to Auto 177 ms later).
+def answerSet = { d ->
+    d.reply(d.http.find { it.callback == "unauthRequestHandler" }, status: 401, headers: CHALLENGE)
+    d.reply(d.http.find { it.callback == "authedRequestHandler" && it.params.uri.contains("setConfig") }, body: "OK")
+}
+
+test("a poll that read the camera before a setting change doesn't undo it; the next poll is believed") {
+    def d = fresh()
+    d.device.current.nightVision = "Auto"
+    d.call("refresh")
+    d.reply(d.http.find { it.callback == "unauthRequestHandler" }, status: 401, headers: CHALLENGE)
+    d.advance(1_000L)
+    d.call("setNightVision", "Off")
+    answerSet(d)
+    assert d.device.current.nightVision == "Off"
+    d.reply(d.http.find { it.callback == "authedRequestHandler" }, body: settingsText("Off") + "table.All.Lighting_V2[0][0][0].Mode=Auto\n")
+    assert d.eventsNamed("nightVision")*.value == ["Off"]
+    assert d.device.current.device_name == "Backyard"
+    d.advance(60_000L)
+    d.call("refresh")
+    answer(d, settingsText("Off") + "table.All.Lighting_V2[0][0][0].Mode=Auto\n")
+    assert d.device.current.nightVision == "Auto"
+}
+
+test("a poll that read the camera before On doesn't turn the switch back off") {
+    def d = fresh()
+    d.call("refresh")
+    d.reply(d.http.find { it.callback == "unauthRequestHandler" }, status: 401, headers: CHALLENGE)
+    d.advance(1_000L)
+    d.call("on")
+    2.times { answerSet(d) }                       // AlarmLighting, then the light mode
+    assert d.device.current.switch == "on"
+    d.reply(d.http.find { it.callback == "authedRequestHandler" }, body: settingsText("Off"))
+    assert d.device.current.switch == "on"
+    assert d.device.current.lightMode == "Manual"
+}
+
 // ---- 0.9.0: Reboot ----
 
 test("Reboot sends magicBox reboot; on OK an info line, the window opens and the stream reconnects in 60 s") {

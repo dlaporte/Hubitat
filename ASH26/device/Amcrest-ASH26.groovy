@@ -8,7 +8,8 @@
  *  Changelog:
  *  v0.9.0 (2026-11-23) - motion from the camera's PIR sensors over its event stream
  *         (MotionSensor, with a "Motion inactive after" hold); motion light duration, night
- *         vision and motion detection commands and attributes; Reboot with a quiet 5-minute window.
+ *         vision and motion detection commands and attributes; Reboot with a quiet 5-minute window;
+ *         a poll already under way no longer undoes a change the camera just confirmed.
  *  v0.8.0 (2026-11-20) - switch updates as soon as the camera confirms On/Off; lightMode
  *         attribute; an offline camera is logged once with hourly reminders; healthStatus;
  *         standard logging and lifecycle.
@@ -280,7 +281,8 @@ private get_camera_settings() {
     ]
     asynchttpGet("unauthRequestHandler", params, [
             uri: uri,
-            finalCallback: "parseCameraSettings"
+            finalCallback: "parseCameraSettings",
+            sentAt: now()
     ])
 }
 
@@ -364,6 +366,12 @@ def parseCameraSettings(response, data) {
     sendEvent(name: "mac_address",       value: camera_settings['table.All.Network.eth2.PhysicalAddress'])
     sendEvent(name: "wireless_ssid",     value: camera_settings['table.All.WLan.eth2.SSID'])
 
+    // A poll sent before the last confirmed change may have read the old values, and would
+    // undo that change on the attributes; skip its settings, and the next poll shows them.
+    if (data?.sentAt != null && state.lastSetOkAt != null && (data.sentAt as Long) < (state.lastSetOkAt as Long)) {
+        logDebug "poll started before the last setting change; its settings are skipped"
+        return
+    }
     String duration = camera_settings['table.All.Alarm[0].EventHandler.LightingLink.LightDuration']
     if (duration?.isInteger()) emitSetting("motionLightDuration", duration as Integer)
     String nightVision = camera_settings['table.All.Lighting_V2[0][0][0].Mode']
@@ -391,6 +399,7 @@ def verifySetResponse(response, data) {
     String text = (response.data ?: "").toString().trim()
     if (text == "OK") {
         logDebug "set ${data.settingName} = ${data.settingValue}"
+        state.lastSetOkAt = now()
         if (data.chainRest) {
             setSequence(data.chainRest as List)
         } else if (data.onOk) {
