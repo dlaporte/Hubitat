@@ -31,7 +31,7 @@ in-place update. Devices, rules and dashboards keep working.
 - **Settings page:**
   - visiting it while the bridge is down no longer wipes the stored device lists;
   - a device that answers with an error keeps what was stored for it, and no longer blocks the page.
-  - the bridge's `__` entry (metadata on newer bridges) is no longer requested as a device, which logged a 404.
+  - the `__` entry in the bridge's device list (metadata, not a device) is no longer requested as one, which logged a 404.
 - **Connection problems:**
   - requests time out (5 s for polls, 10 s for commands), and timeouts no longer crash the poll or commands;
   - an outage logs one warning after 2 minutes, an hourly reminder, and an info line with its length on recovery (1.4.0 logged an error every poll);
@@ -98,7 +98,7 @@ in-place update. Devices, rules and dashboards keep working.
 - **A device BOND stops answering for** (it was removed from the bridge, for example) gets one
   warning, and an info line when it answers again.
 - **Testing:** on the cabin's hub (a 3-speed RF ceiling fan with a disabled timer light), 1.5.0's
-  polling, `healthStatus`, Done and outage handling (a 5-minute outage) were verified in November 2026. Speed commands, Cycle Speed and
-  the light are tested in the local harness and wait for a visit to be tried on the fan itself.
-  Fireplaces, shades, generic devices and up/down lights are tested only in the harness. Update this
-  line after the visit.
+  polling, `healthStatus`, Done and outage handling (a 5-minute outage) were verified in November
+  2026. Speed commands, Cycle Speed and the light are tested in the local harness and wait for a
+  visit to be tried on the fan itself. Fireplaces, shades, generic devices and up/down lights are
+  tested only in the harness. Update this line after the visit.

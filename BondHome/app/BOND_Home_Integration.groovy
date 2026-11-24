@@ -213,7 +213,7 @@ def getDevices() {
 	}
 	for (entry in r.data) {
 		if ((entry.key as String).startsWith("_"))
-			continue     // metadata, not devices: "_" is the list's hash, and newer bridges add "__"
+			continue     // metadata, not devices: "_" is the list's hash; the cabin bridge also lists "__"
 		if (!getDeviceById(entry.key as String, lists))
 			return false
 	}
