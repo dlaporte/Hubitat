@@ -27,7 +27,7 @@ AUTHOR = "David LaPorte"
 MIN_HE = (2, 2, 9)
 
 # Directories that hold no published code (or are out of scope for the standard).
-IGNORED_DIRS = {".git", ".github", "XiaomiVacuums", "RheemEcoNet", "scripts", "tests", "docs"}
+IGNORED_DIRS = {".git", ".github", "XiaomiVacuums", "RheemEcoNet", "BondHome", "scripts", "tests", "docs"}
 
 VERSION_RE = re.compile(r'@Field\s+static\s+final\s+String\s+VERSION\s*=\s*"([^"]*)"')
 THREE_PART_RE = re.compile(r"^\d+\.\d+\.\d+$")
