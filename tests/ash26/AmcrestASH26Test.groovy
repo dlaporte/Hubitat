@@ -51,6 +51,22 @@ def pir = { String action, int index ->
 def code = { String name, String action -> part("Code=${name};action=${action};index=0".toString()) }
 def feed = { d, List<String> lines -> lines.each { d.call("parse", it) } }
 
+// Hubitat's eventStream status messages, exactly as Task 1's spike logged them.
+final String STATUS_START = "START: EventStream Started"
+final String STATUS_STOP = "STOP: EventStream Stopped"
+final String STATUS_ERROR = "ERROR: Exception during EventStream Request: java.net.ConnectException: Failed to connect to /10.0.0.30:1"
+final String STATUS_AUTH = "ERROR: Exception during EventStream Request: java.net.ProtocolException: Too many follow-up requests: 21"
+
+// Bring the stream up: run connectStream, answer the probe's 401, report START, then
+// deliver one heartbeat. START comes even for a connect that fails, so only data
+// marks the stream up.
+def streamUp = { d ->
+    d.call("connectStream")
+    d.reply(d.http.find { it.callback == "streamProbeHandler" }, status: 401, headers: CHALLENGE)
+    d.call("eventStreamStatus", STATUS_START)
+    feed(d, heartbeat())
+}
+
 // ---- Metadata ----
 
 test("definition follows STYLE.md") {
@@ -298,6 +314,275 @@ test("initialize sets motion inactive, even mid-motion or without credentials, a
     e.settings.ip = null
     e.call("initialize")
     assert e.device.current.motion == "inactive"
+}
+
+// ---- 0.9.0: the event-stream connection ----
+
+test("initialize schedules the stream connect after the poll; missing credentials open no stream") {
+    def d = fresh()
+    d.call("initialize")
+    assert d.schedules.refresh == "runEvery1Minute"
+    assert d.schedules.connectStream == 2
+    assert d.eventStream.connects.isEmpty()
+    def e = fresh()
+    e.settings.password = null
+    e.call("initialize")
+    assert !e.schedules.containsKey("connectStream")
+}
+
+test("connectStream signs the encoded attach URI and connects with rawData") {
+    def d = fresh()
+    d.call("connectStream")
+    assert d.http.size() == 1
+    def probe = d.http[0]
+    assert probe.callback == "streamProbeHandler"
+    assert probe.params.uri == "http://10.0.0.30/cgi-bin/eventManager.cgi?action=attach&codes=%5BAll%5D&heartbeat=5"
+    assert probe.params.headers == null
+    d.reply(probe, status: 401, headers: CHALLENGE)
+    def c = d.eventStream.connects[0]
+    assert c.url == "http://10.0.0.30/cgi-bin/eventManager.cgi?action=attach&codes=%5BAll%5D&heartbeat=5"
+    assert c.opts.rawData == true && c.opts.readTimeout == 30
+    String auth = c.opts.headers.Authorization
+    assert auth.startsWith('Digest username="admin"')
+    assert auth.contains('uri="/cgi-bin/eventManager.cgi?action=attach&codes=%5BAll%5D&heartbeat=5"')
+}
+
+test("a probe that gets no challenge is a stream failure: one warn, reconnect in 5 s, health untouched") {
+    def d = fresh()
+    d.call("connectStream")
+    d.reply(d.http[0], status: 408, error: "connect timed out")
+    assert d.log.at("warn") == ["Backyard Floodlight motion events stopped (connect timed out, HTTP 408); reconnecting"]
+    assert d.schedules.connectStream == 5
+    assert d.eventStream.connects.isEmpty()
+    assert d.device.current.healthStatus == null
+}
+
+test("a connect() that throws is a stream failure") {
+    def d = fresh()
+    d.eventStream.failWith = "unsupported option"
+    d.call("connectStream")
+    d.reply(d.http[0], status: 401, headers: CHALLENGE)
+    assert d.log.at("warn") == ["Backyard Floodlight motion events stopped (unsupported option); reconnecting"]
+    assert d.schedules.connectStream == 5
+}
+
+test("repeated failures back off 5, 15, 60, 300, 300 with one warn; the first data after a reconnect logs recovery and resets it") {
+    def d = fresh()
+    streamUp(d)
+    List delays = []
+    5.times {
+        d.call("eventStreamStatus", STATUS_ERROR)
+        delays << d.schedules.connectStream
+        d.call("connectStream")              // the scheduled retry
+        d.http.clear()                       // its probe isn't answered here
+    }
+    assert delays == [5, 15, 60, 300, 300]
+    assert d.log.at("warn").size() == 1
+    d.advance(120_000L)
+    streamUp(d)
+    assert d.log.at("info").contains("Backyard Floodlight motion events are back after 2m")
+    d.call("eventStreamStatus", STATUS_ERROR)
+    assert d.schedules.connectStream == 5
+}
+
+test("a long stream outage gets an hourly reminder") {
+    def d = fresh()
+    streamUp(d)
+    d.call("eventStreamStatus", STATUS_ERROR)
+    d.advance(1_800_000L)
+    d.call("connectStream"); d.http.clear()
+    d.call("eventStreamStatus", STATUS_ERROR)
+    assert d.log.at("warn").size() == 1
+    d.advance(1_900_000L)
+    d.call("connectStream"); d.http.clear()
+    d.call("eventStreamStatus", STATUS_ERROR)
+    assert d.log.at("warn").size() == 2
+    assert d.log.at("warn")[1].startsWith("Backyard Floodlight motion events still down after 1h 1m")
+}
+
+test("one drop that reports ERROR then STOP is handled once") {
+    def d = fresh()
+    streamUp(d)
+    d.call("eventStreamStatus", STATUS_ERROR)
+    d.call("eventStreamStatus", STATUS_STOP)
+    assert d.runIns.findAll { it[1] == "connectStream" } == [[5, "connectStream"]]
+    assert d.log.at("warn").size() == 1
+    assert d.state.streamBackoff == 1
+}
+
+test("a reconnect forgets sensors whose Stop was lost, and starts the hold") {
+    def d = fresh()
+    streamUp(d)
+    feed(d, pir("Start", 1))
+    d.call("eventStreamStatus", STATUS_ERROR)
+    streamUp(d)
+    assert d.state.pirActive == null
+    assert d.schedules.motionHoldExpired == 30
+    d.call("motionHoldExpired")
+    assert d.device.current.motion == "inactive"
+}
+
+test("closing an up stream on purpose: its STOP logs nothing and schedules nothing") {
+    def d = fresh()
+    streamUp(d)
+    d.call("closeStream")
+    assert d.eventStream.closes == 1
+    d.call("eventStreamStatus", STATUS_STOP)
+    assert d.log.at("warn").isEmpty()
+    assert !d.schedules.containsKey("connectStream")
+    assert d.state.streamClosing == null
+}
+
+test("closeStream with no stream open sets no flag, so a later real ERROR still reconnects") {
+    def d = fresh()
+    d.call("closeStream")
+    assert d.eventStream.closes == 1
+    assert d.state.streamClosing == null
+    streamUp(d)
+    d.call("eventStreamStatus", STATUS_ERROR)
+    assert d.schedules.connectStream == 5
+}
+
+test("Save while the stream is up: a STOP before the scheduled connect is ignored") {
+    def d = fresh()
+    streamUp(d)
+    d.call("initialize")
+    assert d.eventStream.closes == 1
+    d.call("eventStreamStatus", STATUS_STOP)
+    assert d.log.at("warn").isEmpty()
+    assert d.schedules.connectStream == 2
+    d.call("connectStream")
+    assert d.http.any { it.callback == "streamProbeHandler" }
+}
+
+test("a STOP that arrives after the scheduled connect counts as one drop (accepted)") {
+    def d = fresh()
+    streamUp(d)
+    d.call("initialize")
+    d.call("connectStream")              // ran before the old stream's STOP arrived
+    d.call("eventStreamStatus", STATUS_STOP)
+    assert d.log.at("warn").size() == 1
+    assert d.runIns.findAll { it[1] == "connectStream" }*.get(0) == [2, 5]
+    assert d.state.streamBackoff == 1
+}
+
+test("hub boot with a stale open stream and no STOP still connects") {
+    def d = fresh()
+    d.state.streamOpen = true            // left over from before the reboot
+    d.state.streamUp = true
+    d.call("initialize")
+    assert d.state.streamClosing == true
+    d.call("connectStream")
+    assert d.state.streamClosing == null && d.state.streamOpen == null
+    d.reply(d.http.find { it.callback == "streamProbeHandler" }, status: 401, headers: CHALLENGE)
+    assert d.eventStream.connects.size() == 1
+    d.call("eventStreamStatus", STATUS_START)
+    assert d.state.streamOpen == true && d.state.streamUp == null
+    feed(d, heartbeat())
+    assert d.state.streamUp == true
+}
+
+test("Save during a stream outage warns again, and the recovery line covers the whole outage") {
+    def d = fresh()
+    streamUp(d)
+    d.call("eventStreamStatus", STATUS_ERROR)
+    d.advance(600_000L)
+    d.call("initialize")
+    d.call("connectStream")
+    d.reply(d.http.find { it.callback == "streamProbeHandler" }, status: 408, error: "connect timed out")
+    assert d.log.at("warn").size() == 2
+    d.advance(60_000L)
+    streamUp(d)
+    assert d.log.at("info").contains("Backyard Floodlight motion events are back after 11m")
+}
+
+test("watchdog: a minute with no data from an up stream closes it and reconnects") {
+    def d = fresh()
+    streamUp(d)
+    feed(d, heartbeat())
+    d.advance(50_000L)
+    d.call("refresh")
+    assert d.eventStream.closes == 0
+    d.advance(11_000L)
+    d.call("refresh")
+    assert d.eventStream.closes == 1
+    assert d.log.at("warn") == ["Backyard Floodlight motion events stopped (no data from the camera for 61 s); reconnecting"]
+    assert d.schedules.connectStream == 5
+    d.call("eventStreamStatus", STATUS_STOP)       // the close's own STOP
+    assert d.log.at("warn").size() == 1
+    assert d.runIns.count { it[1] == "connectStream" } == 1
+}
+
+test("watchdog: a missing activity stamp (after a code save) is set, not treated as silence") {
+    def d = fresh()
+    d.state.streamOpen = true            // open, but this fresh load has no stamp yet
+    d.state.streamUp = true
+    d.call("refresh")
+    assert d.eventStream.closes == 0
+    d.advance(61_000L)
+    d.call("refresh")
+    assert d.eventStream.closes == 1
+}
+
+test("watchdog: a stream that starts but never sends data is closed after a minute") {
+    def d = fresh()
+    d.call("connectStream")
+    d.reply(d.http[0], status: 401, headers: CHALLENGE)
+    d.call("eventStreamStatus", STATUS_START)
+    d.advance(61_000L)
+    d.call("refresh")
+    assert d.eventStream.closes == 1
+    assert d.log.at("warn") == ["Backyard Floodlight motion events stopped (no data from the camera for 61 s); reconnecting"]
+}
+
+test("START alone doesn't mark the stream up; the first line after it does") {
+    def d = fresh()
+    d.call("connectStream")
+    d.reply(d.http[0], status: 401, headers: CHALLENGE)
+    d.call("eventStreamStatus", STATUS_START)
+    assert d.state.streamOpen == true
+    assert d.state.streamUp == null
+    feed(d, ["\r"])
+    assert d.state.streamUp == true
+}
+
+test("the observed refused connect (START, ERROR, STOP) is one failure each time, with no recovery line") {
+    def d = fresh()
+    List delays = []
+    2.times {
+        d.call("connectStream")
+        d.reply(d.http.find { it.callback == "streamProbeHandler" }, status: 401, headers: CHALLENGE)
+        d.http.clear()
+        d.call("eventStreamStatus", STATUS_START)
+        d.call("eventStreamStatus", STATUS_ERROR)
+        d.call("eventStreamStatus", STATUS_STOP)
+        delays << d.schedules.connectStream
+    }
+    assert delays == [5, 15]
+    assert d.log.at("warn").size() == 1
+    assert !d.log.at("info").any { it.contains("motion events are back") }
+    assert d.state.streamOpen == null && d.state.streamUp == null
+}
+
+test("a stream login the camera rejects logs once and waits the longest backoff") {
+    def d = fresh()
+    d.call("connectStream")
+    d.reply(d.http[0], status: 401, headers: CHALLENGE)
+    d.call("eventStreamStatus", STATUS_START)
+    d.call("eventStreamStatus", STATUS_AUTH)
+    d.call("eventStreamStatus", STATUS_STOP)
+    assert d.log.at("warn") == ["Backyard Floodlight motion events stopped (the camera rejected the login); reconnecting"]
+    assert d.schedules.connectStream == 300
+}
+
+test("while the poll's login is rejected, the stream probes but doesn't connect") {
+    def d = fresh()
+    d.state.commFailKey = "auth|10.0.0.30"
+    d.call("connectStream")
+    d.reply(d.http[0], status: 401, headers: CHALLENGE)
+    assert d.eventStream.connects.isEmpty()
+    assert d.log.at("warn") == ["Backyard Floodlight motion events stopped (the camera is rejecting the login); reconnecting"]
+    assert d.schedules.connectStream == 5
 }
 
 finish()

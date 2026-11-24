@@ -36,6 +36,9 @@ import groovy.transform.Field
 // Last time each device's event stream delivered anything (ms). In memory, so the
 // camera's 5-second heartbeat writes nothing to state; empty after a code save.
 @Field static java.util.concurrent.ConcurrentHashMap<String, Long> streamActivity = new java.util.concurrent.ConcurrentHashMap<String, Long>()
+@Field static final String ATTACH_URI = "/cgi-bin/eventManager.cgi?action=attach&codes=%5BAll%5D&heartbeat=5"
+@Field static final List<Integer> STREAM_BACKOFF = [5, 15, 60, 300]   // seconds; then stays at 300
+@Field static final long STREAM_SILENCE_MS = 60_000L                  // heartbeats come every 5 s
 
 metadata {
     definition(
@@ -97,8 +100,11 @@ void initialize() {
     // the counter's monotonic-increase isn't actually buying us replay
     // protection beyond what the server already guarantees.
     state.nc = 0
-    // A Save or hub reboot during motion must not leave motion stuck active.
-    state.remove("pirActive")
+    // Motion and the event stream start clean, so a Save or hub reboot during motion
+    // can't leave motion stuck active. streamFailSince is kept, so the recovery line
+    // reports the whole outage; streamFailLastLog goes, so a Save logs a failure afresh.
+    closeStream()
+    ["streamUp", "streamRetryPending", "streamBackoff", "streamFailLastLog", "pirActive"].each { state.remove(it) }
     state.motion = "inactive"
     emitEvent(name: "motion", value: "inactive", descriptionText: "${device.displayName} motion is inactive")
     if (!ip || !username || !password) {
@@ -107,6 +113,9 @@ void initialize() {
     }
     runEvery1Minute("refresh")
     refresh()
+    // Scheduled, not called: the old stream's STOP arrives after initialize returns,
+    // and must still find streamClosing set.
+    runIn(2, "connectStream")
 }
 
 private void upgradeSettings() {
@@ -118,6 +127,7 @@ private void upgradeSettings() {
 
 def refresh() {
     logDebug "refresh()"
+    checkStreamWatchdog()
     get_camera_settings()
 }
 
@@ -290,6 +300,8 @@ def verifySetResponse(response, data) {
 // Called by the hub with the event stream's data, one line per call.
 def parse(String text) {
     streamActivity[streamKey()] = now()
+    // The first data after START: the stream is really up. One state read per line once up.
+    if (!state.streamUp && state.streamOpen && !state.streamClosing) streamStarted()
     if (!text?.contains("Code=")) return
     text.readLines().each { String line ->
         if (line.contains("Code=")) handleStreamEvent(line)
@@ -353,6 +365,128 @@ void motionHoldExpired() {
 
 private String streamKey() {
     return device.id.toString()
+}
+
+// ---- Event stream: connection ----
+// The hub holds the camera's eventManager attach stream open. Every reconnect after a
+// deliberate close is scheduled, never immediate, so the old stream's STOP finds
+// streamClosing set. Stream problems don't change healthStatus, which follows the poll.
+
+void connectStream() {
+    ["streamClosing", "streamRetryPending", "streamOpen"].each { state.remove(it) }
+    if (!ip || !username || !password) return
+    asynchttpGet("streamProbeHandler", [uri: "http://${ip}${ATTACH_URI}", contentType: "text/plain", timeout: 10], [:])
+}
+
+// The unauthenticated probe's 401 carries the digest challenge the stream request signs.
+def streamProbeHandler(response, data) {
+    String wwwAuth = (response.status == 401) ? extractHeader(response, "WWW-Authenticate") : null
+    if (!wwwAuth) {
+        streamFailed(response.status == 401 ? "401 without a WWW-Authenticate header" : httpErrorDetail(response))
+        return
+    }
+    // On a 401 the hub's HTTP client resends the signed request 20 times (Task 1), so
+    // never connect while the poll's login is being rejected.
+    if (state.commFailKey?.toString()?.startsWith("auth|")) {
+        streamFailed("the camera is rejecting the login")
+        return
+    }
+    String auth = calcDigestAuth(ATTACH_URI, "MD5", parseDigestChallenge(wwwAuth))
+    try {
+        interfaces.eventStream.connect("http://${ip}${ATTACH_URI}", [headers: [Authorization: auth], rawData: true, readTimeout: 30])
+    } catch (Exception e) {
+        streamFailed(e.message ?: e.toString())
+    }
+}
+
+// START comes for every connect(), even one that then fails (Task 1), so it only marks
+// the stream open; the first data marks it up (parse). A refused connect reports START,
+// ERROR, STOP; our own close() reports STOP; close() with nothing open reports nothing.
+def eventStreamStatus(String msg) {
+    logDebug "stream status: ${msg}"
+    if (msg?.startsWith("START")) {
+        state.streamOpen = true
+        streamActivity[streamKey()] = now()   // the watchdog counts silence from here
+    } else if (msg?.startsWith("STOP") || msg?.startsWith("ERROR")) {
+        state.remove("streamOpen")
+        state.remove("streamUp")
+        if (state.streamClosing) {            // our own close
+            state.remove("streamClosing")
+            return
+        }
+        if (state.streamRetryPending) return  // one drop reports ERROR then STOP
+        if (msg.contains("Too many follow-up requests")) {
+            // The hub retried a 401 twenty times; don't add failed logins quickly.
+            state.streamBackoff = STREAM_BACKOFF.size() - 1
+            streamFailed("the camera rejected the login")
+            return
+        }
+        streamFailed(msg)
+    }
+}
+
+// The first data after a connect: the stream is really up.
+private void streamStarted() {
+    state.streamUp = true
+    state.remove("streamBackoff")
+    // A Stop lost while the stream was down mustn't leave motion stuck active.
+    state.remove("pirActive")
+    startMotionHold()
+    if (state.streamFailSince != null) {
+        log.info "${device.displayName} motion events are back after ${formatDuration(now() - (state.streamFailSince as Long))}"
+    }
+    state.remove("streamFailSince")
+    state.remove("streamFailLastLog")
+}
+
+// close() blocks about 5 s while the hub stops an open stream, and its STOP is queued
+// behind the caller; with nothing open it returns at once and reports nothing (Task 1).
+// So the flag is set only for an open stream, and a missing STOP can't leave it set to
+// swallow the next real drop. connectStream clears it too.
+private void closeStream() {
+    if (state.streamOpen) state.streamClosing = true
+    state.remove("streamOpen")
+    state.remove("streamUp")
+    try {
+        interfaces.eventStream.close()
+    } catch (Exception e) {
+        logDebug "stream close: ${e.message}"
+    }
+}
+
+private void streamFailed(String detail) {
+    state.remove("streamUp")
+    state.streamRetryPending = true
+    Integer step = (state.streamBackoff ?: 0) as Integer
+    Integer delay = STREAM_BACKOFF[Math.min(step, STREAM_BACKOFF.size() - 1)]
+    state.streamBackoff = Math.min(step + 1, STREAM_BACKOFF.size())
+    runIn(delay, "connectStream")
+    Long nowMs = now()
+    if (state.streamFailSince == null) state.streamFailSince = nowMs
+    if (state.streamFailLastLog == null) {
+        state.streamFailLastLog = nowMs
+        log.warn "${device.displayName} motion events stopped (${detail}); reconnecting"
+    } else if (nowMs - (state.streamFailLastLog as Long) >= 3_600_000L) {
+        state.streamFailLastLog = nowMs
+        log.warn "${device.displayName} motion events still down after ${formatDuration(nowMs - (state.streamFailSince as Long))} (${detail}); still reconnecting"
+    }
+}
+
+// From the 1-minute poll: heartbeats come every 5 s, so a minute of silence since START
+// or the last data means a dead connection, whatever the hub's read timeout does.
+private void checkStreamWatchdog() {
+    if (!state.streamOpen) return
+    String key = streamKey()
+    Long last = streamActivity[key]
+    if (last == null) {                       // no stamp since a code save: start counting now
+        streamActivity[key] = now()
+        return
+    }
+    long silentMs = now() - last
+    if (silentMs > STREAM_SILENCE_MS) {
+        closeStream()
+        streamFailed("no data from the camera for ${silentMs.intdiv(1000)} s")
+    }
 }
 
 // ---- Connection health ----
