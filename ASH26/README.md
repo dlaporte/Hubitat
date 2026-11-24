@@ -77,6 +77,14 @@ camera's video motion detection), `healthStatus` (online/offline),
   every 5 s) is treated as dropped. While the camera rejects the login,
   the stream isn't opened, because the hub retries a rejected stream login
   many times in a row.
+- **HomeKit:** HomeKit Bridge may export the floodlight as a Motion
+  Sensor, so the Home app shows a sensor instead of the light. In HomeKit
+  Bridge, find the device and click **Switch** next to **Export as:**. The
+  motion sensor stays, as an extra on the same accessory. If the device
+  was in HomeKit before 0.9.0, its motion sensor may not update until you
+  remove the device from HomeKit Bridge and add it back (Restart
+  integration wasn't enough in testing). Removing it also removes it from
+  any Home scenes and automations.
 - **Brightness isn't adjustable.** The camera accepts a brightness
   setting, but the light doesn't change (tested on an ASH26 in 2026).
 - **Connection problems** are logged once, not every minute: an error that
