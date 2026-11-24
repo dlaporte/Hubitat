@@ -344,7 +344,7 @@ def authedRequestHandler(response, data) {
         requestFailed(data, kind, httpErrorDetail(response), true)
         return
     }
-    noteCommSuccess()
+    noteCommSuccess(data)
     if (data.finalCallback) {
         "${data.finalCallback}"(response, data)
     }
@@ -682,18 +682,28 @@ private void noteCommFailure(String kind, String detail) {
     }
 }
 
-private void noteCommSuccess() {
+// data: the request's userData; polls carry sentAt.
+private void noteCommSuccess(Map data = null) {
     if (device.currentValue("healthStatus") != "online") {
         emitEvent(name: "healthStatus", value: "online", descriptionText: "${device.displayName} is online")
     }
-    if (state.commFailSince == null) return
+    boolean failing = state.commFailSince != null
     Long rebootAt = state.rebootStartedAt as Long
-    if (rebootAt != null) {
+    if (rebootAt != null && !failing && !inRebootWindow()) {
+        state.remove("rebootStartedAt")       // a restart no poll noticed, already over
+        rebootAt = null
+    }
+    // The camera restarts in about 30 s, which can fall between two polls, so no poll fails.
+    // A poll sent 15 s or more after Reboot was accepted reached the restarted camera.
+    Long sentAt = data?.sentAt as Long
+    boolean quickRestart = rebootAt != null && sentAt != null && sentAt >= rebootAt + 15_000L
+    if (rebootAt != null && (failing || quickRestart)) {
         log.info "${device.displayName} is back after ${formatDuration(now() - rebootAt)} (reboot)"
         state.remove("rebootStartedAt")
-    } else {
+    } else if (failing) {
         log.info "camera at ${ip} is responding again after ${formatDuration(now() - (state.commFailSince as Long))}"
     }
+    if (!failing) return
     state.remove("commFailSince")
     state.remove("commFailKey")
     state.remove("commFailLastLog")

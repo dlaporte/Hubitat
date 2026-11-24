@@ -783,6 +783,34 @@ test("inside the reboot window, poll and stream failures log nothing above debug
     assert !d.log.at("info").any { it.contains("motion events are back") }
 }
 
+// Seen on the hub, 2026-11-23: the camera restarted in about 30 s, between two polls, so no
+// poll failed and the return was never logged.
+test("a restart that falls between polls is logged as back by the first poll sent 15 s after Reboot") {
+    def d = fresh()
+    d.call("reboot")
+    answer(d, "OK")
+    d.advance(10_000L)
+    d.call("refresh")
+    answer(d, settingsText("Off"))                 // sent 10 s in: may have reached the camera before it went down
+    assert !d.log.at("info").any { it.contains("is back after") }
+    assert d.state.rebootStartedAt != null
+    d.advance(50_000L)
+    d.call("refresh")
+    answer(d, settingsText("Off"))
+    assert d.log.at("info").contains("Backyard Floodlight is back after 1m (reboot)")
+    assert d.state.rebootStartedAt == null
+    assert d.log.at("warn").isEmpty() && d.log.at("error").isEmpty()
+}
+
+test("a Reboot start older than the window, with no failure seen, is cleared without a line") {
+    def d = fresh()
+    d.state.rebootStartedAt = d.clock - 600_000L
+    d.call("refresh")
+    answer(d, settingsText("Off"))
+    assert !d.log.at("info").any { it.contains("is back after") }
+    assert d.state.rebootStartedAt == null
+}
+
 test("a camera still down 5 minutes after Reboot gets the normal outage error") {
     def d = fresh()
     d.call("reboot")
