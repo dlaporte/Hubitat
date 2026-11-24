@@ -24,6 +24,34 @@ import groovy.transform.Field
 
 @Field static final String VERSION = "1.5.0"
 
+// BOND speed number <-> Hubitat speed name, by the fan's speed count (upstream's tables,
+// with the 10-speed "2: 1" and 9-speed ":medium" typos fixed, plus 1-speed fans).
+@Field static final Map BOND_TO_HE = [
+	10: [10: "high", 9: "high", 8: "medium-high", 7: "medium-high", 6: "medium", 5: "medium", 4: "medium-low", 3: "medium-low", 2: "low", 1: "low"],
+	9: [9: "high", 8: "medium-high", 7: "medium-high", 6: "medium", 5: "medium", 4: "medium-low", 3: "medium-low", 2: "low", 1: "low"],
+	8: [8: "high", 7: "medium-high", 6: "medium-high", 5: "medium", 4: "medium", 3: "medium-low", 2: "medium-low", 1: "low"],
+	7: [7: "high", 6: "medium-high", 5: "medium", 4: "medium", 3: "medium-low", 2: "medium-low", 1: "low"],
+	6: [6: "high", 5: "medium-high", 4: "medium", 3: "medium", 2: "medium-low", 1: "low"],
+	5: [5: "high", 4: "medium-high", 3: "medium", 2: "medium-low", 1: "low"],
+	4: [4: "high", 3: "medium", 2: "medium-low", 1: "low"],
+	3: [3: "high", 2: "medium", 1: "low"],
+	2: [2: "high", 1: "low"],
+	1: [1: "high"]
+]
+@Field static final Map HE_TO_BOND = [
+	10: ["high": 10, "medium-high": 8, "medium": 5, "medium-low": 3, "low": 1],
+	9: ["high": 9, "medium-high": 7, "medium": 5, "medium-low": 3, "low": 1],
+	8: ["high": 8, "medium-high": 6, "medium": 4, "medium-low": 3, "low": 1],
+	7: ["high": 7, "medium-high": 6, "medium": 4, "medium-low": 3, "low": 1],
+	6: ["high": 6, "medium-high": 5, "medium": 3, "medium-low": 2, "low": 1],
+	5: ["high": 5, "medium-high": 4, "medium": 3, "medium-low": 2, "low": 1],
+	4: ["high": 4, "medium": 3, "medium-low": 2, "low": 1],
+	3: ["high": 3, "medium": 2, "low": 1],
+	2: ["high": 2, "low": 1],
+	1: ["high": 1]
+]
+@Field static final List SPEED_ORDER = ["low", "medium-low", "medium", "medium-high", "high"]
+
 definition(
     name: "BOND Home Integration",
     namespace: "dcm.bond",
@@ -505,12 +533,13 @@ private boolean pollDevice(bondId, Closure update) {
 private void updateFan(device, fan, data) {
 	if (data.power > 0) {
 		device.sendEvent(name: "switch", value: "on")
-		device.sendEvent(name: "speed", value: translateBondFanSpeedToHE(fan, maxSpeed("fan", fan), data.speed))
+		device.sendEvent(name: "speed", value: speedName(maxSpeed("fan", fan), data.speed))
 	}
 	else {
 		device.sendEvent(name: "switch", value: "off")
 		device.sendEvent(name: "speed", value: "off")
 	}
+	device.sendEvent(name: "supportedFanSpeeds", value: supportedSpeedsJson(maxSpeed("fan", fan)))
 	if (device.hasAttribute("direction")) {
 		if (data.direction == 1)
 			device.sendEvent(name: "direction", value: "forward")
@@ -544,8 +573,10 @@ private void updateFireplace(device, fireplace, int i, data) {
 		device.sendEvent(name: "switch", value: data.power > 0 ? "on" : "off")
 	guarded("updating the parts of ${device.displayName}") {
 		def fpFan = findComponentDevice(device, fireplace + ":fan")
-		if (fpFan != null && !fpFan.isDisabled())
-			fpFan.sendEvent(name: "speed", value: data.power > 0 ? translateBondFanSpeedToHE(fireplace, maxSpeed("fireplace", fireplace), data.fpfan_speed) : "off")
+		if (fpFan != null && !fpFan.isDisabled()) {
+			fpFan.sendEvent(name: "speed", value: data.power > 0 ? speedName(maxSpeed("fireplace", fireplace), data.fpfan_speed) : "off")
+			fpFan.sendEvent(name: "supportedFanSpeeds", value: supportedSpeedsJson(maxSpeed("fireplace", fireplace)))
+		}
 		updateLight(findComponentDevice(device, fireplace + ":light"), data.power > 0 && data.light == 1, null)
 	}
 }
@@ -929,26 +960,9 @@ def fixFlameState(device, state)
     }
 }
 
-def fixFanSpeed(device, fanState) 
+def fixFanSpeed(device, fanState)
 {
-	def bondId = getBondIdFromDevice(device)
-	def speed = translateHEFanSpeedToBond(bondId, state.fanProperties?.getAt(bondId)?.max_speed ?: 3, fanState)
-	logDebug "Setting fan speed for ${bondId} to ${fanState}"
-
-	if (fanState == "off") 
-	{
-		if (executeFixState(bondId, '{"power": 0}'))
-		{
-			device.sendEvent(name: "speed", value: "off")
-		}
-	}
-	else 
-	{
-		if (executeFixState(bondId, '{"speed": ' + speed + '}'))
-		{
-			device.sendEvent(name: "speed", value: fanState)
-		}
-    }
+	fixSpeedState(device, "fan", fanState, "power", "speed")
 }
 
 def fixShadeState(device, state) 
@@ -1027,29 +1041,35 @@ def fixFPFanPower(device, state)
     }
 }
 
-def fixFPFanSpeed(device, fanState) 
+def fixFPFanSpeed(device, fanState)
 {
-	def bondId = getBondIdFromDevice(device)
-	logDebug "Setting FP fan speed state for ${bondId} to ${fanState}"
-	
-	def speed = translateHEFanSpeedToBond(bondId, state.fireplaceProperties?.getAt(bondId)?.max_speed ?: 3, fanState)
+	fixSpeedState(device, "fireplace", fanState, "fpfan_power", "fpfan_speed")
+}
 
-	if (fanState == "off") 
-	{
-		if (executeFixState(bondId, '{"fpfan_power": 0}'))
-		{
-			device.sendEvent(name: "speed", value: "off")
-			device.sendEvent(name: "switch", value: "off")
+// Fix Speed corrects BOND's record without transmitting. A speed also records power on,
+// so the next poll keeps it; off records power off.
+private void fixSpeedState(device, String kind, fanState, String powerKey, String speedKey) {
+	def bondId = getBondIdFromDevice(device)
+	logDebug "Setting fan speed for ${bondId} to ${fanState}"
+	if (fanState == "off" || fanState == "on") {
+		boolean on = fanState == "on"
+		if (executeFixState(bondId, '{"' + powerKey + '": ' + (on ? 1 : 0) + '}')) {
+			device.sendEvent(name: "switch", value: fanState)
+			if (!on)
+				device.sendEvent(name: "speed", value: "off")
 		}
+		return
 	}
-	else 
-	{
-		if (executeFixState(bondId, '{"fpfan_speed": ' + speed + '}'))
-		{
-			device.sendEvent(name: "speed", value: fanState)
-			device.sendEvent(name: "switch", value: "on")
-		}
-    }
+	Integer max = maxSpeed(kind, bondId)
+	String name = resolveSpeed(max, fanState?.toString())
+	if (name == null) {
+		log.warn "${device.displayName}: BOND fans have no '${fanState}' speed, so nothing was changed"
+		return
+	}
+	if (executeFixState(bondId, '{"' + powerKey + '": 1, "' + speedKey + '": ' + bondSpeed(max, name) + '}')) {
+		device.sendEvent(name: "switch", value: "on")
+		device.sendEvent(name: "speed", value: name)
+	}
 }
 
 def fixLightPower(device, state) {
@@ -1133,97 +1153,106 @@ def fixLightLevel(device, state) {
     }
 }
 
-def translateBondFanSpeedToHE(id, max_speeds, speed)
-{
-	def speedTranslations = 
-	[
-		10: [10: "high", 9: "high", 8: "medium-high", 7: "medium-high", 6: "medium", 5: "medium", 4: "medium-low", 3: "medium-low", 2: 1, 1: "low"],
-		9: [9: "high", 8: "medium-high", 7: "medium-high", 6: "medium", 5: "medium", 4: "medium-low", 3: "medium-low", 2: "low", 1: "low"],
-		8: [8: "high", 7: "medium-high", 6: "medium-high", 5: "medium", 4: "medium", 3: "medium-low", 2: "medium-low", 1: "low"],
-		7: [7: "high", 6: "medium-high", 5: "medium", 4: "medium", 3: "medium-low", 2: "medium-low", 1: "low"],
-		6: [6: "high", 5: "medium-high", 4: "medium", 3: "medium", 2: "medium-low", 1: "low"],
-		5: [5: "high", 4: "medium-high", 3: "medium", 2: "medium-low", 1: "low"],
-		4: [4: "high", 3: "medium", 2: "medium-low", 1: "low"],
-		3: [3: "high", 2: "medium", 1: "low"],
-		2: [2: "high", 1: "low" ]
-	]
-	
-	if (!speed.toString().isNumber())
-		return speed
-		
-	if (max_speeds > 10 || speed > max_speeds)
-		return 0
-		
-	logDebug "${id} -> Translating ${speed}:${max_speeds} to HE ${speedTranslations[max_speeds][speed]}"
-		
-	return speedTranslations[max_speeds][speed]
+// ---- Fan speeds ----
+
+// The speed names a fan with `max` speeds has, low to high.
+List speedNames(Integer max) {
+	if (max == 1)
+		return ["high"]
+	if (max == 2)
+		return ["low", "high"]
+	if (max == 3)
+		return ["low", "medium", "high"]
+	if (max == 4)
+		return ["low", "medium-low", "medium", "high"]
+	return SPEED_ORDER
 }
 
-def translateHEFanSpeedToBond(id, max_speeds, speed)
-{
-	if (speed.isNumber())
-		return speed.toInteger()
-		
-		
-	def speedTranslations =
-	[
-		10: ["high": 10, "medium-high": 8, "medium": 5, "medium-low": 3, "low": 1],
-		9: ["high": 9, "medium-high": 7, ":medium": 5, "medium-low": 3, "low": 1],
-		8: ["high": 8, "medium-high": 6, "medium": 4, "medium-low": 3, "low": 1],
-		7: ["high": 7, "medium-high": 6, "medium": 4, "medium-low": 3, "low": 1 ],
-		6: ["high": 6, "medium-high": 5, "medium": 3, "medium-low": 2, "low": 1],
-		5: ["high": 5, "medium-high": 4, "medium": 3, "medium-low": 2, "low": 1],
-		4: ["high": 4, "medium": 3, "medium-low": 2, "low": 1],
-		3: ["high": 3, "medium": 2, "low": 1],
-		2: ["high": 2, "low": 1]
-	]
-	
-	if (max_speeds > 10)
+// Poll: BOND's speed number as a name; "on" when it isn't a speed this fan has.
+String speedName(Integer max, speed) {
+	Integer n = (speed != null && speed.toString().isInteger()) ? (speed.toString() as Integer) : null
+	if (n == null || n < 1 || n > max)
+		return "on"
+	return BOND_TO_HE[max][n]
+}
+
+Integer bondSpeed(Integer max, String name) {
+	return HE_TO_BOND[max][name]
+}
+
+// The name a request runs at on this fan: medium-low falls back to low, and medium-high
+// (or medium, on 1-2 speed fans) to high; a 1-speed fan runs everything at high. A
+// number is clamped to the fan's range. Null when the request isn't a speed ("auto").
+String resolveSpeed(Integer max, String requested) {
+	if (requested == null)
 		return null
-		
-	logDebug "${id} -> Translating ${speed}:${max_speeds} to BOND ${speedTranslations[max_speeds][speed]}"
-		
-	return speedTranslations[max_speeds][speed]
+	if (requested.isInteger())
+		return BOND_TO_HE[max][Math.min(Math.max(requested as Integer, 1), max)]
+	if (speedNames(max).contains(requested))
+		return requested
+	if (!SPEED_ORDER.contains(requested))
+		return null
+	if (max == 1)
+		return "high"
+	return requested == "medium-low" ? "low" : "high"
+}
+
+String supportedSpeedsJson(Integer max) {
+	return groovy.json.JsonOutput.toJson(speedNames(max) + ["on", "off"])
+}
+
+// Cycle Speed: off, on or unknown -> the lowest speed; then each speed; the highest -> off.
+def nextSpeed(device) {
+	def bondId = getBondIdFromDevice(device)
+	String kind = device.deviceNetworkId.endsWith(":fan") ? "fireplace" : "fan"
+	List names = speedNames(maxSpeed(kind, bondId))
+	int i = names.indexOf(device.currentValue("speed"))
+	if (i < 0)
+		return names[0]
+	return i == names.size() - 1 ? "off" : names[i + 1]
 }
 
 def handleFanSpeed(device, speed) {
-	def bondId = getBondIdFromDevice(device)
-    logDebug "Handling Fan Speed event for ${bondId}"
-
-	if (speed == "off")
-	{
+	logDebug "Handling Fan Speed event for ${getBondIdFromDevice(device)}"
+	if (speed == "off") {
 		if (handleOff(device))
-		{
 			device.sendEvent(name: "speed", value: "off")
-		}
-	}	
-	else if (speed == "on")
+		return null
+	}
+	if (speed == "on") {
 		handleOn(device)
-    else
-	{
-        if (executeAction(bondId, "SetSpeed", translateHEFanSpeedToBond(bondId, state.fanProperties?.getAt(bondId)?.max_speed ?: 3, speed))) 
-		{
-			device.sendEvent(name: "switch", value: "on")
-			device.sendEvent(name: "speed", value: speed)
-		}
-    }
+		return null
+	}
+	return sendSpeed(device, "fan", speed)
 }
 
 def handleFPFanSpeed(device, speed) {
-	def bondId = getBondIdFromDevice(device)
-    logDebug "Handling Fireplace Fan Speed event for ${bondId}"
-
-	if (speed == "off")	
+	logDebug "Handling Fireplace Fan Speed event for ${getBondIdFromDevice(device)}"
+	if (speed == "off") {
 		handleFPFanOff(device)
-	else if (speed == "on")
+		return null
+	}
+	if (speed == "on") {
 		handleFPFanOn(device)
-    else
-	{
-        if (executeAction(bondId, "SetSpeed", translateHEFanSpeedToBond(bondId, state.fireplaceProperties?.getAt(bondId)?.max_speed ?: 3, speed))) 
-		{
-			device.sendEvent(name: "speed", value: speed)
-		}
-    }
+		return null
+	}
+	return sendSpeed(device, "fireplace", speed)
+}
+
+// SetSpeed, rounded to a speed the fan has. Returns the name set, or null.
+private String sendSpeed(device, String kind, speed) {
+	def bondId = getBondIdFromDevice(device)
+	Integer max = maxSpeed(kind, bondId)
+	String name = resolveSpeed(max, speed?.toString())
+	if (name == null) {
+		log.warn "${device.displayName}: BOND fans have no '${speed}' speed, so nothing was sent"
+		return null
+	}
+	if (!executeAction(bondId, "SetSpeed", bondSpeed(max, name)))
+		return null
+	device.sendEvent(name: "switch", value: "on")
+	device.sendEvent(name: "speed", value: name)
+	return name
 }
 
 def handleFPFanOn(device) {

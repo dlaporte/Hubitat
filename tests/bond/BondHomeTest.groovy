@@ -419,4 +419,152 @@ check("every driver declares healthStatus") {
     }
 }
 
+// ---- Speeds ----
+
+check("speed names follow the fan's speed count") {
+    def a = app()
+    assert a.call("speedNames", 1) == ["high"]
+    assert a.call("speedNames", 2) == ["low", "high"]
+    assert a.call("speedNames", 3) == ["low", "medium", "high"]
+    assert a.call("speedNames", 4) == ["low", "medium-low", "medium", "high"]
+    (5..10).each { assert a.call("speedNames", it) == ["low", "medium-low", "medium", "medium-high", "high"] }
+}
+
+check("BOND speed numbers map to names, with upstream's typos fixed") {
+    def a = app()
+    assert a.call("speedName", 10, 2) == "low"         // upstream: 1
+    assert a.call("bondSpeed", 9, "medium") == 5       // upstream key ":medium"
+    assert a.call("speedName", 1, 1) == "high" && a.call("bondSpeed", 1, "high") == 1
+    assert [1, 2, 3].collect { a.call("speedName", 3, it) } == ["low", "medium", "high"]
+}
+
+check("power on with speed 0, missing, or above the fan's maximum reads 'on'") {
+    def a = app()
+    assert a.call("speedName", 3, 0) == "on" && a.call("speedName", 3, null) == "on" && a.call("speedName", 3, 4) == "on"
+}
+
+check("requests round to a speed the fan has") {
+    def a = app()
+    def r = { int max, String s -> a.call("resolveSpeed", max, s) }
+    assert ["low", "medium-low", "medium", "medium-high", "high"].collect { r(1, it) } == ["high"] * 5
+    assert ["low", "medium-low", "medium", "medium-high", "high"].collect { r(2, it) } == ["low", "low", "high", "high", "high"]
+    assert ["low", "medium-low", "medium", "medium-high", "high"].collect { r(3, it) } == ["low", "low", "medium", "high", "high"]
+    assert r(4, "medium-high") == "high" && r(4, "medium-low") == "medium-low"
+    assert r(5, "medium-high") == "medium-high"
+    assert r(3, "7") == "high" && r(3, "0") == "low"
+    assert r(3, "auto") == null && r(3, null) == null
+}
+
+check("on the cabin fan, medium-low runs at speed 1 and reads low") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    ok(a)
+    assert a.call("handleFanSpeed", fan, "medium-low") == "low"
+    assert a.http[0].params.body == '{"argument": 1}'
+    assert fan.current.speed == "low" && fan.current.switch == "on"
+}
+
+check("medium-high runs at speed 3 and reads high") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    ok(a)
+    assert a.call("handleFanSpeed", fan, "medium-high") == "high"
+    assert a.http[0].params.body == '{"argument": 3}'
+}
+
+check("auto warns and sends nothing") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    assert a.call("handleFanSpeed", fan, "auto") == null
+    assert a.http.isEmpty() && a.log.at("warn") == ["Loft Fan (BOND): BOND fans have no 'auto' speed, so nothing was sent"]
+}
+
+check("a failed SetSpeed changes nothing and returns null") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    down(a)
+    assert a.call("handleFanSpeed", fan, "low") == null && fan.current.speed == null
+}
+
+check("a poll sets supportedFanSpeeds from the fan's speeds") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    ok(a, fanState()); a.call("updateDevices")
+    assert fan.current.supportedFanSpeeds == '["low","medium","high","on","off"]'
+}
+
+check("Fix Speed to a speed records power on, so the next poll keeps it") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    ok(a)
+    a.call("fixFanSpeed", fan, "medium-low")
+    assert a.http[0].method == "SYNC_PATCH" && a.http[0].params.body == '{"power": 1, "speed": 1}'
+    assert fan.current.switch == "on" && fan.current.speed == "low"
+}
+
+check("Fix Speed off records power off and shows the switch off") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    ok(a)
+    a.call("fixFanSpeed", fan, "off")
+    assert a.http[0].params.body == '{"power": 0}' && fan.current.switch == "off" && fan.current.speed == "off"
+}
+
+check("Fix Speed on records power on only") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    ok(a)
+    a.call("fixFanSpeed", fan, "on")
+    assert a.http[0].params.body == '{"power": 1}' && fan.current.switch == "on"
+}
+
+check("Cycle Speed goes off, low, medium, high, off") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    def seq = []
+    [null, "off", "on", "low", "medium", "high", "medium-low"].each { cur ->
+        fan.current.speed = cur
+        seq << a.call("nextSpeed", fan)
+    }
+    assert seq == ["low", "low", "low", "medium", "high", "off", "low"]
+}
+
+check("a fireplace fan uses the fireplace's speed count") {
+    def a = app(fans: null, fireplaces: [FP])
+    a.state.fireplaceProperties = [(FP): [max_speed: 2]]
+    def fpFan = new FakeAppDevice(id: 9, deviceNetworkId: "${HUB}:bond:${FP}:fan".toString(), name: "FP fan")
+    ok(a)
+    assert a.call("handleFPFanSpeed", fpFan, "medium") == "high"
+    assert a.http[0].params.body == '{"argument": 2}'
+}
+
+check("the fan driver stores the speed actually set") {
+    def d = driver("BOND_Fan.groovy")
+    d.parent.answers.handleFanSpeed = { dev, s -> s == "medium-low" ? "low" : null }
+    d.call("setSpeed", "medium-low")
+    assert d.state.lastSpeed == "low"
+    d.call("setSpeed", "auto")                      // fails: nothing stored
+    assert d.state.lastSpeed == "low"
+}
+
+check("On sends TurnOn, then the stored speed, rounded") {
+    def d = driver("BOND_Fan.groovy")
+    d.state.lastSpeed = "medium-low"                // stored by 1.4.0
+    d.parent.answers.handleFanSpeed = { dev, s -> s == "medium-low" ? "low" : s }
+    d.call("on")
+    assert d.parent.calls.collect { it[0] } == ["handleOn", "handleFanSpeed"]
+    assert d.state.lastSpeed == "low"
+}
+
+check("Cycle Speed asks the app for the next speed and sets it, on all three fan drivers") {
+    ["BOND_Fan.groovy": "handleFanSpeed", "BOND_Fan_With_Direction.groovy": "handleFanSpeed",
+     "BOND_Fireplace_Fan.groovy": "handleFPFanSpeed"].each { file, handler ->
+        def d = driver(file)
+        d.parent.answers.nextSpeed = "medium"
+        d.parent.answers[handler] = { dev, s -> s }
+        d.call("cycleSpeed")
+        assert d.parent.callsTo(handler).collect { it[2] } == ["medium"] : file
+    }
+}
+
 finish()

@@ -29,7 +29,9 @@ def on() {
 	parent.handleOn(device)
 	if (state.lastSpeed != null)
 	{
-		parent.handleFanSpeed(device, state.lastSpeed)
+		def set = parent.handleFanSpeed(device, state.lastSpeed)
+		if (set != null)
+			state.lastSpeed = set
 	}
 }
 
@@ -53,9 +55,15 @@ def handleLightOff(device) {
 }
 
 def setSpeed(speed) {
-	if (speed != "off" && speed != "on")
-		state.lastSpeed = speed
-    parent.handleFanSpeed(device, speed)
+	def set = parent.handleFanSpeed(device, speed)
+	if (set != null && set != "off" && set != "on")
+		state.lastSpeed = set
+}
+
+def cycleSpeed() {
+	def next = parent.nextSpeed(device)
+	if (next != null)
+		setSpeed(next)
 }
 
 def setDirection(direction) {

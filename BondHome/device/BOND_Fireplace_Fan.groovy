@@ -26,6 +26,12 @@ def setSpeed(speed) {
     parent.handleFPFanSpeed(device, speed)
 }
 
+def cycleSpeed() {
+	def next = parent.nextSpeed(device)
+	if (next != null)
+		setSpeed(next)
+}
+
 def on() {
 	parent.handleFPFanOn(device)
 }
