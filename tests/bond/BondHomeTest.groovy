@@ -589,4 +589,37 @@ check("a failed StartDimmer schedules no Stop") {
     assert a.runInMillisCalls.isEmpty()
 }
 
+// ---- Fireplaces ----
+
+def fireplaceApp = { Map o = [:] ->
+    def a = app([fans: null, fireplaces: [FP]] + o)
+    a.binding.inputNames.addAll(["fireplaceSensor0", "fireplaceSensorThreshold0", "fireplaceSensor1", "fireplaceSensorThreshold1"])
+    def fp = new FakeAppDevice(id: 20, deviceNetworkId: "${HUB}:bond:${FP}".toString(), name: "Fireplace")
+    def fpFan = new FakeAppDevice(id: 21, deviceNetworkId: "${HUB}:bond:${FP}:fan".toString(), name: "Fireplace Fan")
+    fp.children[fpFan.deviceNetworkId] = fpFan
+    a.children[fp.deviceNetworkId] = fp
+    [a, fp, fpFan]
+}
+
+check("Fix Flame patches the flame height") {
+    def (a, fp, fpFan) = fireplaceApp()
+    ok(a)
+    a.call("fixFlameState", fp, "medium")
+    assert a.http[0].params.body == '{"flame": 50}' && fp.current.flame == "medium"
+}
+
+check("the power meter uses the threshold set, and finds hub-ID devices") {
+    def (a, fp, fpFan) = fireplaceApp(fireplaceSensor0: [id: 5], fireplaceSensorThreshold0: 50)
+    a.call("powerMeterEventHandler", [device: [id: 5], value: "30.5"])
+    assert fp.current.switch == "off" && fpFan.current.speed == "off"
+    a.call("powerMeterEventHandler", [device: [id: 5], value: "60"])
+    assert fp.current.switch == "on"
+}
+
+check("the power meter defaults to a threshold of 10, and skips empty sensor slots") {
+    def (a, fp, fpFan) = fireplaceApp(fireplaces: ["empty0", FP], fireplaceSensor0: null, fireplaceSensor1: [id: 6])
+    a.call("powerMeterEventHandler", [device: [id: 6], value: "12"])
+    assert fp.current.switch == "on"
+}
+
 finish()

@@ -445,35 +445,34 @@ def subscribeSensorEvents() {
 }
 
 def powerMeterEventHandler(evt) {
-	logDebug "Received power meter event ${evt}"
-	for (def i = 0; i < fireplaces.size(); i++)
+	logDebug "Received power meter event ${evt.value} from ${evt.device}"
+	List fps = fireplaces ?: []
+	for (int i = 0; i < fps.size(); i++)
 	{
-		def sensorDevice = this.getProperty("fireplaceSensor${i}")
-		if (evt.device.id == sensorDevice.id)
+		def sensorDevice = settings["fireplaceSensor${i}".toString()]
+		if (sensorDevice == null || evt.device?.id != sensorDevice.id)
+			continue
+		def fireplace = fps[i]
+		def fireplaceDevice = findChildDevice(fireplace)
+		if (fireplaceDevice == null)
+			return
+		def setThreshold = settings["fireplaceSensorThreshold${i}".toString()]
+		BigDecimal threshold = setThreshold != null ? (setThreshold as BigDecimal) : 10
+		def value = ((evt.value ?: 0) as BigDecimal) < threshold ? "off" : "on"
+		if (value != fireplaceDevice.currentValue("switch"))
 		{
-			def fireplace = fireplaces[i];
-			def fireplaceDevice = getChildDevice("bond:" + fireplace)
-			def threshold = 10
-			def value = "on"
-			if (evt.integerValue < threshold)
-				value = "off"
-			if (value != fireplaceDevice.currentValue("switch"))
-			{
-				logDebug "current state ${fireplaceDevice.currentValue("switch")} changing to ${value}"
-				fireplaceDevice.sendEvent(name: "switch", value: value)
-			}
-            if (value == "off")
-            {
-                def fanDevice = fireplaceDevice.getChildDevice("bond:" + fireplace + ":fan")
-                if (fanDevice)
-                    fanDevice.sendEvent(name: "speed", value: "off")
-            }
-			break;
+			logDebug "current state ${fireplaceDevice.currentValue("switch")} changing to ${value}"
+			fireplaceDevice.sendEvent(name: "switch", value: value)
 		}
+		if (value == "off")
+		{
+			def fanDevice = findComponentDevice(fireplaceDevice, fireplace + ":fan")
+			if (fanDevice)
+				fanDevice.sendEvent(name: "speed", value: "off")
+		}
+		return
 	}
 }
-
-// ---- Polling ----
 
 def updateDevices() {
 	noteOutcome(pollAll())
@@ -932,11 +931,10 @@ def fixPowerState(device, state)
     }
 }
 
-def fixFlameState(device, state) 
+def fixFlameState(device, height)
 {
 	def bondId = getBondIdFromDevice(device)
-	logDebug "Setting flame state for ${bondId} to ${state}"
-	
+	logDebug "Setting flame state for ${bondId} to ${height}"
 	def flameHeight = 0
 	if (height == "low")
 		flameHeight = 1
@@ -944,11 +942,8 @@ def fixFlameState(device, state)
 		flameHeight = 50
 	else if (height == "high")
 		flameHeight = 100
-
 	if (executeFixState(bondId, '{"flame": ' + flameHeight + '}'))
-    {
 		device.sendEvent(name: "flame", value: height)
-    }
 }
 
 def fixFanSpeed(device, fanState)
