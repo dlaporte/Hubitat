@@ -31,6 +31,7 @@ in-place update. Devices, rules and dashboards keep working.
 - **Settings page:**
   - visiting it while the bridge is down no longer wipes the stored device lists;
   - a device that answers with an error keeps what was stored for it, and no longer blocks the page.
+  - the bridge's `__` entry (metadata on newer bridges) is no longer requested as a device, which logged a 404.
 - **Connection problems:**
   - requests time out (5 s for polls, 10 s for commands), and timeouts no longer crash the poll or commands;
   - an outage logs one warning after 2 minutes, an hourly reminder, and an info line with its length on recovery (1.4.0 logged an error every poll);

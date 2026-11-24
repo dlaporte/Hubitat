@@ -168,6 +168,16 @@ check("a complete fetch replaces the lists") {
     assert a.state.fireplaceList == [:] && a.state.shadeList == [:] && a.state.genericList == [:]
 }
 
+check("the device list's metadata keys (_ and __) aren't read as devices") {
+    def a = app()
+    ok(a, [(FAN): [_: "x"], _: "y", __: "z"])     // the cabin bridge's list has both
+    ok(a, [name: "Ceiling fan", type: "CF", actions: CABIN_ACTIONS])
+    ok(a, [max_speed: 3, trust_state: false])
+    assert a.call("getDevices") == true
+    assert paths(a) == ["/v2/devices", "/v2/devices/${FAN}".toString(), "/v2/devices/${FAN}/properties".toString()]
+    assert a.log.at("warn").isEmpty()
+}
+
 check("the hub ID is read once and kept") {
     def a = app(); a.state.hubId = null
     ok(a, [bondid: HUB, fw_ver: "v3"])
