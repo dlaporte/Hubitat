@@ -28,7 +28,9 @@ in-place update. Devices, rules and dashboards keep working.
   - finds existing lights instead of trying to add them again, which could leave polling stopped;
   - arms polling before anything else;
   - never adds or deletes devices from incomplete data.
-- **Settings page:** visiting it while the bridge is down no longer wipes the stored device lists.
+- **Settings page:**
+  - visiting it while the bridge is down no longer wipes the stored device lists;
+  - a device that answers with an error keeps what was stored for it, and no longer blocks the page.
 - **Connection problems:**
   - requests time out (5 s for polls, 10 s for commands), and timeouts no longer crash the poll or commands;
   - an outage logs one warning after 2 minutes, an hourly reminder, and an info line with its length on recovery (1.4.0 logged an error every poll);
@@ -49,10 +51,12 @@ in-place update. Devices, rules and dashboards keep working.
   - on, records power on only.
 - **Lights:**
   - on/off is polled from BOND's light flag, and brightness is kept while off;
-  - timer lights' Dim (seconds) works.
+  - timer lights' Dim (seconds) works, also on two lights at once.
 - **Fireplaces:**
   - Fix Flame works;
-  - the power meter uses its threshold setting.
+  - the power meter uses its threshold setting;
+  - Set Flame off shows the flame off, even with a power meter;
+  - the fireplace fan's state follows BOND's fan power, and its speed uses BOND's fireplace-fan action (`SetFpFan`) when the fireplace has it.
 - **Logging:** debug logging defaults off and turns itself off after 30 minutes. The settings, including the token, are never logged.
 
 ## Attributes

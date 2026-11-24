@@ -223,22 +223,38 @@ def getDevices() {
 
 def getDeviceById(String id, Map lists) {
 	Map r = bondRequest("GET", "/v2/devices/${id}", [timeout: 10])
-	if (!r.ok) {
-		log.warn "BOND: couldn't read device ${id}: ${describeFailure(r)}"
-		return false
-	}
+	if (!r.ok)
+		return keepStored(id, lists, r)
 	String kind = [FP: "fireplace", CF: "fan", MS: "shade", GX: "generic"][r.data.type]
 	if (kind == null)
 		return true     // a device type this app doesn't support
-	lists[kind + "List"][id] = r.data.name
-	lists[kind + "Details"][id] = r.data.actions
 	if (kind != "generic") {
 		Map p = bondRequest("GET", "/v2/devices/${id}/properties", [timeout: 10])
-		if (!p.ok) {
-			log.warn "BOND: couldn't read the properties of device ${id}: ${describeFailure(p)}"
-			return false
-		}
+		if (!p.ok)
+			return keepStored(id, lists, p)
 		lists[kind + "Properties"][id] = p.data
+	}
+	lists[kind + "List"][id] = r.data.name
+	lists[kind + "Details"][id] = r.data.actions
+	return true
+}
+
+// A device the bridge answers for with an error keeps what was stored for it, so one bad
+// device can't block setup. A bridge that stops answering fails the whole fetch.
+private boolean keepStored(String id, Map lists, Map r) {
+	if (r.status == null) {
+		log.warn "BOND: couldn't read device ${id}: ${describeFailure(r)}"
+		return false
+	}
+	log.warn "BOND: couldn't read device ${id} (${describeFailure(r)}), so it keeps what was stored for it"
+	for (kind in ["fireplace", "fan", "shade", "generic"]) {
+		if (!state["${kind}List".toString()]?.containsKey(id))
+			continue
+		for (part in ["List", "Details", "Properties"]) {
+			def old = state["${kind}${part}".toString()]?.get(id)
+			if (old != null && lists.containsKey(kind + part))
+				lists[kind + part][id] = old
+		}
 	}
 	return true
 }
@@ -578,7 +594,10 @@ private void updateFireplace(device, fireplace, int i, data) {
 	guarded("updating the parts of ${device.displayName}") {
 		def fpFan = findComponentDevice(device, fireplace + ":fan")
 		if (fpFan != null && !fpFan.isDisabled()) {
-			fpFan.sendEvent(name: "speed", value: data.power > 0 ? speedName(maxSpeed("fireplace", fireplace), data.fpfan_speed) : "off")
+			// The fan runs when BOND says so (fpfan_power); without that field, when the fireplace is on.
+			boolean fanOn = data.fpfan_power != null ? data.fpfan_power > 0 : data.power > 0
+			fpFan.sendEvent(name: "switch", value: fanOn ? "on" : "off")
+			fpFan.sendEvent(name: "speed", value: fanOn ? speedName(maxSpeed("fireplace", fireplace), data.fpfan_speed) : "off")
 			fpFan.sendEvent(name: "supportedFanSpeeds", value: supportedSpeedsJson(maxSpeed("fireplace", fireplace)))
 		}
 		updateLight(findComponentDevice(device, fireplace + ":light"), data.power > 0 && data.light == 1, null)
@@ -787,8 +806,14 @@ def handleDim(device, duration)
 def dimUsingTimer(device, duration, command)
 {
 	def bondId = getBondIdFromDevice(device)
+	BigDecimal seconds = (duration != null && duration.toString().isNumber()) ? (duration as BigDecimal) : null
+	if (seconds == null || seconds <= 0) {
+		log.warn "${device.displayName}: Dim needs a number of seconds, so nothing was sent"
+		return
+	}
+	// overwrite: false, so dimming a second light doesn't cancel the first light's Stop.
 	if (executeAction(bondId, command))
-		runInMillis(((duration as BigDecimal) * 1000).toLong(), "stopDimmer", [data: [bondId: bondId]])
+		runInMillis((seconds * 1000).toLong(), "stopDimmer", [overwrite: false, data: [bondId: bondId]])
 }
 
 def stopDimmer(data)
@@ -1239,7 +1264,9 @@ private String sendSpeed(device, String kind, speed) {
 		log.warn "${device.displayName}: BOND fans have no '${speed}' speed, so nothing was sent"
 		return null
 	}
-	if (!executeAction(bondId, "SetSpeed", bondSpeed(max, name)))
+	// Fireplace fans take SetFpFan when the fireplace lists it (upstream sent SetSpeed).
+	String action = (kind == "fireplace" && state.fireplaceDetails?.get(bondId)?.contains("SetFpFan")) ? "SetFpFan" : "SetSpeed"
+	if (!executeAction(bondId, action, bondSpeed(max, name)))
 		return null
 	device.sendEvent(name: "switch", value: "on")
 	device.sendEvent(name: "speed", value: name)
@@ -1278,16 +1305,15 @@ def handleFPFanOff(device) {
 def handleOff(device) {
 	def bondId = getBondIdFromDevice(device)
 	logDebug "Handling Off event for ${bondId}"
-
-    if (executeAction(bondId, "TurnOff") && shouldSendEvent(bondId)) 
-    {
-        device.sendEvent(name: "switch", value: "off")
-        if (device.hasCapability("FanControl"))
-        device.sendEvent(name: "speed", value: "off")
-        return true
-    }
-	
-	return false
+	if (!executeAction(bondId, "TurnOff"))
+		return false
+	// With a power meter, the meter decides a fireplace's switch; the command still succeeded.
+	if (shouldSendEvent(bondId)) {
+		device.sendEvent(name: "switch", value: "off")
+		if (device.hasCapability("FanControl"))
+			device.sendEvent(name: "speed", value: "off")
+	}
+	return true
 }
 
 def handleDirection(device, direction)

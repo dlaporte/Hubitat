@@ -34,7 +34,8 @@ metadata {
 
 def on() {
 	parent.handleOn(device)
-	if (state.lastSpeed != null)
+	// Only a real speed: 1.4.0 could store "auto", which BOND fans don't have.
+	if (state.lastSpeed in ["low", "medium-low", "medium", "medium-high", "high"])
 	{
 		def set = parent.handleFanSpeed(device, state.lastSpeed)
 		if (set != null)

@@ -135,13 +135,25 @@ check("a device fetch that fails partway leaves the stored lists as they were") 
     assert a.state.fanProperties[FAN].max_speed == 3
 }
 
-check("a failed properties read also leaves them as they were") {
+check("a device that answers with an HTTP error keeps what was stored for it") {
     def a = app()
     ok(a, [(FAN): [_: "x"], _: "y"])
     ok(a, [name: "Ceiling fan", type: "CF", actions: ["TurnOn"]])
-    httpError(a, 500)
-    assert a.call("getDevices") == false
-    assert a.state.fanDetails == [(FAN): CABIN_ACTIONS]
+    httpError(a, 500)                    // its properties fail
+    assert a.call("getDevices") == true
+    assert a.state.fanDetails == [(FAN): CABIN_ACTIONS] && a.state.fanProperties[FAN].max_speed == 3
+    assert a.log.at("warn").any { it.contains(FAN) && it.contains("HTTP 500") }
+}
+
+check("one device with an HTTP error doesn't block the others") {
+    def a = app()
+    ok(a, [(FAN): [_: "x"], (FAN2): [_: "z"], _: "y"])
+    httpError(a, 404)                    // FAN's details
+    ok(a, [name: "Porch fan", type: "CF", actions: ["TurnOn", "SetSpeed"]])
+    ok(a, [max_speed: 6])
+    assert a.call("getDevices") == true
+    assert a.state.fanList == [(FAN): "Ceiling fan", (FAN2): "Porch fan"]
+    assert a.state.fanProperties[FAN2].max_speed == 6 && a.state.fanDetails[FAN] == CABIN_ACTIONS
 }
 
 check("a complete fetch replaces the lists") {
@@ -575,7 +587,7 @@ check("Dim starts the dimmer and schedules Stop with only the BOND ID") {
     ok(a)
     a.call("handleDim", light, 5)
     assert paths(a) == ["/v2/devices/${FAN}/actions/StartDimmer".toString()]
-    assert a.runInMillisCalls == [[5000L, "stopDimmer", [data: [bondId: FAN]]]]
+    assert a.runInMillisCalls == [[5000L, "stopDimmer", [overwrite: false, data: [bondId: FAN]]]]
     ok(a)
     a.call("stopDimmer", [bondId: FAN])
     assert paths(a)[1] == "/v2/devices/${FAN}/actions/Stop".toString()
@@ -629,6 +641,47 @@ check("import URLs point at this repo") {
     DRIVERS.keySet().each { file ->
         assert driver(file).definition.importUrl == "https://raw.githubusercontent.com/dlaporte/Hubitat/main/BondHome/device/${file}".toString()
     }
+}
+
+// ---- Review fixes ----
+
+check("Dim with no duration warns and starts nothing") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    a.call("handleDim", light, null)
+    assert a.http.isEmpty() && a.runInMillisCalls.isEmpty()
+    assert a.log.at("warn") == ["Ceiling fan Light: Dim needs a number of seconds, so nothing was sent"]
+}
+
+check("On ignores a stored speed that isn't a speed (1.4.0 could store 'auto')") {
+    def d = driver("BOND_Fan.groovy")
+    d.state.lastSpeed = "auto"
+    d.call("on")
+    assert d.parent.calls.collect { it[0] } == ["handleOn"]
+}
+
+check("a fireplace fan's poll follows BOND's fpfan_power") {
+    def (a, fp, fpFan) = fireplaceApp()
+    ok(a, [power: 1, flame: 50, fpfan_power: 0, fpfan_speed: 2, light: 0]); a.call("updateDevices")
+    assert fpFan.current.speed == "off" && fpFan.current.switch == "off" && fp.current.switch == "on"
+    ok(a, [power: 1, flame: 50, fpfan_power: 1, fpfan_speed: 2, light: 0]); a.call("updateDevices")
+    assert fpFan.current.speed == "medium" && fpFan.current.switch == "on"
+}
+
+check("a fireplace fan uses SetFpFan when the fireplace lists it") {
+    def (a, fp, fpFan) = fireplaceApp()
+    a.state.fireplaceDetails = [(FP): ["TurnFpFanOn", "TurnFpFanOff", "SetFpFan"]]
+    ok(a)
+    assert a.call("handleFPFanSpeed", fpFan, "high") == "high"
+    assert paths(a) == ["/v2/devices/${FP}/actions/SetFpFan".toString()] && a.http[0].params.body == '{"argument": 3}'
+}
+
+check("setFlame off with a power meter still shows the flame off") {
+    def (a, fp, fpFan) = fireplaceApp(fireplaceSensor0: [id: 5])
+    fp.current.flame = "high"
+    ok(a)
+    a.call("handleSetFlame", fp, "off")
+    assert fp.current.flame == "off" && fp.current.switch == null    // the meter decides the switch
 }
 
 finish()
