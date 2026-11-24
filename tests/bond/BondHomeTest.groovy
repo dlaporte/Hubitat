@@ -186,4 +186,84 @@ check("logsOff turns debug logging off") {
     assert a.log.at("info") == ["BOND: debug logging turned off"]
 }
 
+// ---- Done ----
+
+check("Done with the cabin's devices adds and deletes nothing, and arms the poll") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    a.call("updated")
+    assert a.children.keySet() == [FAN_DNI] as Set
+    assert fan.children.keySet() == [LIGHT_DNI] as Set && fan.children[LIGHT_DNI].is(light)
+    assert light.disabled && fan.deletedChildren.isEmpty()
+    assert a.schedules.updateDevices == "cron:0/30 * * * * ? *"
+    assert a.log.at("warn").isEmpty() && a.log.at("error").isEmpty()
+}
+
+check("Done with debug on arms logsOff for 30 minutes, after unschedule") {
+    def a = app(debugOutput: true); cabinDevices(a)
+    a.call("updated")
+    assert a.schedules.logsOff == 1800
+}
+
+check("a failure in child setup leaves the poll armed") {
+    def a = app()
+    def fan = new FakeAppDevice(id: 878, deviceNetworkId: FAN_DNI, name: "Loft Fan (BOND)")
+    fan.metaClass.getChildDevice = { String dni -> throw new RuntimeException("boom") }
+    a.children[FAN_DNI] = fan
+    a.call("updated")
+    assert a.schedules.updateDevices == "cron:0/30 * * * * ? *"
+    assert a.log.at("warn").any { it.contains("boom") }
+}
+
+check("Done with no stored details for the fan adds and deletes nothing, and warns once") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    a.state.fanDetails = [:]
+    a.call("updated")
+    assert fan.children.keySet() == [LIGHT_DNI] as Set && fan.deletedChildren.isEmpty()
+    assert a.children.keySet() == [FAN_DNI] as Set
+    assert a.log.at("warn").size() == 1 && a.log.at("warn")[0].contains(FAN)
+    assert a.schedules.updateDevices
+}
+
+check("Done with the hub ID unknown creates nothing") {
+    def a = app()
+    a.state.hubId = null          // and the bridge doesn't answer the ID request
+    a.call("updated")
+    assert a.children.isEmpty()
+    assert a.log.at("warn").any { it.contains("bridge's ID is unknown") }
+}
+
+check("a light BOND no longer lists is deleted, with an info line") {
+    def a = app()
+    def (fan, light) = cabinDevices(a)
+    a.state.fanDetails = [(FAN): CABIN_ACTIONS - ["TurnLightOn", "TurnLightOff", "ToggleLight", "StartDimmer"]]
+    a.call("updated")
+    assert fan.deletedChildren == [LIGHT_DNI]
+    assert a.log.at("info").any { it.contains(LIGHT_DNI) }
+}
+
+check("a new install adds the fan and its timer light") {
+    def a = app()
+    a.call("updated")
+    def fan = a.children[FAN_DNI]
+    assert fan.typeName == "BOND Fan" && fan.name == "Ceiling fan"
+    assert fan.children[LIGHT_DNI].typeName == "BOND Fan Timer Light"
+}
+
+check("installing and saving never log the settings, even with debug on") {
+    def a = app(debugOutput: true); cabinDevices(a)
+    a.call("updated")
+    assert !a.log.lines.any { it[1].contains("settings") }
+}
+
+check("poll intervals become valid schedules") {
+    def a = app()
+    [(null): "0/30 * * * * ? *", 0: "0/30 * * * * ? *", 3: "0/30 * * * * ? *", 30: "0/30 * * * * ? *",
+     45: "0/45 * * * * ? *", 60: "0 0/1 * * * ? *", 90: "0 0/2 * * * ? *", 120: "0 0/2 * * * ? *",
+     1800: "0 0/30 * * * ? *", 3600: "0 0 * * * ? *", 7200: "0 0 * * * ? *"].each { n, cron ->
+        assert a.call("pollCron", n) == cron
+    }
+}
+
 finish()

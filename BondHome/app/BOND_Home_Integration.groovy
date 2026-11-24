@@ -121,13 +121,38 @@ def uninstalled() {
 
 def initialize() {
 	logDebug "initializing"
+	// The poll goes first, so nothing below can leave it unarmed.
+	schedule(pollCron(refreshInterval), "updateDevices")
+	if (settings.debugOutput)
+		runIn(1800, "logsOff")
+	state.remove("health")       // the next poll re-sends healthStatus to every device
+	if (!hubIp || !hubToken)
+		log.error "BOND: set the bridge's IP address and token in the app"
+	guarded("cleaning up devices") { cleanupChildDevices() }
+	guarded("adding devices") { createChildDevices() }
+	guarded("subscribing to power meters") { subscribeSensorEvents() }
+}
 
-	cleanupChildDevices()
-	createChildDevices()
-	subscribeSensorEvents()	
-	
-	def refreshEvery = refreshInterval ?: 30
-    schedule("0/${refreshEvery} * * * * ? *", updateDevices)
+private void guarded(String what, Closure c) {
+	try {
+		c.call()
+	}
+	catch (Exception e) {
+		log.warn "BOND: error while ${what}: ${e}"
+	}
+}
+
+// Seconds below 60 use a seconds schedule; longer intervals round to whole minutes, at most hourly.
+String pollCron(interval) {
+	Integer n = (interval != null && interval.toString().isInteger()) ? (interval.toString() as Integer) : 30
+	if (n < 5)
+		n = 30
+	if (n < 60)
+		return "0/${n} * * * * ? *".toString()
+	int m = (n + 30).intdiv(60)
+	if (m >= 60)
+		return "0 0 * * * ? *"
+	return "0 0/${m} * * * ? *".toString()
 }
 
 def getHubId() {
@@ -186,21 +211,21 @@ def getDeviceById(String id, Map lists) {
 }
 
 def findChildDevice(deviceId) {
-	def hubId = getHubId()
 	def dev = getChildDevice("bond:" + deviceId)
 	if (dev != null)
 		return dev
-
-	return getChildDevice(hubId + ":bond:" + deviceId)
+	def hubId = getHubId()
+	return hubId ? getChildDevice(hubId + ":bond:" + deviceId) : null
 }
 
 def findComponentDevice(dev, deviceId) {
-	def hubId = getHubId()
+	if (dev == null)
+		return null
 	def component = dev.getChildDevice("bond:" + deviceId)
 	if (component != null)
 		return component
-
-	return component?.getChildDevice(hubId + ":bond:" + deviceId) ?: null
+	def hubId = getHubId()
+	return hubId ? dev.getChildDevice(hubId + ":bond:" + deviceId) : null
 }
 
 def getBondIdFromDevice(device) {
@@ -212,115 +237,81 @@ def getBondIdFromDevice(device) {
 
 def deleteComponentDevice(dev, deviceId) {
 	def hubId = getHubId()
-	if (dev.getChildDevice("bond:" + deviceId + ":fan"))
-		dev.deleteChildDevice("bond:" + deviceId + ":fan")
-	if (dev.getChildDevice(hubId + ":bond:" + deviceId + ":fan"))
-		dev.deleteChildDevice(hubId + ":bond:" + deviceId + ":fan")
+	for (dni in ["bond:" + deviceId, hubId ? hubId + ":bond:" + deviceId : null]) {
+		if (dni && dev.getChildDevice(dni)) {
+			log.info "BOND: removing ${dni}, because BOND no longer lists it"
+			dev.deleteChildDevice(dni)
+		}
+	}
 }
 
 def createChildDevices() {
 	def hubId = getHubId()
-	if (fireplaces != null) 
-	{
-		for (fireplace in fireplaces)
-		{
-			def fpDevice = findChildDevice(fireplace)
-			if (!fpDevice)
-            {
-				fpDevice = addChildDevice("bond", "BOND Fireplace", hubId + ":bond:" + fireplace, 1234, ["name": state.fireplaceList[fireplace], isComponent: false])\
-			}
-			if (state.fireplaceDetails[fireplace].contains("TurnFpFanOn"))
-			{
-				if (!findComponentDevice(fpDevice, fireplace + ":fan"))
-					fpDevice.addChildDevice("bond", "BOND Fireplace Fan", hubId + ":bond:" + fireplace + ":fan", ["name": state.fireplaceList[fireplace] + " Fan", isComponent: true])
-			}
-			if (state.fireplaceDetails[fireplace].contains("TurnLightOn"))
-			{
-				if (!findComponentDevice(fpDevice, fireplace + ":light"))
-					fpDevice.addChildDevice("bond", "BOND Fireplace Light", hubId + ":bond:" + fireplace + ":light", ["name": state.fireplaceList[fireplace] + " Light", isComponent: true])
-			}
+	if (!hubId) {
+		log.warn "BOND: the bridge's ID is unknown, so no devices were added. Press Done again once the bridge answers."
+		return
+	}
+	for (fireplace in (fireplaces ?: [])) {
+		def details = storedDetails("fireplace", fireplace)
+		if (details == null)
+			continue
+		def fpDevice = findChildDevice(fireplace)
+		if (!fpDevice)
+			fpDevice = addChildDevice("bond", "BOND Fireplace", hubId + ":bond:" + fireplace, 1234, ["name": state.fireplaceList[fireplace], isComponent: false])
+		if (details.contains("TurnFpFanOn"))
+			addComponent(fpDevice, hubId, fireplace + ":fan", "BOND Fireplace Fan", state.fireplaceList[fireplace] + " Fan")
+		if (details.contains("TurnLightOn"))
+			addComponent(fpDevice, hubId, fireplace + ":light", "BOND Fireplace Light", state.fireplaceList[fireplace] + " Light")
+	}
+	for (fan in (fans ?: [])) {
+		def details = storedDetails("fan", fan)
+		if (details == null)
+			continue
+		def fanDevice = findChildDevice(fan)
+		if (!fanDevice) {
+			String fanType = details.contains("SetDirection") ? "BOND Fan With Direction" : "BOND Fan"
+			fanDevice = addChildDevice("bond", fanType, hubId + ":bond:" + fan, 1234, ["name": state.fanList[fan], isComponent: false])
+		}
+		String name = state.fanList[fan]
+		if (details.contains("TurnUpLightOn") && details.contains("TurnDownLightOn")) {
+			String type = "BOND Fan Light"
+			if (details.contains("SetUpLightBrightness") && details.contains("SetDownLightBrightness"))
+				type = "BOND Fan Dimmable Light"
+			else if (details.contains("StartUpLightDimmer") && details.contains("StartDownLightDimmer"))
+				type = "BOND Fan Timer Light"
+			addComponent(fanDevice, hubId, fan + ":uplight", type, name + " Up Light")
+			addComponent(fanDevice, hubId, fan + ":downlight", type, name + " Down Light")
+		}
+		else if (details.contains("TurnLightOn")) {
+			String type = "BOND Fan Light"
+			if (details.contains("SetBrightness"))
+				type = "BOND Fan Dimmable Light"
+			else if (details.contains("StartDimmer"))
+				type = "BOND Fan Timer Light"
+			addComponent(fanDevice, hubId, fan + ":light", type, name + " Light")
 		}
 	}
-	
-	if (fans != null) 
-	{
-		for (fan in fans)
-		{
-			def fanDevice = findChildDevice(fan)
-			if (!fanDevice)
-            {
-				if (state.fanDetails[fan].contains("SetDirection"))
-					fanDevice = addChildDevice("bond", "BOND Fan With Direction", hubId + ":bond:" + fan, 1234, ["name": state.fanList[fan], isComponent: false])
-				else
-					fanDevice = addChildDevice("bond", "BOND Fan", hubId + ":bond:" + fan, 1234, ["name": state.fanList[fan], isComponent: false])
-			}
-			if (state.fanDetails[fan].contains("TurnUpLightOn") && state.fanDetails[fan].contains("TurnDownLightOn"))
-			{
-				if (state.fanDetails[fan].contains("SetUpLightBrightness") && state.fanDetails[fan].contains("SetDownLightBrightness"))
-				{
-					if (!findComponentDevice(fanDevice, fan + ":uplight"))
-						fanDevice.addChildDevice("bond", "BOND Fan Dimmable Light", hubId + ":bond:" + fan + ":uplight", ["name": state.fanList[fan] + " Up Light", isComponent: true])
-					if (!findComponentDevice(fanDevice, fan + ":downlight"))
-						fanDevice.addChildDevice("bond", "BOND Fan Dimmable Light", hubId + ":bond:" + fan + ":downlight", ["name": state.fanList[fan] + " Down Light", isComponent: true])
+	for (shade in (shades ?: [])) {
+		if (storedDetails("shade", shade) != null && !findChildDevice(shade))
+			addChildDevice("bond", "BOND Motorized Shade", hubId + ":bond:" + shade, 1234, ["name": state.shadeList[shade], isComponent: false])
+	}
+	for (generic in (genericDevices ?: [])) {
+		if (storedDetails("generic", generic) != null && !findChildDevice(generic))
+			addChildDevice("bond", "BOND Generic Device", hubId + ":bond:" + generic, 1234, ["name": state.genericList[generic], isComponent: false])
+	}
+}
 
-				}
-				else if (state.fanDetails[fan].contains("StartUpLightDimmer") && state.fanDetails[fan].contains("StartDownLightDimmer"))
-				{
-					if (!findComponentDevice(fanDevice, fan + ":uplight"))
-						fanDevice.addChildDevice("bond", "BOND Fan Timer Light", hubId + ":bond:" + fan + ":uplight", ["name": state.fanList[fan] + " Up Light", isComponent: true])
-					if (!findComponentDevice(fanDevice, fan + ":downlight"))
-						fanDevice.addChildDevice("bond", "BOND Fan Timer Light", hubId + ":bond:" + fan + ":downlight", ["name": state.fanList[fan] + " Down Light", isComponent: true])
-				}
-				else
-				{
-					if (!findComponentDevice(fanDevice, fan + ":uplight"))
-						fanDevice.addChildDevice("bond", "BOND Fan Light", hubId + ":bond:" + fan + ":uplight", ["name": state.fanList[fan] + " Up Light", isComponent: true])
-					if (!findComponentDevice(fanDevice, fan + ":downlight"))
-						fanDevice.addChildDevice("bond", "BOND Fan Light", hubId + ":bond:" + fan + ":downlight", ["name": state.fanList[fan] + " Down Light", isComponent: true])
-				}
-			}
-			else if (state.fanDetails[fan].contains("TurnLightOn"))
-			{
-				if (!findComponentDevice(fanDevice, fan + ":light"))
-				{
-					if (state.fanDetails[fan].contains("SetBrightness"))
-					{
-						fanDevice.addChildDevice("bond", "BOND Fan Dimmable Light", hubId + ":bond:" + fan + ":light", ["name": state.fanList[fan] + " Light", isComponent: true])
-					}
-					else if (state.fanDetails[fan].contains("StartDimmer"))
-					{
-						fanDevice.addChildDevice("bond", "BOND Fan Timer Light", hubId + ":bond:" + fan + ":light", ["name": state.fanList[fan] + " Light", isComponent: true])
-					}
-					else
-						fanDevice.addChildDevice("bond", "BOND Fan Light", hubId + ":bond:" + fan + ":light", ["name": state.fanList[fan] + " Light", isComponent: true])
-				}
-			}
-		}
-	}
-	
-	if (shades != null)
-	{
-		for (shade in shades)
-		{
-			def shadeDevice = findChildDevice(shade)
-			if (!shadeDevice)
-            {
-				shadeDevice = addChildDevice("bond", "BOND Motorized Shade", hubId + ":bond:" + shade, 1234, ["name": state.shadeList[shade], isComponent: false])
-			}
-		}
-	}
-	
-	if (genericDevices != null)
-	{
-		for (generic in genericDevices)
-		{
-			def genericDevice = findChildDevice(generic)
-			if (!genericDevice)
-            {
-				genericDevice = addChildDevice("bond", "BOND Generic Device", hubId + ":bond:" + generic, 1234, ["name": state.genericList[generic], isComponent: false])
-			}
-		}
-	}
+private void addComponent(parentDevice, hubId, String componentId, String type, String name) {
+	if (!findComponentDevice(parentDevice, componentId))
+		parentDevice.addChildDevice("bond", type, hubId + ":bond:" + componentId, ["name": name, isComponent: true])
+}
+
+// The device's actions from the last complete fetch; null, with one warning, when there are none.
+private List storedDetails(String kind, bondId) {
+	def details = state["${kind}Details".toString()]?.get(bondId)
+	if (details == null)
+		log.warn "BOND: no stored details for ${kind} ${bondId}, so it was left as it is. Open the app, click Next once the bridge answers, then Done."
+	return details
 }
 
 def cleanupChildDevices()
@@ -383,29 +374,31 @@ def cleanupChildDevices()
 	}
 }
 
+// Cleanup acts only on details from a complete fetch; without them it does nothing
+// (createChildDevices warns).
 def cleanupFPComponents(device, fireplace)
 {
-	if (!state.fireplaceDetails[fireplace].contains("TurnFpFanOn"))
-	{
+	def details = state.fireplaceDetails?.get(fireplace)
+	if (details == null)
+		return
+	if (!details.contains("TurnFpFanOn"))
 		deleteComponentDevice(device, fireplace + ":fan")
-	}
-	if (!state.fireplaceDetails[fireplace].contains("TurnLightOn"))
-	{
+	if (!details.contains("TurnLightOn"))
 		deleteComponentDevice(device, fireplace + ":light")
-	}
 }
 
 def cleanupFanComponents(device, fan)
 {
-	if (!state.fanDetails[fan].contains("TurnUpLightOn") || !state.fanDetails[fan].contains("TurnDownLightOn"))
+	def details = state.fanDetails?.get(fan)
+	if (details == null)
+		return
+	if (!details.contains("TurnUpLightOn") || !details.contains("TurnDownLightOn"))
 	{
 		deleteComponentDevice(device, fan + ":uplight")
 		deleteComponentDevice(device, fan + ":downlight")
 	}
-	if (!state.fanDetails[fan].contains("TurnLightOn") || (state.fanDetails[fan].contains("TurnUpLightOn") && state.fanDetails[fan].contains("TurnDownLightOn")))
-	{
+	if (!details.contains("TurnLightOn") || (details.contains("TurnUpLightOn") && details.contains("TurnDownLightOn")))
 		deleteComponentDevice(device, fan + ":light")
-	}
 }
 
 def subscribeSensorEvents() {
@@ -413,16 +406,16 @@ def subscribeSensorEvents() {
 	{
 		for (def i = 0; i < fireplaces.size(); i++)
 		{
-			def sensorDevice = this.getProperty("fireplaceSensor${i}")
+			def sensorDevice = settings["fireplaceSensor${i}".toString()]
 			if (sensorDevice != null)
 			{
 				logDebug "subscribing to power event for ${sensorDevice}"
-				subscribe(sensorDevice, "power", powerMeterEventHandler)
+				subscribe(sensorDevice, "power", "powerMeterEventHandler")
 			}
 		}
 	}
 }
-				  
+
 def powerMeterEventHandler(evt) {
 	logDebug "Received power meter event ${evt}"
 	for (def i = 0; i < fireplaces.size(); i++)
