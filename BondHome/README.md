@@ -98,7 +98,7 @@ in-place update. Devices, rules and dashboards keep working.
 - **A device BOND stops answering for** (it was removed from the bridge, for example) gets one
   warning, and an info line when it answers again.
 - **Testing:** on the cabin's hub (a 3-speed RF ceiling fan with a disabled timer light), 1.5.0's
-  polling, `healthStatus` and Done were verified in November 2026. Speed commands, Cycle Speed and
+  polling, `healthStatus`, Done and outage handling (a 5-minute outage) were verified in November 2026. Speed commands, Cycle Speed and
   the light are tested in the local harness and wait for a visit to be tried on the fan itself.
   Fireplaces, shades, generic devices and up/down lights are tested only in the harness. Update this
   line after the visit.
