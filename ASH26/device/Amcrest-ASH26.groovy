@@ -6,6 +6,9 @@
  *  Documentation: https://github.com/dlaporte/Hubitat/blob/main/ASH26/README.md
  *
  *  Changelog:
+ *  v0.9.0 (2026-11-23) - motion from the camera's PIR sensors over its event stream
+ *         (MotionSensor, with a "Motion inactive after" hold); motion light duration, night
+ *         vision and motion detection commands and attributes; Reboot with a quiet 5-minute window.
  *  v0.8.0 (2026-11-20) - switch updates as soon as the camera confirms On/Off; lightMode
  *         attribute; an offline camera is logged once with hourly reminders; healthStatus;
  *         standard logging and lifecycle.
@@ -31,7 +34,7 @@
 
 import groovy.transform.Field
 
-@Field static final String VERSION = "0.8.0"
+@Field static final String VERSION = "0.9.0"
 
 // Last time each device's event stream delivered anything (ms). In memory, so the
 // camera's 5-second heartbeat writes nothing to state; empty after a code save.

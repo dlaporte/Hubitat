@@ -44,8 +44,10 @@ LAN driver for the Amcrest ASH26 outdoor security camera (and likely
 similar Amcrest CGI-API cameras). Controls the floodlight and surfaces
 device info that's otherwise only available in the Amcrest mobile app.
 
-Async HTTP with RFC 2617-compliant digest auth. 1-minute refresh cadence,
-with `lightMode` and `healthStatus` attributes.
+Async HTTP with RFC 2617-compliant digest auth. Motion from the camera's PIR
+sensors, pushed over its event stream; commands for motion-light duration,
+night vision, motion detection and Reboot. 1-minute refresh cadence, with
+`lightMode` and `healthStatus` attributes.
 
 ### AcuRite Weather Station
 

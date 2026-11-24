@@ -94,7 +94,7 @@ test("initialize removes debug, records driverVersion, polls every minute and fe
     d.settings.debug = true
     d.call("initialize")
     assert d.device.removedSettings.contains("debug")
-    assert d.device.data.driverVersion == "0.8.0"
+    assert d.device.data.driverVersion == "0.9.0"
     assert d.schedules.refresh == "runEvery1Minute"
     assert d.http.size() == 1 && d.http[0].params.uri.contains("getConfig&name=All")
 }
