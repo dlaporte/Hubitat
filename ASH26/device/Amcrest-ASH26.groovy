@@ -39,6 +39,15 @@ import groovy.transform.Field
 @Field static final String ATTACH_URI = "/cgi-bin/eventManager.cgi?action=attach&codes=%5BAll%5D&heartbeat=5"
 @Field static final List<Integer> STREAM_BACKOFF = [5, 15, 60, 300]   // seconds; then stays at 300
 @Field static final long STREAM_SILENCE_MS = 60_000L                  // heartbeats come every 5 s
+// The keys the Amcrest app writes for each setting (found by diffing the camera's config).
+@Field static final List<String> LIGHT_DURATION_KEYS = [
+    "Alarm[0].EventHandler.LightingLink.LightDuration",
+    "Alarm[1].EventHandler.LightingLink.LightDuration",
+    "Alarm[2].EventHandler.LightingLink.LightDuration"]
+@Field static final List<String> NIGHT_VISION_KEYS = [
+    "Lighting_V2[0][0][0].Mode", "Lighting_V2[0][1][0].Mode", "Lighting[0][1].Mode", "Lighting[0][2].Mode"]
+@Field static final List<String> MOTION_DETECT_KEYS = [
+    "MotionDetect[0].Enable", "MotionDetect[0].EventHandler.SnapshotEnable"]
 
 metadata {
     definition(
@@ -63,6 +72,13 @@ metadata {
         attribute "wireless_ssid", "string"
         attribute "lightMode", "string"     // the camera's Lighting_V2 mode (Manual, Off, Auto, ...)
         attribute "healthStatus", "enum", ["online", "offline"]
+        attribute "motionLightDuration", "number"           // seconds the light stays on after motion
+        attribute "nightVision", "enum", ["Auto", "On", "Off"]
+        attribute "motionDetection", "enum", ["on", "off"]  // the camera's video motion detection, not the PIR
+
+        command "setMotionLightDuration", [[name: "seconds*", type: "NUMBER", description: "How long the light stays on after motion (1–3600)"]]
+        command "setNightVision", [[name: "mode*", type: "ENUM", constraints: ["Auto", "On", "Off"]]]
+        command "setMotionDetection", [[name: "setting*", type: "ENUM", constraints: ["on", "off"]]]
     }
 
     preferences {
@@ -149,6 +165,61 @@ private setSequence(List remaining) {
     def head = remaining[0]
     def rest = remaining.size() > 1 ? remaining[1..-1] : []
     set_camera_setting(head[0], head[1], [chainRest: rest])
+}
+
+// ---- Camera settings commands ----
+// Each writes every key the Amcrest app writes for that setting, in one request.
+
+def setMotionLightDuration(seconds) {
+    logDebug "setMotionLightDuration(${seconds})"
+    Integer s = null
+    try { s = new BigDecimal(seconds.toString()).intValueExact() } catch (Exception e) { /* not a whole number */ }
+    if (s == null || s < 1 || s > 3600) {
+        log.warn "setMotionLightDuration: ${seconds} isn't a whole number of seconds from 1 to 3600; nothing sent"
+        return
+    }
+    setConfigs(LIGHT_DURATION_KEYS.collectEntries { [(it): s.toString()] }, [name: "motionLightDuration", value: s])
+}
+
+def setNightVision(mode) {
+    logDebug "setNightVision(${mode})"
+    String m = [auto: "Auto", on: "On", off: "Off"][mode?.toString()?.trim()?.toLowerCase()]
+    if (!m) {
+        log.warn "setNightVision: mode must be Auto, On or Off, not ${mode}; nothing sent"
+        return
+    }
+    String value = (m == "On") ? "ForceOn" : m
+    setConfigs(NIGHT_VISION_KEYS.collectEntries { [(it): value] }, [name: "nightVision", value: m])
+}
+
+def setMotionDetection(setting) {
+    logDebug "setMotionDetection(${setting})"
+    String v = setting?.toString()?.trim()?.toLowerCase()
+    if (!(v in ["on", "off"])) {
+        log.warn "setMotionDetection: setting must be on or off, not ${setting}; nothing sent"
+        return
+    }
+    String enable = (v == "on") ? "true" : "false"
+    setConfigs(MOTION_DETECT_KEYS.collectEntries { [(it): enable] }, [name: "motionDetection", value: v])
+}
+
+// One setConfig request for several keys. onOk is the attribute to show when the camera answers OK.
+private void setConfigs(Map pairs, Map onOk) {
+    String query = pairs.collect { k, v -> "${k}=${v}" }.join("&")
+    String uri = "/cgi-bin/configManager.cgi?action=setConfig&${query}"
+    asynchttpGet("unauthRequestHandler", [uri: "http://${ip}${uri}", contentType: "text/plain", timeout: 10], [
+            uri: uri,
+            finalCallback: "verifySetResponse",
+            settingName: pairs.keySet().first(),
+            settingValue: pairs.values().first(),
+            onOk: onOk])
+}
+
+private void emitSetting(String name, value) {
+    String text = [motionLightDuration: "motion light duration is ${value} s",
+                   nightVision        : "night vision is ${value}",
+                   motionDetection    : "motion detection is ${value}"][name]
+    emitEvent(name: name, value: value, descriptionText: "${device.displayName} ${text}")
 }
 
 // ---------------------------------------------------------------------------
@@ -256,6 +327,12 @@ def parseCameraSettings(response, data) {
     sendEvent(name: "mac_address",       value: camera_settings['table.All.Network.eth2.PhysicalAddress'])
     sendEvent(name: "wireless_ssid",     value: camera_settings['table.All.WLan.eth2.SSID'])
 
+    String duration = camera_settings['table.All.Alarm[0].EventHandler.LightingLink.LightDuration']
+    if (duration?.isInteger()) emitSetting("motionLightDuration", duration as Integer)
+    String nightVision = camera_settings['table.All.Lighting_V2[0][0][0].Mode']
+    if (nightVision) emitSetting("nightVision", nightVision == "ForceOn" ? "On" : nightVision)
+    String motionDetect = camera_settings['table.All.MotionDetect[0].Enable']
+    if (motionDetect in ["true", "false"]) emitSetting("motionDetection", motionDetect == "true" ? "on" : "off")
     applyLightMode(camera_settings['table.All.Lighting_V2[0][0][1].Mode'])
 }
 
@@ -279,6 +356,8 @@ def verifySetResponse(response, data) {
         logDebug "set ${data.settingName} = ${data.settingValue}"
         if (data.chainRest) {
             setSequence(data.chainRest as List)
+        } else if (data.onOk) {
+            emitSetting(data.onOk.name as String, data.onOk.value)
         } else if (data.settingName == "Lighting_V2[0][0][1].Mode") {
             // The last step of On/Off: show the result now, not at the next poll.
             applyLightMode(data.settingValue as String)

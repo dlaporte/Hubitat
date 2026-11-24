@@ -585,4 +585,94 @@ test("while the poll's login is rejected, the stream probes but doesn't connect"
     assert d.schedules.connectStream == 5
 }
 
+// ---- 0.9.0: settings commands ----
+
+def uriOf = { Map req -> req.params.uri as String }
+final String SET = "http://10.0.0.30/cgi-bin/configManager.cgi?action=setConfig"
+
+test("the settings commands and attributes are declared") {
+    def d = fresh()
+    assert d.commandDefs.setMotionLightDuration == [[name: "seconds*", type: "NUMBER", description: "How long the light stays on after motion (1–3600)"]]
+    assert d.commandDefs.setNightVision == [[name: "mode*", type: "ENUM", constraints: ["Auto", "On", "Off"]]]
+    assert d.commandDefs.setMotionDetection == [[name: "setting*", type: "ENUM", constraints: ["on", "off"]]]
+    def attrs = d.attributes.collectEntries { [(it.name): [it.type, it.values]] }
+    assert attrs.motionLightDuration == ["number", null]
+    assert attrs.nightVision == ["enum", ["Auto", "On", "Off"]]
+    assert attrs.motionDetection == ["enum", ["on", "off"]]
+}
+
+test("setMotionLightDuration writes all three PIR durations in one request, then shows the value") {
+    def d = fresh()
+    d.call("setMotionLightDuration", 30)
+    assert d.http.size() == 1
+    assert uriOf(d.http[0]) == SET +
+            "&Alarm[0].EventHandler.LightingLink.LightDuration=30" +
+            "&Alarm[1].EventHandler.LightingLink.LightDuration=30" +
+            "&Alarm[2].EventHandler.LightingLink.LightDuration=30"
+    answer(d, "OK")
+    assert d.http.isEmpty()
+    assert d.device.current.motionLightDuration == 30
+    assert d.log.at("info").contains("Backyard Floodlight motion light duration is 30 s")
+}
+
+test("setMotionLightDuration rejects anything but a whole number from 1 to 3600") {
+    def d = fresh()
+    [0, 3601, 2.5, "abc"].each { d.call("setMotionLightDuration", it) }
+    assert d.http.isEmpty()
+    assert d.log.at("warn").size() == 4
+    d.call("setMotionLightDuration", "3600")
+    assert d.http.size() == 1
+}
+
+test("setNightVision writes the four keys the Amcrest app writes; On is stored as ForceOn") {
+    def d = fresh()
+    d.call("setNightVision", "On")
+    assert uriOf(d.http[0]) == SET +
+            "&Lighting_V2[0][0][0].Mode=ForceOn&Lighting_V2[0][1][0].Mode=ForceOn" +
+            "&Lighting[0][1].Mode=ForceOn&Lighting[0][2].Mode=ForceOn"
+    answer(d, "OK")
+    assert d.device.current.nightVision == "On"
+    d.call("setNightVision", "auto")
+    assert uriOf(d.http[0]).endsWith("&Lighting[0][2].Mode=Auto")
+    answer(d, "OK")
+    assert d.device.current.nightVision == "Auto"
+    d.call("setNightVision", "dim")
+    assert d.http.isEmpty() && d.log.at("warn").size() == 1
+}
+
+test("setMotionDetection switches video motion detection and its snapshot together") {
+    def d = fresh()
+    d.call("setMotionDetection", "on")
+    assert uriOf(d.http[0]) == SET + "&MotionDetect[0].Enable=true&MotionDetect[0].EventHandler.SnapshotEnable=true"
+    answer(d, "OK")
+    assert d.device.current.motionDetection == "on"
+    d.call("setMotionDetection", "off")
+    assert uriOf(d.http[0]).endsWith("SnapshotEnable=false")
+    answer(d, "OK")
+    assert d.device.current.motionDetection == "off"
+    d.call("setMotionDetection", "maybe")
+    assert d.http.isEmpty() && d.log.at("warn").size() == 1
+}
+
+test("a rejected setting logs an error and leaves the attribute alone") {
+    def d = fresh()
+    d.device.current.motionLightDuration = 60
+    d.call("setMotionLightDuration", 30)
+    answer(d, "Error")
+    assert d.log.at("error") == ["set Alarm[0].EventHandler.LightingLink.LightDuration failed: Error"]
+    assert d.device.current.motionLightDuration == 60
+}
+
+test("the poll shows motion light duration, night vision and motion detection") {
+    def d = fresh()
+    d.call("refresh")
+    answer(d, settingsText("Off") + """table.All.Alarm[0].EventHandler.LightingLink.LightDuration=60
+table.All.Lighting_V2[0][0][0].Mode=ForceOn
+table.All.MotionDetect[0].Enable=false
+""")
+    assert d.device.current.motionLightDuration == 60
+    assert d.device.current.nightVision == "On"
+    assert d.device.current.motionDetection == "off"
+}
+
 finish()
